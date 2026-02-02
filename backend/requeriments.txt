@@ -1,0 +1,10 @@
+Flask
+Flask-SQLAlchemy
+Flask-CORS
+python-dotenv
+SQLAlchemy
+pydantic
+Flask-Mail
+Flask-Bcrypt
+APScheduler
+mysqlclient

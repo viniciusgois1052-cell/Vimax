@@ -1,0 +1,159 @@
+from flask import Blueprint, request, jsonify, current_app
+from ..models.orcamento import Orcamento, Anexo
+from ..models.localizacao import Localizacao
+from ..models.usuario import Usuario
+from ..utils.filters import apply_entity_filter
+from .. import db
+from datetime import datetime
+import traceback
+
+orcamento_bp = Blueprint('orcamento_bp', __name__)
+
+def parse_datetime(value):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except Exception:
+        return None
+
+def to_int(value):
+    try:
+        return int(value) if value is not None and value != '' else None
+    except Exception:
+        return None
+
+def to_float(value):
+    try:
+        return float(value) if value is not None and value != '' else None
+    except Exception:
+        return None
+
+@orcamento_bp.route('/', methods=['GET'])
+def get_orcamentos():
+    """
+    GET /api/orcamentos/
+    Query params: empresa_id, localizacao_id (opcional)
+    """
+    empresa_id = request.args.get('empresa_id')
+    localizacao_id = request.args.get('localizacao_id')
+    api_token = request.headers.get('X-API-Token')
+    
+    user = None
+    if api_token:
+        user = Usuario.query.filter_by(api_token=api_token).first()
+    
+    query = Orcamento.query
+    query = apply_entity_filter(query, Orcamento, empresa_id, user)
+    
+    if localizacao_id:
+        try:
+            query = query.filter(Orcamento.localizacao_id == int(localizacao_id))
+        except ValueError:
+            pass
+
+    orcamentos = query.all()
+    return jsonify([o.to_dict() for o in orcamentos])
+
+@orcamento_bp.route('/localizacoes_por_empresa/<int:empresa_id>', methods=['GET'])
+def get_localizacoes_por_empresa(empresa_id):
+    localizacoes = Localizacao.query.filter_by(empresa_id=empresa_id).all()
+    return jsonify([l.to_dict() for l in localizacoes])
+
+@orcamento_bp.route('/', methods=['POST'])
+def create_orcamento():
+    try:
+        raw = request.get_data(as_text=True)
+        current_app.logger.debug("RAW request body: %s", raw)
+        data = request.get_json() or {}
+        current_app.logger.debug("Parsed JSON payload: %s", data)
+    except Exception as e:
+        current_app.logger.exception("Erro ao ler request body")
+        data = {}
+
+    # Validação mínima
+    if not data.get('titulo') or not data.get('empresa_id'):
+        return jsonify({"error": "Título e Empresa são obrigatórios", "received": data}), 400
+
+    try:
+        novo_orcamento = Orcamento(
+            numero = data.get('titulo'),
+            descricao = data.get('descricao'),
+            data_inicial = parse_datetime(data.get('data_inicial')),
+            data_final = parse_datetime(data.get('data_final')),
+            valor = to_float(data.get('valor_total')),
+            data_validade = parse_datetime(data.get('data_validade')),
+            status = data.get('status', 'Pendente'),
+            empresa_id = to_int(data.get('empresa_id')),
+            localizacao_id = to_int(data.get('localizacao_id')),
+            fornecedor_id = to_int(data.get('fornecedor_id'))
+        )
+
+        anexos_data = data.get('anexos', [])
+        for anexo_data in anexos_data:
+            nome = anexo_data.get('nome')
+            caminho = anexo_data.get('caminho')
+            if nome and caminho:
+                anexo = Anexo(nome=nome, caminho=caminho)
+                novo_orcamento.anexos.append(anexo)
+
+        db.session.add(novo_orcamento)
+        db.session.commit()
+        current_app.logger.debug("Orcamento criado id: %s", novo_orcamento.id)
+        return jsonify(novo_orcamento.to_dict()), 201
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.exception("Erro ao criar orçamento")
+        traceback.print_exc()
+        return jsonify({"error": "Erro ao criar orçamento", "details": str(e)}), 500
+
+@orcamento_bp.route('/<int:id>', methods=['PUT'])
+def update_orcamento(id):
+    orcamento = Orcamento.query.get_or_404(id)
+    data = request.get_json() or {}
+    try:
+        if 'titulo' in data:
+            orcamento.numero = data.get('titulo')
+        if 'descricao' in data:
+            orcamento.descricao = data.get('descricao')
+        if 'valor_total' in data:
+            orcamento.valor = to_float(data.get('valor_total'))
+        if 'data_inicial' in data:
+            orcamento.data_inicial = parse_datetime(data.get('data_inicial'))
+        if 'data_final' in data:
+            orcamento.data_final = parse_datetime(data.get('data_final'))
+        if 'data_validade' in data:
+            orcamento.data_validade = parse_datetime(data.get('data_validade'))
+        if 'status' in data:
+            orcamento.status = data.get('status')
+        if 'empresa_id' in data:
+            orcamento.empresa_id = to_int(data.get('empresa_id'))
+        if 'localizacao_id' in data:
+            orcamento.localizacao_id = to_int(data.get('localizacao_id'))
+        if 'fornecedor_id' in data:
+            orcamento.fornecedor_id = to_int(data.get('fornecedor_id'))
+
+        # Atualizar anexos (remove todos e adiciona de novo)
+        Anexo.query.filter_by(orcamento_id=orcamento.id).delete()
+        anexos_data = data.get('anexos', [])
+        for anexo_data in anexos_data:
+            nome = anexo_data.get('nome')
+            caminho = anexo_data.get('caminho')
+            if nome and caminho:
+                anexo = Anexo(nome=nome, caminho=caminho)
+                orcamento.anexos.append(anexo)
+
+        db.session.commit()
+        return jsonify(orcamento.to_dict())
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.exception("Erro ao atualizar orçamento")
+        traceback.print_exc()
+        return jsonify({"error": "Erro ao atualizar orçamento", "details": str(e)}), 500
+
+@orcamento_bp.route('/<int:id>', methods=['DELETE'])
+def delete_orcamento(id):
+    orcamento = Orcamento.query.get_or_404(id)
+    db.session.delete(orcamento)
+    db.session.commit()
+    return '', 204
