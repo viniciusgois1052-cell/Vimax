@@ -19,7 +19,7 @@ def create_app(config_class=None):
     db.init_app(app)
     bcrypt.init_app(app)
     mail.init_app(app)
-
+    
     CORS(app, resources={r"/api/*": {"origins": "*"}})
 
     # Importar Blueprints
@@ -50,7 +50,7 @@ def create_app(config_class=None):
     app.register_blueprint(relatorio_bp, url_prefix='/api/relatorios')
     app.register_blueprint(categoria_chamado_bp, url_prefix='/api/categorias-chamado')
     app.register_blueprint(tipo_servico_bp, url_prefix='/api/tipos-servico')
-     app.register_blueprint(public_bp, url_prefix='/api/public')
+    app.register_blueprint(public_bp, url_prefix='/api/public')
 
     with app.app_context():
         db.create_all()

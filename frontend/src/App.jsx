@@ -1,9 +1,9 @@
+import React, { useState, useEffect } from 'react'
 import { BrowserRouter as Router, Routes, Route, Link, useLocation, Navigate } from 'react-router-dom'
 import { EntityProvider, useEntity } from './context/EntityContext'
 import { AuthProvider, useAuth } from './context/AuthContext'
 import { Settings, MapPin, Users, FileText, DollarSign, Wrench, User, Mail, BarChart, Building2, Menu, X, Box, LogOut, ShieldCheck, Lock, Tag, Hammer, AlertTriangle } from 'lucide-react'
 import './App.css'
-import { useState, useEffect } from 'react'
 
 // Importar páginas
 import Dashboard from './pages/Dashboard'
@@ -231,7 +231,7 @@ function AppContent() {
 
       {/* Modal de Alerta de Vencimento */}
       {showModal && alertas.length > 0 && (
-        <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+        <div className="fixed inset-0 z-[9999] flex itens-center justify-center p-4 bg-black/60 backdrop-blur-sm">
           <div className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full overflow-hidden border border-slate-100 animate-in fade-in zoom-in duration-300">
             <div className="p-6 bg-orange-500 text-white flex items-center justify-between">
               <div className="flex items-center gap-3">
