@@ -1,95 +1,153 @@
 from flask import Blueprint, request, jsonify
-from .. import db
 from ..models.empresa import Empresa
 from ..models.usuario import Usuario
-from ..utils.filters import apply_entity_filter
+from .. import db
+from ..utils.logging import create_log
 import json
 
 empresa_bp = Blueprint('empresa_bp', __name__)
 
 def safe_int(val):
-    if val in [None, '', 'none', 'null', 'undefined']:
-        return None
+    if val in [None, '', 'none', 'undefined']: return None
+    try: return int(val)
+    except: return None
+
+def model_columns(obj):
+    """Retorna lista de nomes de colunas do modelo SQLAlchemy (seguro)."""
     try:
-        return int(val)
-    except (ValueError, TypeError):
-        return None
+        return [c.name for c in obj.__table__.columns]
+    except Exception:
+        return []
 
 @empresa_bp.route('', methods=['GET'])
-def get_empresas():
+def list_empresas():
+    """
+    GET /api/empresas
+    Retorna todas empresas (simples).
+    """
     try:
-        api_token = request.headers.get('X-API-Token')
-        user = None
-        if api_token:
-            user = Usuario.query.filter_by(api_token=api_token).first()
-            
-        query = Empresa.query
-        # Para empresas, o filtro é um pouco diferente pois elas são a própria entidade
-        if user and user.role != 'super_admin' and user.empresa_id:
-            from ..utils.filters import get_all_sub_company_ids
-            allowed_ids = get_all_sub_company_ids(user.empresa_id)
-            query = query.filter(Empresa.id.in_(allowed_ids))
-            
-        empresas = query.all()
-        return jsonify([e.to_dict() for e in empresas])
+        empresas = Empresa.query.order_by(Empresa.id.desc()).all()
+        return jsonify([e.to_dict() for e in empresas]), 200
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({'error': 'db_error', 'detail': str(e)}), 500
 
 @empresa_bp.route('', methods=['POST'])
 def create_empresa():
-    data = request.get_json()
-    try:
-        nova_empresa = Empresa(
-            nome=data.get('nome'),
-            cnpj=data.get('cnpj'),
-            endereco=data.get('endereco'),
-            email=data.get('email'),
-            telefone=data.get('telefone'),
-            parent_id=safe_int(data.get('parent_id'))
-        )
-        
-        # Trata anexos vindo como lista do frontend
-        anexos = data.get('anexos', [])
-        nova_empresa.set_anexos(anexos if isinstance(anexos, list) else [])
-            
-        db.session.add(nova_empresa)
-        db.session.commit()
-        return jsonify(nova_empresa.to_dict()), 201
-    except Exception as e:
-        db.session.rollback()
-        print(f"Erro ao criar empresa: {str(e)}")
-        return jsonify({"error": str(e)}), 400
+    """
+    POST /api/empresas
+    Cria uma nova empresa. Aceita JSON com campos correspondentes ao modelo.
+    """
+    data = request.get_json() or {}
+    api_token = request.headers.get('X-API-Token')
+    user = Usuario.query.filter_by(api_token=api_token).first() if api_token else None
 
-@empresa_bp.route('/<int:id>', methods=['PUT'])
-def update_empresa(id):
-    empresa = Empresa.query.get_or_404(id)
-    data = request.get_json()
     try:
-        empresa.nome = data.get('nome', empresa.nome)
-        empresa.cnpj = data.get('cnpj', empresa.cnpj)
-        empresa.endereco = data.get('endereco', empresa.endereco)
-        empresa.email = data.get('email', empresa.email)
-        empresa.telefone = data.get('telefone', empresa.telefone)
-        empresa.parent_id = safe_int(data.get('parent_id'))
-        
-        if 'anexos' in data:
-            anexos = data.get('anexos', [])
-            empresa.set_anexos(anexos if isinstance(anexos, list) else [])
-            
+        cols = model_columns(Empresa)
+        novo = Empresa()
+        for k, v in data.items():
+            if k in cols:
+                # tenta conversão básica para inteiros em chaves *_id
+                if k.endswith('_id'):
+                    setattr(novo, k, safe_int(v))
+                else:
+                    setattr(novo, k, v)
+        db.session.add(novo)
         db.session.commit()
-        return jsonify(empresa.to_dict())
+
+        try:
+            create_log(user=user, action='create_empresa', entity='empresa', entity_id=novo.id,
+                       details={'payload': data}, req=request)
+        except Exception:
+            pass
+
+        return jsonify(novo.to_dict()), 201
     except Exception as e:
-        db.session.rollback()
-        print(f"Erro ao atualizar empresa: {str(e)}")
-        return jsonify({"error": str(e)}), 400
+        try: db.session.rollback()
+        except: pass
+        return jsonify({'error': 'db_error', 'detail': str(e)}), 500
+
+@empresa_bp.route('/<int:id>', methods=['GET'])
+def get_empresa(id):
+    """
+    GET /api/empresas/<id>
+    """
+    emp = Empresa.query.get_or_404(id)
+    return jsonify(emp.to_dict()), 200
+
+@empresa_bp.route('/<int:id>', methods=['PUT', 'PATCH'])
+def update_empresa(id):
+    """
+    PUT/PATCH /api/empresas/<id>
+    Atualiza campos presentes no payload.
+    """
+    api_token = request.headers.get('X-API-Token')
+    user = Usuario.query.filter_by(api_token=api_token).first() if api_token else None
+
+    emp = Empresa.query.get_or_404(id)
+    data = request.get_json() or {}
+
+    try:
+        before = None
+        try:
+            before = emp.to_dict()
+        except Exception:
+            before = None
+
+        cols = model_columns(Empresa)
+        for k, v in data.items():
+            if k in cols and k != 'id':
+                if k.endswith('_id'):
+                    setattr(emp, k, safe_int(v))
+                else:
+                    setattr(emp, k, v)
+
+        db.session.commit()
+
+        try:
+            create_log(user=user, action='update_empresa', entity='empresa', entity_id=id,
+                       details={'before': before, 'after_payload': data}, req=request)
+        except Exception:
+            pass
+
+        return jsonify(emp.to_dict()), 200
+    except Exception as e:
+        try: db.session.rollback()
+        except: pass
+        return jsonify({'error': 'db_error', 'detail': str(e)}), 500
 
 @empresa_bp.route('/<int:id>', methods=['DELETE'])
 def delete_empresa(id):
-    empresa = Empresa.query.get_or_404(id)
+    """
+    DELETE /api/empresas/<id>
+    Remove empresa (commit) e cria log da exclusão.
+    """
+    api_token = request.headers.get('X-API-Token')
+    user = Usuario.query.filter_by(api_token=api_token).first() if api_token else None
+
+    emp = Empresa.query.get_or_404(id)
+
+    # Exemplo de checagem de permissão (ajuste conforme sua política)
+    # if user is None or user.role not in ('super_admin', 'admin'):
+    #     return jsonify({'error': 'forbidden'}), 403
+
     try:
-        db.session.delete(empresa)
+        snapshot = None
+        try:
+            snapshot = emp.to_dict()
+        except Exception:
+            snapshot = None
+
+        db.session.delete(emp)
         db.session.commit()
-        return '', 204
+
+        try:
+            create_log(user=user, action='delete_empresa', entity='empresa', entity_id=id,
+                       details={'deleted': snapshot}, req=request)
+        except Exception:
+            pass
+
+        return jsonify({'ok': True}), 200
     except Exception as e:
-        db.session.rollback()
-        return jsonify({"error": "Não é possível excluir uma empresa que possui filiais ou vínculos ativos."}), 400
+        try: db.session.rollback()
+        except: pass
+        return jsonify({'ok': False, 'error': 'db_error', 'detail': str(e)}), 500

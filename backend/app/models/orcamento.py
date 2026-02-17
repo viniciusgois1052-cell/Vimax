@@ -27,10 +27,13 @@ class Orcamento(db.Model):
     def to_dict(self):
         return {
             'id': self.id,
-            'titulo': self.numero,
+            'numero': self.numero,  # Frontend espera 'numero'
+            'titulo': self.numero,  # Compatibilidade com outras telas
             'descricao': self.descricao,
-            'valor_total': self.valor,
+            'valor': self.valor,  # Frontend espera 'valor'
+            'valor_total': self.valor,  # Compatibilidade com outras telas
             'status': self.status,
+            'data_emissao': self.data_inicial.isoformat() if self.data_inicial else None,  # Frontend espera 'data_emissao'
             'data_inicial': self.data_inicial.isoformat() if self.data_inicial else None,
             'data_final': self.data_final.isoformat() if self.data_final else None,
             'data_validade': self.data_validade.isoformat() if self.data_validade else None,
@@ -50,4 +53,12 @@ class Anexo(db.Model):
     caminho = db.Column(db.String(255), nullable=False)
     orcamento_id = db.Column(db.Integer, db.ForeignKey('orcamentos.id', ondelete='CASCADE'), nullable=False)
     def to_dict(self):
-        return {'id': self.id, 'nome': self.nome, 'caminho': self.caminho}
+        return {
+            'id': self.id,
+            'nome': self.nome,
+            'name': self.nome,  # Frontend espera 'name'
+            'filename': self.nome,  # Compatibilidade
+            'caminho': self.caminho,
+            'path': self.caminho,  # Frontend espera 'path'
+            'url': self.caminho  # Compatibilidade
+        }

@@ -30,6 +30,7 @@ def get_ativo(id):
 @ativo_bp.route('/', methods=['POST'])
 def create_ativo():
     data = request.get_json()
+
     data_aquisicao = datetime.strptime(data['data_aquisicao'], '%Y-%m-%d').date() if data.get('data_aquisicao') else None
     data_inativacao = datetime.strptime(data['data_inativacao'], '%Y-%m-%d').date() if data.get('data_inativacao') else None
 
@@ -43,8 +44,35 @@ def create_ativo():
         localizacao_id=data.get('localizacao_id'),
         fornecedor_id=data.get('fornecedor_id'),
         contrato_id=data.get('contrato_id'),
-        orcamento_id=data.get('orcamento_id')
+        orcamento_id=data.get('orcamento_id'),
+        anexos=data.get('anexos', [])
     )
+
     db.session.add(novo_ativo)
     db.session.commit()
     return jsonify(novo_ativo.to_dict()), 201
+
+
+# ✅ SEU FRONTEND JÁ USA PUT — ESTA ROTA NÃO EXISTIA
+@ativo_bp.route('/<int:id>', methods=['PUT'])
+def update_ativo(id):
+    ativo = Ativo.query.get_or_404(id)
+    data = request.get_json()
+
+    ativo.nome = data.get('nome')
+    ativo.numero_serie = data.get('numero_serie')
+    ativo.voltagem_entrada = data.get('voltagem_entrada')
+
+    ativo.data_aquisicao = datetime.strptime(data['data_aquisicao'], '%Y-%m-%d').date() if data.get('data_aquisicao') else None
+    ativo.data_inativacao = datetime.strptime(data['data_inativacao'], '%Y-%m-%d').date() if data.get('data_inativacao') else None
+
+    ativo.localizacao_id = data.get('localizacao_id')
+    ativo.fornecedor_id = data.get('fornecedor_id')
+    ativo.contrato_id = data.get('contrato_id')
+    ativo.orcamento_id = data.get('orcamento_id')
+
+    # ✅ SALVAR ANEXOS
+    ativo.anexos = data.get('anexos', [])
+
+    db.session.commit()
+    return jsonify(ativo.to_dict())

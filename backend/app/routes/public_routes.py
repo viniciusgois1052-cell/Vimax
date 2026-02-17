@@ -3,6 +3,7 @@ from ..models.ativo import Ativo
 from ..models.chamado import Chamado
 from .. import db
 import json
+from datetime import datetime
 
 public_bp = Blueprint('public_bp', __name__)
 
@@ -31,6 +32,8 @@ def abrir_chamado_publico():
     if data.get('anexos') and isinstance(data['anexos'], list) and len(data['anexos']) > 0:
         anexos_json = json.dumps(data['anexos'])
         
+    criticidade = data.get('criticidade_informada')
+    
     novo_chamado = Chamado(
         titulo=data.get('titulo'),
         descricao=f"Aberto via QR Code por: {data.get('nome_solicitante', 'Anônimo')}\n\nProblema: {data.get('descricao')}",
@@ -38,6 +41,9 @@ def abrir_chamado_publico():
         #ativo_id=data.get('ativo_id'),
         empresa_id=data.get('empresa_id'),
         localizacao_id=data.get('localizacao_id'),
+        criticidade_informada=criticidade,
+        criticidade_real=criticidade, # Duplicada inicialmente
+        data_abertura=datetime.utcnow(), # Horário real capturado no servidor
         anexos=anexos_json
     )
     

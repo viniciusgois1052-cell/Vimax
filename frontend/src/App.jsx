@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { BrowserRouter as Router, Routes, Route, Link, useLocation, Navigate } from 'react-router-dom'
 import { EntityProvider, useEntity } from './context/EntityContext'
 import { AuthProvider, useAuth } from './context/AuthContext'
-import { Settings, MapPin, Users, FileText, DollarSign, Wrench, User, Mail, BarChart, Building2, Menu, X, Box, LogOut, ShieldCheck, Lock, Tag, Hammer, AlertTriangle } from 'lucide-react'
+import { Settings, MapPin, Users, FileText, DollarSign, Wrench, User, Mail, BarChart, Building2, Menu, X, Box, LogOut, ShieldCheck, Lock, Tag, Hammer, AlertTriangle, ChevronDown, ChevronRight } from 'lucide-react'
 import './App.css'
 
 // Importar páginas
@@ -26,23 +26,51 @@ function Navigation({ isCollapsed, toggleCollapse }) {
   const { selectedEntity, setSelectedEntity, treeEntities } = useEntity()
   const { user, logout } = useAuth()
   
-  const allMenuItems = [
-    { path: '/', icon: Settings, label: 'Dashboard', roles: ['super_admin', 'admin', 'relatorios'] },
-    { path: '/empresas', icon: Building2, label: 'Empresas', roles: ['super_admin', 'admin'] },
-    { path: '/localizacoes', icon: MapPin, label: 'Localizações', roles: ['super_admin', 'admin'] },
-    { path: '/ativos', icon: Box, label: 'Ativos', roles: ['super_admin', 'admin'] },
-    { path: '/fornecedores', icon: Users, label: 'Fornecedores', roles: ['super_admin', 'admin'] },
-    { path: '/contratos', icon: FileText, label: 'Contratos', roles: ['super_admin', 'admin'] },
-    { path: '/orcamentos', icon: DollarSign, label: 'Orçamentos', roles: ['super_admin', 'admin'] },
-    { path: '/chamados', icon: Wrench, label: 'Chamados', roles: ['super_admin', 'admin'] },
-    { path: '/usuarios', icon: User, label: 'Usuários', roles: ['super_admin'] },
-    { path: '/config-email', icon: Mail, label: 'Config. Email', roles: ['super_admin'] },
-    { path: '/relatorios', icon: BarChart, label: 'Relatórios', roles: ['super_admin', 'admin', 'relatorios'] },
-    { path: '/categorias-chamado', icon: Tag, label: 'Categorias de Chamados', roles: ['super_admin', 'admin'] },
-    { path: '/tipos-servico', icon: Hammer, label: 'Tipos de Serviço', roles: ['super_admin', 'admin'] },
+  // Se o usuário for do perfil 'publico', não renderiza a navegação lateral
+  if (user && user.role === 'publico') {
+    return null;
+  }
+
+  const menuGroups = [
+    {
+      title: 'Helpdesk',
+      items: [
+        { path: '/chamados', icon: Wrench, label: 'Chamados', roles: ['super_admin', 'admin'] },
+        { path: '/categorias-chamado', icon: Tag, label: 'Tipo Chamado', roles: ['super_admin', 'admin'] },
+        { path: '/tipos-servico', icon: Hammer, label: 'Tipo Serviço', roles: ['super_admin', 'admin'] },
+      ]
+    },
+    {
+      title: 'Gestão de Documentos',
+      items: [
+        { path: '/contratos', icon: FileText, label: 'Contratos', roles: ['super_admin', 'admin'] },
+        { path: '/orcamentos', icon: DollarSign, label: 'Orçamentos', roles: ['super_admin', 'admin'] },
+      ]
+    },
+    {
+      title: 'Gestão de Ativos',
+      items: [
+        { path: '/empresas', icon: Building2, label: 'Empresa', roles: ['super_admin', 'admin'] },
+        { path: '/localizacoes', icon: MapPin, label: 'Localização', roles: ['super_admin', 'admin'] },
+        { path: '/ativos', icon: Box, label: 'Ativos', roles: ['super_admin', 'admin'] },
+        { path: '/fornecedores', icon: Users, label: 'Fornecedores', roles: ['super_admin', 'admin'] },
+      ]
+    },
+    {
+      title: 'BI',
+      items: [
+        { path: '/relatorios', icon: BarChart, label: 'Relatórios', roles: ['super_admin', 'admin', 'relatorios'] },
+      ]
+    },
+    {
+      title: 'Configurações',
+      items: [
+        { path: '/usuarios', icon: User, label: 'Usuários', roles: ['super_admin'] },
+        { path: '/config-email', icon: Mail, label: 'Config. Email', roles: ['super_admin'] },
+      ]
+    }
   ]
 
-  const menuItems = allMenuItems.filter(item => !user || item.roles.includes(user.role))
   const sidebarWidth = isCollapsed ? 'w-20' : 'w-64'
   const linkPadding = isCollapsed ? 'px-0 justify-center' : 'px-4'
   const logoFull = "http://wiki.digimaxdiagnostico.com.br/wp/wp-content/uploads/2026/01/Vimax-Logo.png"
@@ -54,7 +82,7 @@ function Navigation({ isCollapsed, toggleCollapse }) {
         <div className="flex items-center justify-center flex-1 overflow-hidden">
           {isCollapsed ? (
             <img src={logoIcon} alt="Vimax Icon" className="h-10 w-auto object-contain transition-all duration-300" />
-              ) : (
+          ) : (
             <img src={logoFull} alt="Vimax Logo" className="h-12 w-auto object-contain transition-all duration-300" />
           )}
         </div>
@@ -86,39 +114,61 @@ function Navigation({ isCollapsed, toggleCollapse }) {
         </div>
       )}
       
-      <div className="flex-1 overflow-y-auto p-4">
+      <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
         {user && (
-          <div className={`mb-4 p-2 bg-accent/50 rounded-lg ${isCollapsed ? 'text-center' : ''}`}>
-            {!isCollapsed && <p className="text-[10px] uppercase font-bold text-muted-foreground">Usuário</p>}
-            <p className="text-sm font-medium truncate">{user.username}</p>
-            {!isCollapsed && <p className="text-[10px] text-primary font-bold uppercase">{user.role.replace('_', ' ')}</p>}
+          <div className={`mb-6 p-3 bg-accent/50 rounded-xl ${isCollapsed ? 'text-center' : ''}`}>
+            {!isCollapsed && <p className="text-[10px] uppercase font-bold text-muted-foreground mb-1">Usuário</p>}
+            <p className="text-sm font-bold truncate text-primary">{user.username}</p>
+            {!isCollapsed && <p className="text-[10px] text-muted-foreground font-bold uppercase">{user.role.replace('_', ' ')}</p>}
           </div>
         )}
-        <ul className="space-y-2">
-          {menuItems.map((item) => {
-            const Icon = item.icon
-            const isActive = location.pathname === item.path
+
+        <div className="space-y-6">
+          {menuGroups.map((group, groupIdx) => {
+            const filteredItems = group.items.filter(item => !user || item.roles.includes(user.role))
+            if (filteredItems.length === 0) return null
+
             return (
-              <li key={item.path}>
-                <Link
-                  to={item.path}
-                  className={`flex items-center gap-3 py-3 rounded-lg transition-all duration-200 ${linkPadding} ${
-                    isActive ? 'bg-primary text-primary-foreground shadow-md' : 'text-foreground hover:bg-accent hover:text-accent-foreground'
-                  }`}
-                >
-                  <Icon className="w-5 h-5" />
-                  {!isCollapsed && <span className="font-medium">{item.label}</span>}
-                </Link>
-              </li>
+              <div key={groupIdx} className="space-y-2">
+                {!isCollapsed && (
+                  <div className="px-4 mb-2">
+                    <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground/60 border-b border-border/50 pb-1">
+                      {group.title}
+                    </p>
+                  </div>
+                )}
+                <ul className="space-y-1">
+                  {filteredItems.map((item) => {
+                    const Icon = item.icon
+                    const isActive = location.pathname === item.path
+                    return (
+                      <li key={item.path}>
+                        <Link
+                          to={item.path}
+                          className={`flex items-center gap-3 py-2.5 rounded-xl transition-all duration-200 ${linkPadding} ${
+                            isActive 
+                              ? 'bg-primary text-primary-foreground shadow-lg shadow-primary/20 font-bold' 
+                              : 'text-muted-foreground hover:bg-accent hover:text-foreground'
+                          }`}
+                          title={isCollapsed ? item.label : ''}
+                        >
+                          <Icon className={`w-5 h-5 ${isActive ? 'animate-pulse' : ''}`} />
+                          {!isCollapsed && <span className="text-sm">{item.label}</span>}
+                        </Link>
+                      </li>
+                    )
+                  })}
+                </ul>
+              </div>
             )
           })}
-        </ul>
+        </div>
       </div>
 
-      <div className="p-4 border-t border-border">
-        <button onClick={logout} className={`flex items-center gap-3 py-2 w-full rounded-lg text-red-500 hover:bg-red-50 transition-all ${linkPadding}`}>
+      <div className="p-4 border-t border-border bg-card/50">
+        <button onClick={logout} className={`flex items-center gap-3 py-3 w-full rounded-xl text-red-500 hover:bg-red-50 hover:text-red-600 transition-all font-bold ${linkPadding}`}>
           <LogOut className="w-5 h-5" />
-          {!isCollapsed && <span className="font-medium">Sair</span>}
+          {!isCollapsed && <span className="text-sm">Sair do Sistema</span>}
         </button>
       </div>
     </nav>
@@ -144,19 +194,19 @@ function LoginPage() {
   return (
     <div className="flex flex-col items-center justify-center h-screen bg-slate-50 p-4">
       <div className="w-full max-w-md bg-white rounded-2xl shadow-xl overflow-hidden border border-slate-100">
-        <div className="p-8 bg-primary flex justify-center">
-          <img src="http://wiki.digimaxdiagnostico.com.br/wp/wp-content/uploads/2026/01/Vimax-Logo.png" alt="Logo" className="h-16 w-auto brightness-0 invert" />
+        <div className="p-8 bg-white flex justify-center border-b border-slate-50">
+          <img src="http://wiki.digimaxdiagnostico.com.br/wp/wp-content/uploads/2026/01/Vimax-Logo.png" alt="Logo" className="h-16 w-auto object-contain" />
         </div>
         <div className="p-8">
           <div className="text-center mb-8">
-            <h1 className="text-2xl font-bold text-slate-800">Bem-vindo ao CMMS</h1>
+            <h1 className="text-2xl font-bold text-slate-800">Bem-vindo</h1>
             <p className="text-slate-500 text-sm mt-1">Faça login para acessar o sistema</p>
           </div>
           <form onSubmit={handleSubmit} className="space-y-5">
             {error && <div className="bg-red-50 text-red-600 p-3 rounded-lg text-sm font-medium border border-red-100">{error}</div>}
             <div className="space-y-1">
               <label className="text-xs font-bold text-slate-600 uppercase ml-1">Usuário</label>
-              <input type="text" value={username} onChange={(e ) => setUsername(e.target.value)} className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary" placeholder="Seu usuário" required />
+              <input type="text" value={username} onChange={(e) => setUsername(e.target.value)} className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary" placeholder="Seu usuário" required />
             </div>
             <div className="space-y-1">
               <label className="text-xs font-bold text-slate-600 uppercase ml-1">Senha</label>
@@ -173,16 +223,16 @@ function LoginPage() {
 }
 
 function AppContent() {
-  const { user } = useAuth()
+  const { user, logout } = useAuth()
   const [isCollapsed, setIsCollapsed] = useState(false)
   const [alertas, setAlertas] = useState([])
   const [showModal, setShowModal] = useState(false)
 
   useEffect(() => {
     const checkAlertas = async () => {
-      // O sessionStorage garante que o alerta só apareça uma vez por sessão (após o login)
-      // Ele é limpo quando a aba é fechada, mas persiste em navegação normal.
-      // Se você quiser que apareça APENAS no momento exato do login, usamos uma flag temporária.
+      // Perfil público não deve ver alertas de contrato
+      if (user && user.role === 'publico') return;
+
       if (user && !sessionStorage.getItem('alertas_vistos')) {
         try {
           const headers = user.api_token ? { 'X-API-Token': user.api_token } : {}
@@ -192,7 +242,6 @@ function AppContent() {
             if (data && data.length > 0) {
               setAlertas(data)
               setShowModal(true)
-              // Marca como visto para não aparecer no F5
               sessionStorage.setItem('alertas_vistos', 'true')
             }
           }
@@ -206,77 +255,86 @@ function AppContent() {
 
   if (!user) return <LoginPage />
 
+  // Se o usuário for público e estiver na raiz, redireciona para algum lugar (embora o ideal seja ele entrar pelo link do QR Code)
+  // Mas vamos garantir que ele não veja nada além da página de abrir chamado
+  const isPublicUser = user.role === 'publico';
+  const mainMargin = isPublicUser ? 'ml-0' : (isCollapsed ? 'ml-20' : 'ml-64');
+
   return (
     <div className="flex min-h-screen bg-background">
       <Navigation isCollapsed={isCollapsed} toggleCollapse={() => setIsCollapsed(!isCollapsed)} />
-      <main className={`flex-1 p-8 transition-all duration-300 ${isCollapsed ? 'ml-20' : 'ml-64'}`}>
+      <main className={`flex-1 p-8 transition-all duration-300 ${mainMargin}`}>
+        {isPublicUser && (
+          <div className="fixed top-4 right-4 z-[60]">
+            <button onClick={logout} className="flex items-center gap-2 px-4 py-2 bg-white border border-red-200 text-red-500 rounded-xl font-bold shadow-sm hover:bg-red-50 transition-all">
+              <LogOut className="w-4 h-4" />
+              Sair
+            </button>
+          </div>
+        )}
         <Routes>
-          <Route path="/" element={<Dashboard />} />
-          <Route path="/empresas" element={<Empresas />} />
-          <Route path="/localizacoes" element={<Localizacoes />} />
-          <Route path="/ativos" element={<Ativos />} />
-          <Route path="/fornecedores" element={<Fornecedores />} />
-          <Route path="/contratos" element={<Contratos />} />
-          <Route path="/orcamentos" element={<Orcamentos />} />
-          <Route path="/chamados" element={<Chamados />} />
-          <Route path="/usuarios" element={<Usuarios />} />
-          <Route path="/config-email" element={<ConfigEmail />} />
-          <Route path="/relatorios" element={<Relatorios />} />
-          <Route path="/categorias-chamado" element={<CategoriasChamado />} />
-          <Route path="/tipos-servico" element={<TipoServico />} />
-          <Route path="/abrir-chamado/:id" element={<AbrirChamadoPublico />} />
-          <Route path="*" element={<Navigate to="/" replace />} />
+          {!isPublicUser ? (
+            <>
+              <Route path="/" element={<Navigate to="/chamados" replace />} />
+              <Route path="/empresas" element={<Empresas />} />
+              <Route path="/localizacoes" element={<Localizacoes />} />
+              <Route path="/ativos" element={<Ativos />} />
+              <Route path="/fornecedores" element={<Fornecedores />} />
+              <Route path="/contratos" element={<Contratos />} />
+              <Route path="/orcamentos" element={<Orcamentos />} />
+              <Route path="/chamados" element={<Chamados />} />
+              <Route path="/usuarios" element={<Usuarios />} />
+              <Route path="/config-email" element={<ConfigEmail />} />
+              <Route path="/relatorios" element={<Relatorios />} />
+              <Route path="/categorias-chamado" element={<CategoriasChamado />} />
+              <Route path="/tipos-servico" element={<TipoServico />} />
+            </>
+          ) : (
+            <>
+              <Route path="/abrir-chamado/:id" element={<AbrirChamadoPublico />} />
+              <Route path="*" element={<div className="flex items-center justify-center h-full text-muted-foreground">Acesso restrito via QR Code</div>} />
+            </>
+          )}
         </Routes>
       </main>
 
-      {/* Modal de Alerta de Vencimento */}
+      {/* Modal de Alertas de Contrato */}
       {showModal && alertas.length > 0 && (
-        <div className="fixed inset-0 z-[9999] flex itens-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full overflow-hidden border border-slate-100 animate-in fade-in zoom-in duration-300">
-            <div className="p-6 bg-orange-500 text-white flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <AlertTriangle className="w-8 h-8" />
-                <div>
-                  <h2 className="text-xl font-black uppercase tracking-tight">Atenção: Contratos a Vencer</h2>
-                  <p className="text-orange-100 text-xs font-bold">Existem contratos que precisam de sua atenção imediata.</p>
-                </div>
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[100] p-4">
+          <div className="bg-white rounded-3xl shadow-2xl max-w-2xl w-full overflow-hidden animate-in zoom-in duration-300">
+            <div className="p-6 bg-amber-500 text-white flex items-center gap-4">
+              <div className="p-3 bg-white/20 rounded-2xl">
+                <AlertTriangle size={32} />
               </div>
-              <button onClick={() => setShowModal(false)} className="p-2 hover:bg-white/20 rounded-full transition-colors">
-                <X className="w-6 h-6" />
-              </button>
+              <div>
+                <h2 className="text-xl font-bold">Atenção: Contratos a Vencer</h2>
+                <p className="text-amber-50 text-sm">Existem contratos que precisam de sua atenção imediata.</p>
+              </div>
             </div>
-            
-            <div className="p-6 max-h-[60vh] overflow-y-auto custom-scrollbar">
+            <div className="p-6 max-h-[60vh] overflow-y-auto">
               <div className="space-y-4">
-                {alertas.map((alerta) => (
-                  <div key={alerta.id} className="p-4 bg-slate-50 rounded-xl border border-slate-200 flex items-center justify-between group hover:border-orange-300 transition-all">
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-2">
-                        <span className="px-2 py-0.5 bg-orange-100 text-orange-700 text-[10px] font-black rounded uppercase">Vence em {alerta.dias_restantes} dias</span>
-                        <h3 className="font-bold text-slate-800">Contrato: {alerta.numero}</h3>
-                      </div>
-                      <p className="text-sm text-slate-500 font-medium flex items-center gap-1">
-                        <Building2 className="w-3 h-3" /> {alerta.empresa_nome}
-                      </p>
-                      <p className="text-sm text-slate-500 font-medium flex items-center gap-1">
-                        <Users className="w-3 h-3" /> Fornecedor: {alerta.fornecedor_nome}
-                      </p>
+                {alertas.map((alerta, idx) => (
+                  <div key={idx} className="p-4 bg-slate-50 rounded-2xl border border-slate-100 flex justify-between items-center">
+                    <div>
+                      <p className="font-bold text-slate-800">{alerta.numero}</p>
+                      <p className="text-xs text-slate-500">{alerta.fornecedor_nome}</p>
                     </div>
                     <div className="text-right">
-                      <p className="text-xs font-bold text-slate-400 uppercase">Vencimento</p>
-                      <p className="font-black text-slate-700">{new Date(alerta.data_fim).toLocaleDateString('pt-BR')}</p>
+                      <p className={`text-sm font-bold ${alerta.dias_restantes <= 0 ? 'text-red-500' : 'text-amber-600'}`}>
+                        {alerta.dias_restantes <= 0 ? 'Vencido' : `Vence em ${alerta.dias_restantes} dias`}
+                      </p>
+                      <p className="text-[10px] text-slate-400 uppercase font-bold">{new Date(alerta.data_fim).toLocaleDateString('pt-BR')}</p>
                     </div>
                   </div>
                 ))}
               </div>
             </div>
-
             <div className="p-6 bg-slate-50 border-t border-slate-100 flex justify-end">
               <button 
                 onClick={() => setShowModal(false)}
-                className="px-8 py-3 bg-slate-800 text-white rounded-xl font-bold shadow-lg hover:bg-slate-900 transition-all active:scale-95"
+                className="px-8 py-3 bg-slate-800 text-white rounded-xl font-bold hover:bg-slate-900 transition-all active:scale-95"
               >
-                Entendido, vou verificar
+                Entendido
               </button>
             </div>
           </div>

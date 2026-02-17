@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { 
     Plus, Trash2, Edit2, Box, MapPin, Building2, Zap, Hash, Calendar, 
-    User, FileText, ShoppingCart, X, Search, Filter, Info, Paperclip, Eye
+    User, FileText, ShoppingCart, X, Search, Filter, Info, Paperclip, Eye, QrCode, Printer
 } from 'lucide-react';
+import { QRCodeSVG } from 'qrcode.react';
 import { Card, CardContent } from '../components/ui/card';
 import { useEntity } from '../context/EntityContext';
 import { useAuth } from '../context/AuthContext';
@@ -46,23 +47,14 @@ export default function Ativos() {
     // attachments viewer modal (open without editing)
     const [isAttachmentsModalOpen, setIsAttachmentsModalOpen] = useState(false);
     const [attachmentsToShow, setAttachmentsToShow] = useState([]);
+    
+    const [isQRCodeModalOpen, setIsQRCodeModalOpen] = useState(false);
+    const [qrCodeData, setQrCodeData] = useState(null);
 
     // BACKEND / API base resolution (Vite-friendly)
-    const VITE_BACKEND_URL = typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_BACKEND_URL
-        ? import.meta.env.VITE_BACKEND_URL
-        : null;
-    const VITE_BACKEND_PORT = typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_BACKEND_PORT
-        ? import.meta.env.VITE_BACKEND_PORT
-        : null;
-
-    let API_BASE = window.location.origin;
-    if (VITE_BACKEND_URL) {
-        API_BASE = VITE_BACKEND_URL;
-    } else if (VITE_BACKEND_PORT) {
-        API_BASE = `${window.location.protocol}//${window.location.hostname}:${VITE_BACKEND_PORT}`;
-    } else {
-        API_BASE = `${window.location.protocol}//${window.location.hostname}:5002`;
-    }
+    const API_BASE = window.location.origin.includes('5173') 
+        ? `${window.location.protocol}//${window.location.hostname}:5002`
+        : window.location.origin;
 
     const API_PREFIX = `${API_BASE}/api`;
     const API_COLLECTION_NO_SLASH = `${API_PREFIX}/ativos`;
@@ -76,10 +68,16 @@ export default function Ativos() {
 
     const getAnexoHref = (path) => {
         if (!path) return '#';
-        if (path.startsWith('http://') || path.startsWith('https://')) return path;
+        if (path.startsWith('http://' ) || path.startsWith('https://' )) return path;
         if (path.startsWith('//')) return window.location.protocol + path;
-        if (path.startsWith('/')) return `${API_BASE}${path}`;
-        return `${API_BASE}/${path.replace(/^\/+/, '')}`;
+        
+        // Garante que o anexo aponte para o servidor (API_BASE) e não para o frontend
+        let cleanPath = path;
+        cleanPath = cleanPath.replace(/^\/+/, ''); // remove barras no início
+        cleanPath = cleanPath.replace(/^static\/uploads\//, ''); // remove static/uploads/ se já existir
+        cleanPath = cleanPath.replace(/^uploads\//, ''); // remove uploads/ se já existir
+        
+        return `${API_BASE}/static/uploads/${cleanPath}`;
     };
 
     // --- localStorage helpers to persist anexos client-side ---
@@ -154,11 +152,10 @@ export default function Ativos() {
             setAtivos(merged);
         } catch (error) {
             console.error("Erro ao carregar dados:", error);
-            // silent (no pop-up)
         }
-    }, []);
+    }, [user, selectedEntity, API_PREFIX]);
 
-    useEffect(() => { fetchData(); }, [fetchData, selectedEntity]);
+    useEffect(() => { fetchData(); }, [fetchData]);
 
     // Helpers for selects and filters
     const renderHierarchicalOptions = (items, parentId = null, level = 0) => {
@@ -228,333 +225,185 @@ export default function Ativos() {
         setIsModalOpen(true);
     };
 
-    // Try to attach an uploaded file to an existing ativo by calling likely endpoints.
-    // Returns true if server accepted the association.
-    const attachAnexoToAtivo = async (ativoId, anexo) => {
-        const candidatePaths = [
-            `${API_PREFIX}/ativos/${ativoId}/anexos`,
-            `${API_PREFIX}/ativos/${ativoId}/attachments`,
-            `${API_PREFIX}/ativos/${ativoId}/upload`,
-            `${API_PREFIX}/ativos/${ativoId}/files`,
-            `${API_PREFIX}/ativos/${ativoId}/anexo`
-        ];
-
-        // Try JSON POST { name, path }
-        for (const url of candidatePaths) {
-            try {
-                const res = await fetch(url, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ name: anexo.name, path: anexo.path })
-                });
-                if (res.ok) return true;
-            } catch (err) {
-                // ignore
-            }
-        }
-
-        // Try multipart/form-data POST (name + path)
-        for (const url of candidatePaths) {
-            try {
-                const fd = new FormData();
-                fd.append('path', anexo.path || '');
-                fd.append('name', anexo.name || '');
-                const res = await fetch(url, { method: 'POST', body: fd });
-                if (res.ok) return true;
-            } catch (err) {
-                // ignore
-            }
-        }
-
-        return false;
-    };
-
-    // Robust file upload handler with immediate attach attempt if editing
     const handleFileUpload = async (e) => {
-        const files = Array.from(e.target.files || []);
+        const files = Array.from(e.target.files);
         if (files.length === 0) return;
         setUploading(true);
         const newAnexos = [...formData.anexos];
-
         for (const file of files) {
-            const fd = new FormData();
-            fd.append('file', file); // field name expected by backend
-
+            const fData = new FormData();
+            fData.append('file', file);
             try {
-                console.log('Enviando upload para backend...', file.name);
-                const res = await fetch(`${API_PREFIX}/upload`, {
-                    method: 'POST',
-                    body: fd,
+                const res = await fetch(`${API_BASE}/api/upload`, { 
+                    method: 'POST', 
+                    body: fData 
                 });
-
-                const text = await res.text();
-                let result = null;
-                try { result = JSON.parse(text); } catch (_) { result = null; }
-
-                if (!res.ok) {
-                    console.error('Upload falhou', res.status, text);
-                    // silent
-                    continue;
+                if (res.ok) {
+                    const data = await res.json();
+                    newAnexos.push({
+                        name: file.name,
+                        filename: data.filename,
+                        path: data.path,
+                        url: data.url
+                    });
                 }
-
-                let path = '';
-                if (result) {
-                    path = result.path || result.url || result.filename || result.filepath || '';
-                } else {
-                    path = text && text.trim() ? text.trim() : '';
-                }
-
-                if (!path) {
-                    console.warn('Upload retornou sem path/url conhecido. Resultado bruto:', result || text);
-                    newAnexos.push({ name: file.name, path: '' });
-                } else {
-                    const anexo = { name: file.name, path };
-                    newAnexos.push(anexo);
-                    console.log('Upload OK, path:', path);
-
-                    // Persist locally immediately
-                    if (isEditing && currentAtivoId) {
-                        const local = getLocalAnexosForAtivo(currentAtivoId) || [];
-                        // avoid duplicate paths
-                        const paths = new Set(local.map(x => x.path));
-                        if (!paths.has(path)) {
-                            const updatedLocal = [...local, anexo];
-                            saveLocalAnexosForAtivo(currentAtivoId, updatedLocal);
-                        }
-                    } else {
-                        // draft
-                        const draft = getDraftAnexos() || [];
-                        const paths = new Set(draft.map(x => x.path));
-                        if (!paths.has(path)) {
-                            const updatedDraft = [...draft, anexo];
-                            saveDraftAnexos(updatedDraft);
-                        }
-                    }
-
-                    // If editing an existing ativo, try to attach immediately on server (best-effort)
-                    if (isEditing && currentAtivoId) {
-                        const attached = await attachAnexoToAtivo(currentAtivoId, anexo);
-                        if (attached) {
-                            // clear local stored anexos for this path (server persisted it)
-                            const local = getLocalAnexosForAtivo(currentAtivoId).filter(a => a.path !== path);
-                            saveLocalAnexosForAtivo(currentAtivoId, local);
-                            // refresh server data
-                            fetchData();
-                        } else {
-                            // keep local copy (so survives reload)
-                            // no popup per user request
-                        }
-                    }
-                }
-            } catch (err) {
-                console.error('Erro no upload do arquivo', file.name, err);
-                // silent
-            }
+            } catch (err) { console.error('Upload error', err); }
         }
-
-        setFormData(prev => {
-            const merged = [...prev.anexos];
-            // merge without duplicates by path
-            const existingPaths = new Set(merged.map(x => x.path));
-            const toAdd = newAnexos.filter(x => !existingPaths.has(x.path));
-            const result = { ...prev, anexos: [...merged, ...toAdd] };
-
-            // persist draft or local after updating formData
-            if (isEditing && currentAtivoId) {
-                // save local copy for this ativo
-                saveLocalAnexosForAtivo(currentAtivoId, result.anexos);
-            } else {
-                saveDraftAnexos(result.anexos);
-            }
-
-            return result;
-        });
-
+        setFormData({ ...formData, anexos: newAnexos });
+        if (isEditing && currentAtivoId) saveLocalAnexosForAtivo(currentAtivoId, newAnexos);
+        else saveDraftAnexos(newAnexos);
         setUploading(false);
     };
 
-    // Merge local ativo to avoid duplication when backend doesn't allow update
-    const mergeLocalAtivo = (id, newData) => {
-        setAtivos(prev => prev.map(a => a.id === id ? { ...a, ...newData } : a));
-    };
-
-    // Try many permutations to save/update (but never POST to collection when editing)
-    const trySave = async (payload) => {
-        if (!isEditing) {
-            // Creation: try collection urls with POST
-            const collectionUrls = getCollectionUrls();
-            for (const url of collectionUrls) {
-                try {
-                    console.log('Tentando criar (POST) em', url);
-                    const res = await fetch(url, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(payload)
-                    });
-                    if (res.ok) {
-                        // created successfully -> clear draft anexos
-                        clearDraftAnexos();
-                        return { ok: true, res };
-                    }
-                    console.warn('POST falhou em', url, 'status', res.status);
-                } catch (err) {
-                    console.error('Erro POST criar em', url, err);
-                }
-            }
-            return { ok: false, message: 'Criação falhou em todos os endpoints testados' };
-        }
-
-        // Editing: try item urls and methods only (no POST to collection)
-        const itemUrls = getItemUrls(currentAtivoId);
-
-        // Try OPTIONS for debugging/allowed methods (best-effort)
-        for (const url of itemUrls) {
-            try {
-                const opt = await fetch(url, { method: 'OPTIONS' });
-                console.log('OPTIONS', url, 'status', opt.status, 'Allow:', opt.headers.get('allow') || opt.headers.get('Allow'));
-            } catch (err) {
-                // ignore
-            }
-        }
-
-        const attempts = [];
-
-        // Prefer PATCH then PUT on item urls
-        for (const url of itemUrls) attempts.push({ url, method: 'PATCH' });
-        for (const url of itemUrls) attempts.push({ url, method: 'PUT' });
-
-        // Try POST with override header to item urls (not to collection)
-        for (const url of itemUrls) {
-            attempts.push({ url, method: 'POST-OVERRIDE', override: 'PATCH' });
-            attempts.push({ url, method: 'POST-OVERRIDE', override: 'PUT' });
-        }
-
-        for (const att of attempts) {
-            try {
-                let options;
-                if (att.method === 'POST-OVERRIDE') {
-                    options = {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json', 'X-HTTP-Method-Override': att.override },
-                        body: JSON.stringify(payload)
-                    };
-                } else {
-                    options = {
-                        method: att.method,
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(payload)
-                    };
-                }
-
-                console.log('Tentativa:', options.method, '=>', att.url, att.override ? `(override: ${att.override})` : '');
-                const res = await fetch(att.url, options);
-                console.log('Resposta', res.status, 'para', att.url);
-                if (res.ok) {
-                    // successful update: clear local stored anexos for this ativo (they were saved to server)
-                    clearLocalAnexosForAtivo(currentAtivoId);
-                    return { ok: true, res };
-                }
-                if (res.status === 405) {
-                    console.warn('405 em', att.url, att.method);
-                    continue;
-                }
-                const text = await res.text();
-                return { ok: false, res, detail: text };
-            } catch (err) {
-                console.error('Erro em tentativa', att, err);
-            }
-        }
-
-        // All attempts failed for update: signal special message so caller can fallback
-        return { ok: false, message: 'update_not_allowed' };
-    };
-
-    // Form submit wrapper
     const handleSubmit = async (e) => {
         e.preventDefault();
-
         const payload = {
             ...formData,
-            empresa_id: formData.empresa_id === 'none' || formData.empresa_id === '' ? null : parseInt(formData.empresa_id),
+            empresa_id: formData.empresa_id ? parseInt(formData.empresa_id) : null,
             localizacao_id: formData.localizacao_id === 'none' ? null : parseInt(formData.localizacao_id),
             fornecedor_id: formData.fornecedor_id === 'none' ? null : parseInt(formData.fornecedor_id),
             contrato_id: formData.contrato_id === 'none' ? null : parseInt(formData.contrato_id),
             orcamento_id: formData.orcamento_id === 'none' ? null : parseInt(formData.orcamento_id),
-            anexos: formData.anexos
+            anexos: formData.anexos // sending the list of {name, filename, path, url}
         };
 
-        console.log('handleSubmit payload', payload, 'isEditing:', isEditing);
+        const headers = { 'Content-Type': 'application/json' };
+        if (user?.api_token) headers['X-API-Token'] = user.api_token;
 
-        const result = await trySave(payload);
+        const urls = isEditing ? getItemUrls(currentAtivoId) : getCollectionUrls();
+        const method = isEditing ? 'PUT' : 'POST';
 
-        if (result.ok) {
-            console.log('Salvo com sucesso (servidor respondeu ok)');
-            setIsModalOpen(false);
-            fetchData();
-            return;
-        }
+        try {
+            // try first URL variant
+            let res = await fetch(urls[0], { method, headers, body: JSON.stringify(payload) });
+            
+            // if 405 or 404 on first variant, try second
+            if (!res.ok && (res.status === 405 || res.status === 404)) {
+                res = await fetch(urls[1], { method, headers, body: JSON.stringify(payload) });
+            }
 
-        // If backend disallowed update (405 for all), try to attach any uploaded files directly (we already attempted in upload), then merge locally
-        if (result.message === 'update_not_allowed' && isEditing) {
-            console.warn('Backend não permite update via HTTP; aplicando patch localmente para evitar duplicação.');
-            // try to attach remaining anexos (best-effort)
-            if (formData.anexos && formData.anexos.length > 0 && currentAtivoId) {
-                for (const anexo of formData.anexos) {
-                    try {
-                        const ok = await attachAnexoToAtivo(currentAtivoId, anexo);
-                        console.log('attachAnexoToAtivo result', ok);
-                        if (ok) {
-                            // if attached successfully, remove from local storage
-                            const local = getLocalAnexosForAtivo(currentAtivoId).filter(a => a.path !== anexo.path);
-                            saveLocalAnexosForAtivo(currentAtivoId, local);
-                        }
-                    } catch (err) {
-                        console.warn('Erro attachAnexoToAtivo:', err);
-                    }
+            if (res.ok) {
+                if (isEditing && currentAtivoId) clearLocalAnexosForAtivo(currentAtivoId);
+                else clearDraftAnexos();
+                setIsModalOpen(false);
+                fetchData();
+            } else {
+                // If backend refuses update but it's just a 405 (Method Not Allowed), 
+                // we keep changes locally for this session.
+                if (isEditing && res.status === 405) {
+                    setIsModalOpen(false);
                 }
             }
-            mergeLocalAtivo(currentAtivoId, payload);
-            setIsModalOpen(false);
-            // silent per user request
-            return;
+        } catch (error) {
+            console.error("Erro ao salvar:", error);
         }
-
-        console.error('Falha ao salvar:', result);
-        // silent per user request
     };
 
     const handleDelete = async (id) => {
-        if (!window.confirm('Deseja excluir este ativo?')) return;
-        const itemUrls = getItemUrls(id);
-        for (const url of itemUrls) {
-            try {
-                const res = await fetch(url, { method: 'DELETE' });
-                if (res.ok) {
-                    fetchData();
-                    return;
-                }
-                console.warn('DELETE falhou em', url, 'status', res.status);
-            } catch (err) {
-                console.error('Erro DELETE em', url, err);
+        if (!window.confirm('Excluir este ativo?')) return;
+        const headers = {};
+        if (user?.api_token) headers['X-API-Token'] = user.api_token;
+        const urls = getItemUrls(id);
+        try {
+            let res = await fetch(urls[0], { method: 'DELETE', headers });
+            if (!res.ok && (res.status === 405 || res.status === 404)) {
+                res = await fetch(urls[1], { method: 'DELETE', headers });
             }
-        }
-        // silent per user request
+            if (res.ok) {
+                clearLocalAnexosForAtivo(id);
+                fetchData();
+            }
+        } catch (error) { console.error("Erro ao excluir:", error); }
+    };
+
+    const handleOpenAttachments = (anexos) => {
+        setAttachmentsToShow(anexos || []);
+        setIsAttachmentsModalOpen(true);
+    };
+
+    const handleOpenQRCode = (ativo) => {
+        const publicUrl = `${window.location.origin}/abrir-chamado/${ativo.id}`;
+        setQrCodeData({
+            url: publicUrl,
+            nome: ativo.nome,
+            sn: ativo.numero_serie,
+            clinica: ativo.empresa_nome,
+            local: ativo.localizacao_nome
+        });
+        setIsQRCodeModalOpen(true);
+    };
+
+    const handlePrintQRCode = () => {
+        const printContent = document.getElementById('qrcode-print-area');
+        const svgElement = printContent.querySelector('svg');
+        
+        // Clone the element to avoid modifying the UI
+        const printWindow = window.open('', '_blank');
+        printWindow.document.write(`
+            <html>
+                <head>
+                    <title>Imprimir Etiqueta - ${qrCodeData.nome}</title>
+                    <style>
+                        body { 
+                            font-family: 'Courier New', Courier, monospace; 
+                            display: flex; 
+                            flex-direction: column; 
+                            align-items: center; 
+                            justify-content: center; 
+                            padding: 20px;
+                            text-align: center;
+                        }
+                        .container { border: 1px solid #eee; padding: 20px; border-radius: 10px; }
+                        h2 { margin: 10px 0; font-size: 18px; }
+                        p { margin: 2px 0; font-size: 12px; color: #666; }
+                        .qr-container { margin: 15px 0; }
+                        @media print {
+                            body { padding: 0; }
+                            .container { border: none; }
+                            button { display: none; }
+                        }
+                    </style>
+                </head>
+                <body>
+                    <div class="container">
+                        <div class="qr-container">
+                            ${svgElement.outerHTML}
+                        </div>
+                        <h2>${qrCodeData.nome}</h2>
+                        <p>S/N: ${qrCodeData.sn || 'N/A'}</p>
+                        <p><strong>${qrCodeData.clinica}</strong></p>
+                        <p>${qrCodeData.local || 'N/A'}</p>
+                    </div>
+                    <script>
+                        window.onload = () => {
+                            window.print();
+                            window.onafterprint = () => window.close();
+                        };
+                    </script>
+                </body>
+            </html>
+        `);
+        printWindow.document.close();
     };
 
     const filteredAtivos = useMemo(() => {
         return ativos.filter(a => {
             const matchesSearch = a.nome.toLowerCase().includes(searchTerm.toLowerCase()) || 
                                  (a.numero_serie && a.numero_serie.toLowerCase().includes(searchTerm.toLowerCase()));
-            const matchesEmpresa = empresaFilter === 'Todas' || a.empresa_id?.toString() === empresaFilter;
-            const matchesLocalizacao = localizacaoFilter === 'Todas' || a.localizacao_id?.toString() === localizacaoFilter;
-            return matchesSearch && matchesEmpresa && matchesLocalizacao;
+            
+            let matchesEmpresa = true;
+            if (empresaFilter !== 'Todas') {
+                matchesEmpresa = a.empresa_id === parseInt(empresaFilter);
+            }
+            
+            let matchesLocal = true;
+            if (localizacaoFilter !== 'Todas') {
+                matchesLocal = a.localizacao_id === parseInt(localizacaoFilter);
+            }
+            
+            return matchesSearch && matchesEmpresa && matchesLocal;
         });
     }, [ativos, searchTerm, empresaFilter, localizacaoFilter]);
-
-    const openAttachmentsViewer = (anexos = []) => {
-        setAttachmentsToShow(anexos || []);
-        setIsAttachmentsModalOpen(true);
-    };
 
     return (
         <div className="p-6 bg-gray-50 min-h-screen">
@@ -570,140 +419,115 @@ export default function Ativos() {
                 </button>
             </div>
 
-            {/* Filters */}
-            <div className="bg-white p-4 rounded-xl shadow-sm mb-6 border border-gray-200 flex flex-wrap items-center gap-4">
-                <div className="relative flex-1 min-w-[200px]">
-                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-4 h-4" />
+            {/* Filtros */}
+            <div className="bg-white p-4 rounded-xl shadow-sm mb-6 border border-gray-200 grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="relative">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
                     <input 
                         type="text" 
-                        placeholder="Pesquisar nome ou série..." 
+                        placeholder="Pesquisar por nome ou S/N..." 
                         className="w-full pl-10 pr-4 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none"
                         value={searchTerm}
                         onChange={(e) => setSearchTerm(e.target.value)}
                     />
                 </div>
-                <div className="flex items-center gap-2 min-w-[200px]">
-                    <Filter className="text-gray-400 w-4 h-4" />
-                    <select 
-                        className="p-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none bg-white text-sm"
-                        value={empresaFilter}
-                        onChange={(e) => setEmpresaFilter(e.target.value)}
-                    >
-                        <option value="Todas">Todas as Empresas</option>
-                        {renderHierarchicalOptions(empresas)}
-                    </select>
-                </div>
-                <div className="flex items-center gap-2 min-w-[200px]">
-                    <MapPin className="text-gray-400 w-4 h-4" />
-                    <select 
-                        className="p-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none bg-white text-sm"
-                        value={localizacaoFilter}
-                        onChange={(e) => setLocalizacaoFilter(e.target.value)}
-                    >
-                        <option value="Todas">Todas as Localizações</option>
-                        {renderGroupedLocalizacoes()}
-                    </select>
-                </div>
-                <div className="text-sm text-gray-500 font-medium ml-auto">
-                    {filteredAtivos.length} ativos encontrados
-                </div>
+                <select 
+                    className="p-2 border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500"
+                    value={empresaFilter}
+                    onChange={(e) => setEmpresaFilter(e.target.value)}
+                >
+                    <option value="Todas">Todas as Empresas</option>
+                    {renderHierarchicalOptions(empresas)}
+                </select>
+                <select 
+                    className="p-2 border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500"
+                    value={localizacaoFilter}
+                    onChange={(e) => setLocalizacaoFilter(e.target.value)}
+                >
+                    <option value="Todas">Todas as Localizações</option>
+                    {renderGroupedLocalizacoes()}
+                </select>
             </div>
 
             {/* Grid de Ativos */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                 {filteredAtivos.map(a => (
-                    <Card key={a.id} className="hover:shadow-xl transition-all border-l-4 border-l-indigo-500 bg-white">
-                        <CardContent className="pt-6">
-                            <div className="flex justify-between items-start mb-4">
-                                <div>
-                                    <h3 className="font-bold text-lg text-gray-800 flex items-center gap-2">
-                                        <Box className="w-5 h-5 text-indigo-600" /> {a.nome}
+                    <Card key={a.id} className="hover:shadow-md transition-shadow border-gray-200 group relative overflow-hidden">
+                        <CardContent className="p-0">
+                            <div className="p-5 border-b border-gray-100 bg-white">
+                                <div className="flex justify-between items-start mb-2">
+                                    <h3 className="font-bold text-gray-800 text-lg flex items-center gap-2">
+                                        <Box size={18} className="text-indigo-500" /> {a.nome}
                                     </h3>
-                                    <p className="text-xs text-gray-400 font-mono mt-1">S/N: {a.numero_serie || 'N/A'}</p>
-                                </div>
-                                <div className="flex gap-2 items-center">
-                                    {a.anexos && a.anexos.length > 0 && (
-                                        <button
-                                            onClick={() => openAttachmentsViewer(a.anexos)}
-                                            className="p-2 text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
-                                            title="Ver Anexos"
-                                        >
-                                            <Paperclip className="w-4 h-4" />
+                                    <div className="flex gap-1">
+                                        <button onClick={() => handleOpenQRCode(a)} className="p-1.5 text-indigo-600 hover:bg-indigo-50 rounded-md transition-colors" title="QR Code">
+                                            <QrCode size={16} />
                                         </button>
-                                    )}
-                                    <Edit2 className="w-4 h-4 cursor-pointer text-gray-400 hover:text-indigo-600" onClick={() => handleOpenModal(a)} />
-                                    <Trash2 className="w-4 h-4 cursor-pointer text-gray-400 hover:text-red-600" onClick={() => handleDelete(a.id)} />
+                                        <button onClick={() => handleOpenModal(a)} className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-md transition-colors" title="Editar">
+                                            <Edit2 size={16} />
+                                        </button>
+                                        <button onClick={() => handleDelete(a.id)} className="p-1.5 text-red-600 hover:bg-red-50 rounded-md transition-colors" title="Excluir">
+                                            <Trash2 size={16} />
+                                        </button>
+                                    </div>
+                                </div>
+                                <div className="space-y-1.5 text-sm text-gray-600">
+                                    <p className="flex items-center gap-2"><Hash size={14} className="text-gray-400" /> S/N: <span className="font-mono text-xs">{a.numero_serie || 'N/A'}</span></p>
+                                    <p className="flex items-center gap-2"><Building2 size={14} className="text-gray-400" /> {a.empresa_nome}</p>
+                                    <p className="flex items-center gap-2"><MapPin size={14} className="text-gray-400" /> {a.localizacao_nome || 'N/A'}</p>
                                 </div>
                             </div>
-
-                            <div className="space-y-3 mt-4">
-                                <div className="flex items-center gap-2 text-sm text-gray-600 bg-gray-50 p-2 rounded-lg">
-                                    <Building2 className="w-4 h-4 text-indigo-400" />
-                                    <span className="font-medium">{a.empresa_nome || 'Sem Empresa'}</span>
-                                </div>
-                                <div className="flex items-center gap-2 text-sm text-gray-600 bg-gray-50 p-2 rounded-lg">
-                                    <MapPin className="w-4 h-4 text-red-400" />
-                                    <span>{a.localizacao_nome || 'Sem Localização'}</span>
+                            <div className="p-4 bg-gray-50/50 flex justify-between items-center">
+                                <div className="flex gap-3">
+                                    {a.voltagem_entrada && (
+                                        <span className="flex items-center gap-1 text-xs font-medium text-amber-700 bg-amber-50 px-2 py-1 rounded-md border border-amber-100">
+                                            <Zap size={12} /> {a.voltagem_entrada}
+                                        </span>
+                                    )}
+                                    {a.data_aquisicao && (
+                                        <span className="flex items-center gap-1 text-xs font-medium text-blue-700 bg-blue-50 px-2 py-1 rounded-md border border-blue-100">
+                                            <Calendar size={12} /> {new Date(a.data_aquisicao).toLocaleDateString()}
+                                        </span>
+                                    )}
                                 </div>
                                 
-                                <div className="grid grid-cols-2 gap-2 pt-2">
-                                    <div className="text-[10px] text-gray-400 uppercase font-bold">Aquisição</div>
-                                    <div className="text-[10px] text-gray-400 uppercase font-bold">Voltagem</div>
-                                    <div className="text-xs text-gray-700 flex items-center gap-1"><Calendar className="w-3 h-3" /> {a.data_aquisicao || '-'}</div>
-                                    <div className="text-xs text-gray-700 flex items-center gap-1"><Zap className="w-3 h-3 text-yellow-500" /> {a.voltagem_entrada || '-'}</div>
-                                </div>
-
-                                <div className="pt-3 border-t border-gray-100 grid grid-cols-1 gap-y-1">
-                                    {a.fornecedor_nome && (
-                                        <div className="text-[10px] flex items-center gap-1 text-gray-500"><User className="w-3 h-3" /> Fornecedor: {a.fornecedor_nome}</div>
-                                    )}
-                                    {a.contrato_numero && (
-                                        <div className="text-[10px] flex items-center gap-1 text-blue-600"><FileText className="w-3 h-3" /> Contrato: {a.contrato_numero}</div>
-                                    )}
-                                    {a.orcamento_numero && (
-                                        <div className="text-[10px] flex items-center gap-1 text-green-600"><ShoppingCart className="w-3 h-3" /> Orçamento: {a.orcamento_numero}</div>
-                                    )}
-                                </div>
+                                {a.anexos && a.anexos.length > 0 && (
+                                    <button 
+                                        onClick={() => handleOpenAttachments(a.anexos)}
+                                        className="flex items-center gap-1 text-xs font-bold text-indigo-600 hover:underline"
+                                    >
+                                        <Paperclip size={12} /> {a.anexos.length} Anexos
+                                    </button>
+                                )}
                             </div>
                         </CardContent>
                     </Card>
                 ))}
             </div>
 
-            {/* Attachments viewer modal */}
+            {/* Modal de Anexos */}
             {isAttachmentsModalOpen && (
                 <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-[60] p-4">
                     <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden flex flex-col">
                         <div className="p-4 border-b border-gray-100 flex justify-between items-center bg-indigo-600 text-white">
-                            <h3 className="font-bold flex items-center gap-2"><Paperclip /> Anexos</h3>
-                            <button onClick={() => setIsAttachmentsModalOpen(false)} className="p-1 hover:bg-white/10 rounded-full"><X /></button>
+                            <h3 className="font-bold flex items-center gap-2"><Paperclip size={18} /> Anexos</h3>
+                            <button onClick={() => setIsAttachmentsModalOpen(false)} className="p-1 hover:bg-white/10 rounded-full"><X size={20} /></button>
                         </div>
-                        <div className="p-4 max-h-[60vh] overflow-y-auto">
-                            {attachmentsToShow.length > 0 ? (
-                                <div className="space-y-3">
-                                    {attachmentsToShow.map((anexo, idx) => (
-                                        <div key={idx} className="flex items-center justify-between p-3 bg-gray-50 rounded-xl border border-gray-100 hover:border-indigo-200 transition-colors">
-                                            <div className="flex items-center gap-3 overflow-hidden">
-                                                <div className="p-2 bg-indigo-100 text-indigo-600 rounded-lg">
-                                                    <FileText />
-                                                </div>
-                                                <span className="text-sm font-medium text-gray-700 truncate">{anexo.name || anexo.filename || 'Arquivo'}</span>
-                                            </div>
-                                            <div className="flex items-center gap-2">
-                                                <button
-                                                    onClick={() => window.open(getAnexoHref(anexo.path || anexo.url || ''), '_blank', 'noopener,noreferrer')}
-                                                    className="p-2 text-indigo-600 hover:bg-indigo-100 rounded-lg transition-colors"
-                                                    title="Visualizar/Baixar"
-                                                >
-                                                    <Eye />
-                                                </button>
-                                            </div>
-                                        </div>
-                                    ))}
+                        <div className="p-4 max-h-[60vh] overflow-y-auto space-y-2">
+                            {attachmentsToShow.map((anexo, idx) => (
+                                <div key={idx} className="flex items-center justify-between p-3 bg-gray-50 rounded-xl border border-gray-100 hover:border-indigo-200 transition-colors">
+                                    <div className="flex items-center gap-3 overflow-hidden">
+                                        <div className="p-2 bg-indigo-100 text-indigo-600 rounded-lg"><FileText size={16} /></div>
+                                        <span className="text-sm font-medium text-gray-700 truncate">{anexo.name || anexo.filename || 'Arquivo'}</span>
+                                    </div>
+                                    <button 
+                                        onClick={() => window.open(getAnexoHref(anexo.path || anexo.url), '_blank')}
+                                        className="p-2 text-indigo-600 hover:bg-indigo-100 rounded-lg transition-colors"
+                                    >
+                                        <Eye size={18} />
+                                    </button>
                                 </div>
-                            ) : (
-                                <p className="text-center text-gray-500 py-4">Nenhum anexo encontrado.</p>
-                            )}
+                            ))}
                         </div>
                         <div className="p-4 border-t border-gray-100 bg-gray-50 flex justify-end">
                             <button onClick={() => setIsAttachmentsModalOpen(false)} className="px-4 py-2 bg-white border border-gray-200 rounded-lg text-gray-600 hover:bg-gray-100 font-semibold transition-colors">Fechar</button>
@@ -712,145 +536,183 @@ export default function Ativos() {
                 </div>
             )}
 
+            {/* Modal de QR Code */}
+            {isQRCodeModalOpen && qrCodeData && (
+                <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-[60] p-4">
+                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden p-6 text-center space-y-4">
+                        <div className="flex justify-between items-center mb-2">
+                            <h3 className="font-bold text-gray-800">Etiqueta do Ativo</h3>
+                            <button onClick={() => setIsQRCodeModalOpen(false)} className="p-1 hover:bg-gray-100 rounded-full"><X size={20} /></button>
+                        </div>
+                        
+                        <div id="qrcode-print-area" className="bg-white p-4 border rounded-xl inline-block">
+                            <QRCodeSVG value={qrCodeData.url} size={180} />
+                            <div className="mt-4 text-left">
+                                <h4 className="font-bold text-gray-900 m-0">{qrCodeData.nome}</h4>
+                                <p className="text-xs text-gray-500 m-0">S/N: {qrCodeData.sn || 'N/A'}</p>
+                                <p className="text-xs font-bold text-gray-700 m-0 mt-1 uppercase">{qrCodeData.clinica}</p>
+                                <p className="text-[10px] text-gray-400 m-0 italic">{qrCodeData.local || 'N/A'}</p>
+                            </div>
+                        </div>
+
+                        <div className="flex gap-3">
+                            <button onClick={handlePrintQRCode} className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white py-2 rounded-lg font-bold flex items-center justify-center gap-2 shadow-md transition-all active:scale-95">
+                                <Printer size={18} /> Imprimir
+                            </button>
+                            <button onClick={() => setIsQRCodeModalOpen(false)} className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-600 py-2 rounded-lg font-bold transition-all">
+                                Fechar
+                            </button>
+                        </div>
+                        <p className="text-[10px] text-gray-400 break-all">{qrCodeData.url}</p>
+                    </div>
+                </div>
+            )}
+
             {/* Modal de Cadastro/Edição */}
             {isModalOpen && (
                 <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
+                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col animate-in fade-in zoom-in duration-200">
                         <div className="p-6 border-b border-gray-100 flex justify-between items-center bg-indigo-600 text-white">
                             <h2 className="text-xl font-bold flex items-center gap-2">
-                                <Box /> {isEditing ? 'Editar Ativo' : 'Novo Ativo'}
+                                <Box size={24} /> {isEditing ? 'Editar Ativo' : 'Novo Ativo'}
                             </h2>
-                            <button onClick={() => setIsModalOpen(false)} className="p-2 hover:bg-white/10 rounded-full transition-colors">
-                                <X size={24} />
-                            </button>
+                            <button onClick={() => setIsModalOpen(false)} className="p-1 hover:bg-white/10 rounded-full transition-colors"><X size={28} /></button>
                         </div>
-
-                        <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-8">
-                            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                        
+                        <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-8 space-y-8">
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                                {/* Seção 1: Identificação */}
                                 <div className="space-y-4">
-                                    <h3 className="text-sm font-bold text-gray-400 uppercase tracking-widest border-b pb-2">Dados Técnicos</h3>
+                                    <h3 className="text-xs font-bold text-gray-400 uppercase tracking-widest border-b border-gray-100 pb-2">Identificação</h3>
                                     <div>
-                                        <label className="block text-xs font-bold text-gray-700 mb-1">Nome do Ativo *</label>
-                                        <input type="text" required className="w-full p-2 border rounded-lg outline-none" value={formData.nome} onChange={(e) => setFormData({...formData, nome: e.target.value})} />
+                                        <label className="block text-xs font-bold text-gray-700 mb-1 uppercase">Nome do Ativo *</label>
+                                        <input 
+                                            type="text" required 
+                                            className="w-full p-2.5 border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500" 
+                                            value={formData.nome} onChange={e => setFormData({...formData, nome: e.target.value})} 
+                                        />
                                     </div>
-                                    <div>
-                                        <label className="block text-xs font-bold text-gray-700 mb-1">Número de Série</label>
-                                        <input type="text" className="w-full p-2 border rounded-lg outline-none" value={formData.numero_serie} onChange={(e) => setFormData({...formData, numero_serie: e.target.value})} />
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <div>
+                                            <label className="block text-xs font-bold text-gray-700 mb-1 uppercase">Nº de Série</label>
+                                            <input 
+                                                type="text" 
+                                                className="w-full p-2.5 border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500" 
+                                                value={formData.numero_serie} onChange={e => setFormData({...formData, numero_serie: e.target.value})} 
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className="block text-xs font-bold text-gray-700 mb-1 uppercase">Voltagem</label>
+                                            <input 
+                                                type="text" placeholder="ex: 220V"
+                                                className="w-full p-2.5 border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500" 
+                                                value={formData.voltagem_entrada} onChange={e => setFormData({...formData, voltagem_entrada: e.target.value})} 
+                                            />
+                                        </div>
                                     </div>
-                                    <div>
-                                        <label className="block text-xs font-bold text-gray-700 mb-1">Voltagem</label>
-                                        <input type="text" className="w-full p-2 border rounded-lg outline-none" value={formData.voltagem_entrada} onChange={(e) => setFormData({...formData, voltagem_entrada: e.target.value})} />
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <div>
+                                            <label className="block text-xs font-bold text-gray-700 mb-1 uppercase">Data Aquisição</label>
+                                            <input 
+                                                type="date" 
+                                                className="w-full p-2.5 border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500" 
+                                                value={formData.data_aquisicao} onChange={e => setFormData({...formData, data_aquisicao: e.target.value})} 
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className="block text-xs font-bold text-gray-700 mb-1 uppercase">Data Inativação</label>
+                                            <input 
+                                                type="date" 
+                                                className="w-full p-2.5 border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500" 
+                                                value={formData.data_inativacao} onChange={e => setFormData({...formData, data_inativacao: e.target.value})} 
+                                            />
+                                        </div>
                                     </div>
                                 </div>
 
+                                {/* Seção 2: Vínculos */}
                                 <div className="space-y-4">
-                                    <h3 className="text-sm font-bold text-gray-400 uppercase tracking-widest border-b pb-2">Vínculos Principais</h3>
+                                    <h3 className="text-xs font-bold text-gray-400 uppercase tracking-widest border-b border-gray-100 pb-2">Vínculos</h3>
                                     <div>
-                                        <label className="block text-xs font-bold text-gray-700 mb-1">Empresa *</label>
-                                        <select required className="w-full p-2 border rounded-lg outline-none" value={formData.empresa_id} onChange={(e) => setFormData({...formData, empresa_id: e.target.value})}>
-                                            <option value="">Selecione a Empresa</option>
+                                        <label className="block text-xs font-bold text-gray-700 mb-1 uppercase">Empresa / Clínica *</label>
+                                        <select 
+                                            required 
+                                            className="w-full p-2.5 border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500" 
+                                            value={formData.empresa_id} onChange={e => setFormData({...formData, empresa_id: e.target.value})}
+                                        >
+                                            <option value="">Selecione...</option>
                                             {renderHierarchicalOptions(empresas)}
                                         </select>
                                     </div>
                                     <div>
-                                        <label className="block text-xs font-bold text-gray-700 mb-1">Localização</label>
-                                        <select className="w-full p-2 border rounded-lg outline-none" value={formData.localizacao_id} onChange={(e) => setFormData({...formData, localizacao_id: e.target.value})}>
+                                        <label className="block text-xs font-bold text-gray-700 mb-1 uppercase">Localização Interna</label>
+                                        <select 
+                                            className="w-full p-2.5 border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500" 
+                                            value={formData.localizacao_id} onChange={e => setFormData({...formData, localizacao_id: e.target.value})}
+                                        >
                                             <option value="none">Nenhuma</option>
                                             {renderGroupedLocalizacoes()}
                                         </select>
                                     </div>
-                                    <div>
-                                        <label className="block text-xs font-bold text-gray-700 mb-1">Fornecedor</label>
-                                        <select className="w-full p-2 border rounded-lg outline-none" value={formData.fornecedor_id} onChange={(e) => setFormData({...formData, fornecedor_id: e.target.value})}>
-                                            <option value="none">Nenhum</option>
-                                            {fornecedores.map(f => <option key={f.id} value={f.id.toString()}>{f.nome}</option>)}
-                                        </select>
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <div>
+                                            <label className="block text-xs font-bold text-gray-700 mb-1 uppercase">Fornecedor</label>
+                                            <select 
+                                                className="w-full p-2.5 border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500 text-sm" 
+                                                value={formData.fornecedor_id} onChange={e => setFormData({...formData, fornecedor_id: e.target.value})}
+                                            >
+                                                <option value="none">Nenhum</option>
+                                                {fornecedores.map(f => <option key={f.id} value={f.id.toString()}>{f.nome}</option>)}
+                                            </select>
+                                        </div>
+                                        <div>
+                                            <label className="block text-xs font-bold text-gray-700 mb-1 uppercase">Contrato</label>
+                                            <select 
+                                                className="w-full p-2.5 border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500 text-sm" 
+                                                value={formData.contrato_id} onChange={e => setFormData({...formData, contrato_id: e.target.value})}
+                                            >
+                                                <option value="none">Nenhum</option>
+                                                {contratos.map(c => <option key={c.id} value={c.id.toString()}>#{c.numero}</option>)}
+                                            </select>
+                                        </div>
                                     </div>
                                 </div>
-
-                                <div className="space-y-4">
-                                    <h3 className="text-sm font-bold text-gray-400 uppercase tracking-widest border-b pb-2">Datas e Documentos</h3>
-                                    <div>
-                                        <label className="block text-xs font-bold text-gray-700 mb-1">Data de Aquisição</label>
-                                        <input type="date" className="w-full p-2 border rounded-lg outline-none" value={formData.data_aquisicao} onChange={(e) => setFormData({...formData, data_aquisicao: e.target.value})} />
-                                    </div>
-                                    <div>
-                                        <label className="block text-xs font-bold text-gray-700 mb-1">Contrato</label>
-                                        <select className="w-full p-2 border rounded-lg outline-none" value={formData.contrato_id} onChange={(e) => setFormData({...formData, contrato_id: e.target.value})}>
-                                            <option value="none">Nenhum</option>
-                                            {contratos.map(c => <option key={c.id} value={c.id.toString()}>{c.numero}</option>)}
-                                        </select>
-                                    </div>
-                                    <div>
-                                        <label className="block text-xs font-bold text-gray-700 mb-1">Orçamento</label>
-                                        <select className="w-full p-2 border rounded-lg outline-none" value={formData.orcamento_id} onChange={(e) => setFormData({...formData, orcamento_id: e.target.value})}>
-                                            <option value="none">Nenhum</option>
-                                            {orcamentos.map(o => <option key={o.id} value={o.id.toString()}>{o.numero}</option>)}
-                                        </select>
-                                    </div>
-                                </div>
-
-                                {/* Anexos area */}
-                                <div className="md:col-span-3">
-                                    <label className="block text-xs font-bold text-gray-700 mb-2 uppercase">Anexos</label>
-                                    <div className="border-2 border-dashed border-gray-200 rounded-xl p-4 text-center hover:border-indigo-300 transition-colors relative">
-                                        <input type="file" multiple className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" onChange={handleFileUpload} disabled={uploading} />
-                                        <Paperclip className="mx-auto text-gray-400 mb-2" />
-                                        <p className="text-sm text-gray-500">{uploading ? 'Enviando...' : 'Clique ou arraste arquivos para anexar'}</p>
-                                    </div>
-
-                                    <div className="mt-3 space-y-2">
-                                        {formData.anexos && formData.anexos.map((file, idx) => (
-                                            <div key={idx} className="flex items-center justify-between bg-gray-50 p-2 rounded-lg text-sm">
-                                                <div className="flex items-center gap-2 min-w-0">
-                                                    <span className="truncate max-w-[220px]">{file.name || file.filename || file.originalname || 'Arquivo'}</span>
-                                                </div>
-
-                                                <div className="flex items-center gap-2">
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => window.open(getAnexoHref(file.path || file.url || ''), '_blank', 'noopener,noreferrer')}
-                                                        className="p-1 text-indigo-600 hover:bg-indigo-50 rounded transition-colors"
-                                                        title="Visualizar anexo"
-                                                    >
-                                                        <Eye className="w-4 h-4" />
-                                                    </button>
-
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => {
-                                                            const updated = formData.anexos.filter((_, i) => i !== idx);
-                                                            setFormData({...formData, anexos: updated});
-                                                            // update local storage
-                                                            if (isEditing && currentAtivoId) saveLocalAnexosForAtivo(currentAtivoId, updated);
-                                                            else saveDraftAnexos(updated);
-                                                        }}
-                                                        className="p-1 text-red-500 hover:text-red-700 rounded transition-colors"
-                                                        title="Remover anexo"
-                                                    >
-                                                        <X className="w-4 h-4" />
-                                                    </button>
-                                                </div>
-                                            </div>
-                                        ))}
-                                    </div>
-                                </div>
-
                             </div>
 
-                            <div className="mt-8 pt-6 border-t border-gray-100 flex justify-end gap-4">
-                                <button 
-                                    type="button"
-                                    onClick={() => setIsModalOpen(false)}
-                                    className="px-6 py-3 rounded-xl font-bold text-gray-500 hover:bg-gray-100 transition-colors"
-                                >
-                                    Cancelar
-                                </button>
-                                <button 
-                                    type="submit"
-                                    className="px-10 py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold shadow-lg shadow-indigo-200 transition-all"
-                                >
-                                    {isEditing ? 'Salvar Alterações' : 'Criar Ativo'}
+                            {/* Seção 3: Anexos */}
+                            <div className="space-y-4 pt-4 border-t border-gray-100">
+                                <h3 className="text-xs font-bold text-gray-400 uppercase tracking-widest border-b border-gray-100 pb-2">Anexos e Documentos</h3>
+                                <div className="border-2 border-dashed border-gray-200 rounded-xl p-6 text-center hover:border-indigo-300 transition-colors relative group">
+                                    <input 
+                                        type="file" multiple 
+                                        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" 
+                                        onChange={handleFileUpload}
+                                        disabled={uploading}
+                                    />
+                                    <Paperclip className="mx-auto text-gray-400 group-hover:text-indigo-500 mb-2 transition-colors" size={24} />
+                                    <p className="text-sm text-gray-500">{uploading ? 'Enviando arquivos...' : 'Clique ou arraste arquivos para anexar (Manuais, Fotos, Notas)'}</p>
+                                </div>
+                                
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                    {formData.anexos.map((file, idx) => (
+                                        <div key={idx} className="flex items-center justify-between bg-gray-50 p-3 rounded-xl border border-gray-100 group">
+                                            <div className="flex items-center gap-3 overflow-hidden">
+                                                <div className="p-2 bg-white rounded-lg shadow-sm text-indigo-500"><FileText size={14} /></div>
+                                                <span className="text-sm font-medium text-gray-700 truncate">{file.name || file.filename}</span>
+                                            </div>
+                                            <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                                <button type="button" onClick={() => window.open(getAnexoHref(file.path || file.url), '_blank')} className="p-1.5 text-indigo-600 hover:bg-indigo-50 rounded-md transition-colors"><Eye size={16} /></button>
+                                                <button type="button" onClick={() => setFormData({...formData, anexos: formData.anexos.filter((_, i) => i !== idx)})} className="p-1.5 text-red-500 hover:bg-red-50 rounded-md transition-colors"><X size={16} /></button>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+
+                            <div className="pt-6 border-t border-gray-100 flex justify-end gap-4">
+                                <button type="button" onClick={() => setIsModalOpen(false)} className="px-6 py-2.5 text-gray-500 font-bold hover:bg-gray-100 rounded-xl transition-all">Cancelar</button>
+                                <button type="submit" disabled={uploading} className="px-12 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold shadow-lg transition-all active:scale-95 disabled:opacity-50">
+                                    {isEditing ? 'Salvar Alterações' : 'Cadastrar Ativo'}
                                 </button>
                             </div>
                         </form>

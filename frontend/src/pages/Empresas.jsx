@@ -28,24 +28,21 @@ const Empresas = () => {
     const API_URL = '/api';
 
     // BACKEND_ORIGIN resolution (Vite env support)
-    const VITE_BACKEND_URL = (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_BACKEND_URL) ? import.meta.env.VITE_BACKEND_URL : null;
-    const VITE_BACKEND_PORT = (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_BACKEND_PORT) ? import.meta.env.VITE_BACKEND_PORT : null;
-
-    let BACKEND_ORIGIN = window.location.origin;
-    if (VITE_BACKEND_URL) {
-        BACKEND_ORIGIN = VITE_BACKEND_URL;
-    } else if (VITE_BACKEND_PORT) {
-        BACKEND_ORIGIN = `${window.location.protocol}//${window.location.hostname}:${VITE_BACKEND_PORT}`;
-    } else {
-        BACKEND_ORIGIN = `${window.location.protocol}//${window.location.hostname}:5002`;
-    }
+    const BACKEND_URL = window.location.origin.includes('5173') 
+        ? `${window.location.protocol}//${window.location.hostname}:5002`
+        : window.location.origin;
 
     const getAnexoHref = (path) => {
         if (!path) return '#';
         if (path.startsWith('http://') || path.startsWith('https://')) return path;
         if (path.startsWith('//')) return window.location.protocol + path;
-        if (path.startsWith('/')) return `${BACKEND_ORIGIN}${path}`;
-        return `${BACKEND_ORIGIN}/${path.replace(/^\/+/, '')}`;
+        
+        let cleanPath = path;
+        cleanPath = cleanPath.replace(/^\/+/, ''); // remove barras no início
+        cleanPath = cleanPath.replace(/^static\/uploads\//, ''); // remove static/uploads/ se já existir
+        cleanPath = cleanPath.replace(/^uploads\//, ''); // remove uploads/ se já existir
+        
+        return `${BACKEND_URL}/static/uploads/${cleanPath}`;
     };
 
     const fetchData = useCallback(async () => {
@@ -57,7 +54,7 @@ const Empresas = () => {
             const response = await fetch(`${API_URL}/empresas`, { headers });
             if (response.ok) setEmpresas(await response.json());
         } catch (error) { console.error("Erro ao carregar empresas:", error); }
-    }, [user]);
+    }, [user, API_URL]);
 
     useEffect(() => { fetchData(); }, [fetchData]);
 
@@ -238,7 +235,6 @@ const Empresas = () => {
                         <tr className="bg-gray-50 border-b border-gray-200 text-gray-600 text-sm uppercase font-bold">
                             <th className="px-6 py-4">Empresa</th>
                             <th className="px-6 py-4">Contato</th>
-                            <th className="px-6 py-4">Localização/CNPJ</th>
                             <th className="px-6 py-4 text-right">Ações</th>
                         </tr>
                     </thead>
@@ -261,12 +257,6 @@ const Empresas = () => {
                                     <div className="text-sm text-gray-600 space-y-1">
                                         {e.email && <p className="flex items-center gap-2"><FaEnvelope className="text-gray-400" size={12}/> {e.email}</p>}
                                         {e.telefone && <p className="flex items-center gap-2"><FaPhone className="text-gray-400" size={12}/> {e.telefone}</p>}
-                                    </div>
-                                </td>
-                                <td className="px-6 py-4">
-                                    <div className="text-sm text-gray-600 space-y-1">
-                                        {e.cnpj && <p className="flex items-center gap-2"><FaFileAlt className="text-gray-400" size={12}/> {e.cnpj}</p>}
-                                        {e.endereco && <p className="flex items-center gap-2"><FaMapMarkerAlt className="text-gray-400" size={12}/> {e.endereco}</p>}
                                     </div>
                                 </td>
                                 <td className="px-6 py-4 text-right">
@@ -316,16 +306,12 @@ const Empresas = () => {
                                                 </div>
                                                 <span className="text-sm font-medium text-gray-700 truncate">{anexo.name || anexo.filename || 'Arquivo'}</span>
                                             </div>
-                                            <div className="flex items-center gap-2">
-                                                <button
-                                                    type="button"
-                                                    onClick={() => window.open(getAnexoHref(anexo.path || anexo.url || ''), '_blank', 'noopener,noreferrer')}
-                                                    className="p-2 text-indigo-600 hover:bg-indigo-100 rounded-lg transition-colors"
-                                                    title="Visualizar/Baixar"
-                                                >
-                                                    <FaEye />
-                                                </button>
-                                            </div>
+                                            <button
+                                                onClick={() => window.open(getAnexoHref(anexo.path || anexo.url), '_blank')}
+                                                className="p-2 text-indigo-600 hover:bg-indigo-100 rounded-lg transition-colors"
+                                            >
+                                                <FaEye />
+                                            </button>
                                         </div>
                                     ))}
                                 </div>
@@ -340,109 +326,69 @@ const Empresas = () => {
                 </div>
             )}
 
-            {/* Modal (create / edit) */}
+            {/* Modal de Cadastro/Edição */}
             {isModalOpen && (
                 <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
                     <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col">
                         <div className="p-6 border-b border-gray-100 flex justify-between items-center bg-indigo-600 text-white">
-                            <h2 className="text-xl font-bold flex items-center gap-2">
-                                <FaBuilding /> {isEditing ? 'Editar Empresa' : 'Nova Empresa'}
-                            </h2>
-                            <button onClick={() => setIsModalOpen(false)} className="p-2 hover:bg-white/10 rounded-full transition-colors">
-                                <FaTimes size={24} />
-                            </button>
+                            <h2 className="text-xl font-bold flex items-center gap-2"><FaBuilding /> {isEditing ? 'Editar Empresa' : 'Nova Empresa'}</h2>
+                            <button onClick={() => setIsModalOpen(false)} className="p-2 hover:bg-white/10 rounded-full transition-colors"><FaTimes size={24} /></button>
                         </div>
-
-                        <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-8">
+                        <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-8 space-y-6">
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                <div className="md:col-span-2">
-                                    <label className="block text-xs font-bold text-gray-700 mb-2 uppercase">Nome da Empresa *</label>
-                                    <input type="text" required className="w-full p-3 border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500" value={formData.nome} onChange={(e) => setFormData({...formData, nome: e.target.value})} />
+                                <div>
+                                    <label className="block text-xs font-bold text-gray-700 mb-1 uppercase">Nome da Empresa *</label>
+                                    <input type="text" required className="w-full p-2 border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500" value={formData.nome} onChange={e => setFormData({...formData, nome: e.target.value})} />
                                 </div>
                                 <div>
-                                    <label className="block text-xs font-bold text-gray-700 mb-2 uppercase">CNPJ</label>
-                                    <input type="text" className="w-full p-3 border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500" value={formData.cnpj} onChange={(e) => setFormData({...formData, cnpj: e.target.value})} />
+                                    <label className="block text-xs font-bold text-gray-700 mb-1 uppercase">CNPJ</label>
+                                    <input type="text" className="w-full p-2 border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500" value={formData.cnpj} onChange={e => setFormData({...formData, cnpj: e.target.value})} />
                                 </div>
                                 <div>
-                                    <label className="block text-xs font-bold text-gray-700 mb-2 uppercase">Telefone</label>
-                                    <input type="text" className="w-full p-3 border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500" value={formData.telefone} onChange={(e) => setFormData({...formData, telefone: e.target.value})} />
+                                    <label className="block text-xs font-bold text-gray-700 mb-1 uppercase">E-mail</label>
+                                    <input type="email" className="w-full p-2 border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500" value={formData.email} onChange={e => setFormData({...formData, email: e.target.value})} />
                                 </div>
-                                <div className="md:col-span-2">
-                                    <label className="block text-xs font-bold text-gray-700 mb-2 uppercase">E-mail</label>
-                                    <input type="email" className="w-full p-3 border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500" value={formData.email} onChange={(e) => setFormData({...formData, email: e.target.value})} />
+                                <div>
+                                    <label className="block text-xs font-bold text-gray-700 mb-1 uppercase">Telefone</label>
+                                    <input type="text" className="w-full p-2 border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500" value={formData.telefone} onChange={e => setFormData({...formData, telefone: e.target.value})} />
                                 </div>
-                                <div className="md:col-span-2">
-                                    <label className="block text-xs font-bold text-gray-700 mb-2 uppercase">Endereço</label>
-                                    <input type="text" className="w-full p-3 border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500" value={formData.endereco} onChange={(e) => setFormData({...formData, endereco: e.target.value})} />
-                                </div>
-
-                                {/* Empresa mãe */}
-                                <div className="md:col-span-2 bg-gray-50 p-4 rounded-xl border border-gray-100">
-                                    <label className="block text-xs font-bold text-gray-700 mb-2 uppercase flex items-center gap-2">
-                                        <FaBuilding className="text-indigo-600" /> Empresa Mãe (Hierarquia)
-                                    </label>
-                                    <select 
-                                        className="w-full p-3 border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500" 
-                                        value={formData.parent_id} 
-                                        onChange={(e) => setFormData({...formData, parent_id: e.target.value})}
-                                    >
+                                <div>
+                                    <label className="block text-xs font-bold text-gray-700 mb-1 uppercase">Empresa Pai</label>
+                                    <select className="w-full p-2 border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500" value={formData.parent_id} onChange={e => setFormData({...formData, parent_id: e.target.value})}>
                                         <option value="">Nenhuma (Empresa Principal)</option>
                                         {renderEmpresaOptions()}
                                     </select>
-                                    <p className="text-[10px] text-gray-500 mt-2 flex items-center gap-1">
-                                        <FaInfoCircle /> Defina se esta empresa é uma filial ou departamento de outra.
-                                    </p>
                                 </div>
+                            </div>
+                            <div>
+                                <label className="block text-xs font-bold text-gray-700 mb-1 uppercase">Endereço</label>
+                                <input type="text" className="w-full p-2 border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500" value={formData.endereco} onChange={e => setFormData({...formData, endereco: e.target.value})} />
+                            </div>
 
-                                {/* Anexos */}
-                                <div className="md:col-span-2">
-                                    <label className="block text-xs font-bold text-gray-700 mb-2 uppercase">Anexos</label>
-                                    <div className="border-2 border-dashed border-gray-200 rounded-xl p-4 text-center hover:border-indigo-300 transition-colors relative">
-                                        <input type="file" multiple className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" onChange={handleFileUpload} disabled={uploading} />
-                                        <FaPaperclip className="mx-auto text-gray-400 mb-2" />
-                                        <p className="text-sm text-gray-500">{uploading ? 'Enviando...' : 'Clique ou arraste arquivos para anexar'}</p>
-                                    </div>
-
-                                    <div className="mt-3 space-y-2">
-                                        {formData.anexos && formData.anexos.map((file, idx) => (
-                                            <div key={idx} className="flex items-center justify-between bg-gray-50 p-2 rounded-lg text-sm">
-                                                <div className="flex items-center gap-2 min-w-0">
-                                                    <span className="truncate max-w-[220px]">{file.name || file.filename || file.originalname || 'Arquivo'}</span>
-                                                </div>
-
-                                                <div className="flex items-center gap-2">
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => {
-                                                            const url = getAnexoHref(file.path || file.url || '');
-                                                            window.open(url, '_blank', 'noopener,noreferrer');
-                                                        }}
-                                                        className="p-1 text-indigo-600 hover:bg-indigo-50 rounded transition-colors"
-                                                        title="Visualizar anexo"
-                                                        aria-label={`Visualizar anexo ${file.name || file.filename || ''}`}
-                                                    >
-                                                        <FaEye />
-                                                    </button>
-
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => setFormData({...formData, anexos: formData.anexos.filter((_, i) => i !== idx)})}
-                                                        className="p-1 text-red-500 hover:text-red-700 rounded transition-colors"
-                                                        title="Remover anexo"
-                                                        aria-label={`Remover anexo ${file.name || file.filename || ''}`}
-                                                    >
-                                                        <FaTimes />
-                                                    </button>
-                                                </div>
+                            {/* Anexos Section in Modal */}
+                            <div className="pt-4 border-t">
+                                <label className="block text-xs font-bold text-gray-700 mb-2 uppercase">Anexos</label>
+                                <div className="border-2 border-dashed border-gray-200 rounded-xl p-4 text-center hover:border-indigo-300 transition-colors relative">
+                                    <input type="file" multiple className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" onChange={handleFileUpload} disabled={uploading} />
+                                    <FaPaperclip className="mx-auto text-gray-400 mb-2" />
+                                    <p className="text-sm text-gray-500">{uploading ? 'Enviando...' : 'Clique ou arraste arquivos para anexar'}</p>
+                                </div>
+                                <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-2">
+                                    {formData.anexos.map((file, idx) => (
+                                        <div key={idx} className="flex items-center justify-between bg-gray-50 p-2 rounded-lg text-sm border">
+                                            <span className="truncate max-w-[180px] font-medium">{file.name || 'Arquivo'}</span>
+                                            <div className="flex items-center gap-1">
+                                                <button type="button" onClick={() => window.open(getAnexoHref(file.path || file.url), '_blank')} className="p-1 text-indigo-600 hover:bg-indigo-50 rounded transition-colors"><FaEye size={14} /></button>
+                                                <button type="button" onClick={() => setFormData({...formData, anexos: formData.anexos.filter((_, i) => i !== idx)})} className="p-1 text-red-500 hover:text-red-700 rounded transition-colors"><FaTimes size={14} /></button>
                                             </div>
-                                        ))}
-                                    </div>
+                                        </div>
+                                    ))}
                                 </div>
                             </div>
 
-                            <div className="mt-8 pt-6 border-t border-gray-100 flex justify-end gap-4">
-                                <button type="button" onClick={() => setIsModalOpen(false)} className="px-6 py-3 rounded-xl font-bold text-gray-500 hover:bg-gray-100 transition-colors">Cancelar</button>
-                                <button type="submit" className="px-10 py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold shadow-lg transition-all">{isEditing ? 'Salvar Alterações' : 'Criar Empresa'}</button>
+                            <div className="mt-8 pt-6 border-t flex justify-end gap-4">
+                                <button type="button" onClick={() => setIsModalOpen(false)} className="px-6 py-2 text-gray-500 font-bold hover:bg-gray-100 rounded-lg transition-colors">Cancelar</button>
+                                <button type="submit" className="px-10 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold shadow-lg transition-all active:scale-95">Salvar Empresa</button>
                             </div>
                         </form>
                     </div>

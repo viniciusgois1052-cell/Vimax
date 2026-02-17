@@ -1,5 +1,6 @@
 from .. import db
 from datetime import datetime
+from sqlalchemy import JSON
 
 class Ativo(db.Model):
     __tablename__ = 'ativos'
@@ -16,6 +17,9 @@ class Ativo(db.Model):
     fornecedor_id = db.Column(db.Integer, db.ForeignKey('fornecedores.id'))
     contrato_id = db.Column(db.Integer, db.ForeignKey('contratos.id'))
     orcamento_id = db.Column(db.Integer, db.ForeignKey('orcamentos.id'))
+
+    # ✅ CAMPO DE ANEXOS (APENAS CAMINHOS DOS ARQUIVOS)
+    anexos = db.Column(JSON, default=list)
     
     empresa = db.relationship('Empresa', backref=db.backref('ativos_list_new', lazy=True))
     localizacao = db.relationship('Localizacao', backref=db.backref('ativos_list_new', lazy=True))
@@ -41,7 +45,10 @@ class Ativo(db.Model):
             'fornecedor_id': self.fornecedor_id,
             'fornecedor_nome': self.fornecedor.nome if self.fornecedor else None,
             'contrato_id': self.contrato_id,
-            'contrato_numero': self.contrato_vinculo.numero if hasattr(self, 'contrato_vinculo') and self.contrato_vinculo else None,
+            'contrato_nome': self.contrato_vinculo_final.numero if hasattr(self, 'contrato_vinculo_final') and self.contrato_vinculo_final else None,
             'orcamento_id': self.orcamento_id,
-            'orcamento_numero': self.orcamento.numero if self.orcamento else None
+            'orcamento_numero': self.orcamento.numero if self.orcamento else None,
+
+            # ✅ RETORNO DOS ANEXOS
+            'anexos': self.anexos or []
         }

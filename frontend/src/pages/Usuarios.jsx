@@ -79,23 +79,41 @@ export default function Usuarios() {
         </div>
         <div className="p-6">
           <form onSubmit={handleSubmit} className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <input className="px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary" placeholder="Username" value={formData.username} onChange={e => setFormData({...formData, username: e.target.value})} required />
-            <input className="px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary" placeholder="Email" type="email" value={formData.email} onChange={e => setFormData({...formData, email: e.target.value})} required />
-            <input className="px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary" placeholder="Senha" type="password" value={formData.password} onChange={e => setFormData({...formData, password: e.target.value})} required={!editingId} />
-            <select className="px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary" value={formData.role} onChange={e => setFormData({...formData, role: e.target.value})}>
-              <option value="super_admin">Super Admin</option>
-              <option value="admin">Admin</option>
-              <option value="relatorios">Relatórios</option>
-            </select>
-            <select className="px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary" value={formData.empresa_id} onChange={e => setFormData({...formData, empresa_id: e.target.value})}>
-              <option value="none">Acesso Global</option>
-              {empresas.map(e => <option key={e.id} value={e.id.toString()}>{e.nome}</option>)}
-            </select>
-            <div className="flex gap-2">
-              <button type="submit" disabled={loading} className={`flex-1 py-2 rounded-xl font-bold text-white ${editingId ? 'bg-amber-500' : 'bg-primary'}`}>
-                {loading ? '...' : editingId ? 'Salvar' : 'Criar'}
-              </button>
-              {editingId && <button type="button" onClick={cancelEdit} className="p-2 bg-slate-100 rounded-xl"><X className="w-5 h-5" /></button>}
+            <div className="space-y-1">
+              <label className="text-xs font-bold text-slate-500 uppercase ml-1">Username</label>
+              <input className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary" placeholder="Username" value={formData.username} onChange={e => setFormData({...formData, username: e.target.value})} required />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-bold text-slate-500 uppercase ml-1">Email</label>
+              <input className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary" placeholder="Email" type="email" value={formData.email} onChange={e => setFormData({...formData, email: e.target.value})} required />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-bold text-slate-500 uppercase ml-1">Senha</label>
+              <input className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary" placeholder="Senha" type="password" value={formData.password} onChange={e => setFormData({...formData, password: e.target.value})} required={!editingId} />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-bold text-slate-500 uppercase ml-1">Perfil / Role</label>
+              <select className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary" value={formData.role} onChange={e => setFormData({...formData, role: e.target.value})}>
+                <option value="super_admin">Super Admin</option>
+                <option value="admin">Admin</option>
+                <option value="relatorios">Relatórios</option>
+                <option value="publico">Público (Apenas Abrir Chamado)</option>
+              </select>
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-bold text-slate-500 uppercase ml-1">Empresa</label>
+              <select className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary" value={formData.empresa_id} onChange={e => setFormData({...formData, empresa_id: e.target.value})}>
+                <option value="none">Acesso Global</option>
+                {empresas.map(e => <option key={e.id} value={e.id.toString()}>{e.nome}</option>)}
+              </select>
+            </div>
+            <div className="flex items-end">
+              <div className="flex gap-2 w-full">
+                <button type="submit" disabled={loading} className={`flex-1 py-2 rounded-xl font-bold text-white ${editingId ? 'bg-amber-500' : 'bg-primary'}`}>
+                  {loading ? '...' : editingId ? 'Salvar' : 'Criar'}
+                </button>
+                {editingId && <button type="button" onClick={cancelEdit} className="p-2 bg-slate-100 rounded-xl"><X className="w-5 h-5" /></button>}
+              </div>
             </div>
           </form>
         </div>
@@ -118,7 +136,9 @@ export default function Usuarios() {
                   <div className="text-xs text-slate-400">{u.email}</div>
                 </td>
                 <td className="p-4">
-                  <span className="text-[10px] px-2 py-0.5 rounded-full font-bold uppercase bg-slate-100">{u.role}</span>
+                  <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase ${u.role === 'publico' ? 'bg-indigo-100 text-indigo-600' : 'bg-slate-100'}`}>
+                    {u.role === 'publico' ? 'Público' : u.role}
+                  </span>
                 </td>
                 <td className="p-4 text-sm text-slate-600">{u.empresa_nome || 'Global'}</td>
                 <td className="p-4 text-right flex justify-end gap-2">

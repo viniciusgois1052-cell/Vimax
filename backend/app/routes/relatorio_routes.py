@@ -1,201 +1,420 @@
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, send_file
 from sqlalchemy import func, extract
-from datetime import datetime, timedelta
-
 from .. import db
 from ..models.chamado import Chamado
-from ..models.contrato import Contrato
-from ..models.orcamento import Orcamento
 from ..models.ativo import Ativo
 from ..models.empresa import Empresa
-from ..models.usuario import Usuario
-from ..utils.filters import apply_entity_filter, get_all_sub_company_ids
+from ..models.orcamento import Orcamento
+from ..models.contrato import Contrato
+from ..models.categoria_chamado import CategoriaChamado
+from datetime import datetime
+from openpyxl import Workbook
+from io import BytesIO
 
-relatorio_bp = Blueprint('relatorio_bp', __name__)
+relatorio_bp = Blueprint("relatorio_bp", __name__)
 
-# =========================
-# UTIL
-# =========================
-def get_user_from_request():
-    api_token = request.headers.get('X-API-Token')
-    if api_token:
-        return Usuario.query.filter_by(api_token=api_token).first()
-    return None
-
-
-# =========================
-# DASHBOARD
-# =========================
-@relatorio_bp.route('/dashboard', methods=['GET'])
-def get_dashboard_stats():
-    user = get_user_from_request()
-    empresa_id = request.args.get('empresa_id')
-
-    q_chamados = apply_entity_filter(Chamado.query, Chamado, empresa_id, user)
-    q_contratos = apply_entity_filter(Contrato.query, Contrato, empresa_id, user)
-    q_orcamentos = apply_entity_filter(Orcamento.query, Orcamento, empresa_id, user)
-    q_ativos = apply_entity_filter(Ativo.query, Ativo, empresa_id, user)
-
-    hoje = datetime.now()
-
-    stats = {
-        'total_chamados': q_chamados.count(),
-        'chamados_abertos': q_chamados.filter(Chamado.status == 'Aberto').count(),
-        'total_contratos': q_contratos.count(),
-        'total_orcamentos': q_orcamentos.count(),
-        'total_ativos': q_ativos.count(),
-        'custo_total': (
-            db.session.query(func.sum(Chamado.valor_total))
-            .select_from(q_chamados.subquery())
-            .scalar() or 0
-        ),
-        'contratos_a_vencer': q_contratos.filter(
-            Contrato.data_fim >= hoje,
-            Contrato.data_fim <= hoje + timedelta(days=30)
-        ).count(),
-        'ativos_sem_contrato': q_ativos.count()  # ainda não há vínculo ativo x contrato
-    }
-
-    tendencia = (
-        db.session.query(
-            extract('month', Chamado.data_abertura).label('mes'),
-            func.count(Chamado.id).label('total')
+@relatorio_bp.route("/dashboard", methods=["GET"])
+def dashboard_relatorios():
+    try:
+        # 1. Estatísticas por Empresa (Orçamentos + Custos de Chamados + Ativos sem Contrato)
+        empresas = Empresa.query.all()
+        stats_map = {}
+        for emp in empresas:
+            stats_map[emp.id] = {
+                "nome": emp.nome,
+                "gasto_orcamentos": 0.0,
+                "custo_chamados": 0.0,
+                "ativos": 0,
+                "ativos_sem_contrato": 0
+            }
+            
+        # Gastos por Orçamentos Aprovados
+        gastos_orc_raw = (
+            db.session.query(Orcamento.empresa_id, func.sum(Orcamento.valor))
+            .filter(Orcamento.status == 'Aprovado')
+            .group_by(Orcamento.empresa_id).all()
         )
-        .select_from(q_chamados.subquery())
-        .group_by('mes')
-        .order_by('mes')
-        .all()
-    )
-
-    stats['tendencia_mensal'] = [
-        {'mes': int(t.mes), 'total': t.total} for t in tendencia
-    ]
-
-    return jsonify(stats)
-
-
-# =========================
-# RELATÓRIO GERAL
-# =========================
-@relatorio_bp.route('/geral', methods=['GET'])
-def get_relatorios_gerais():
-    user = get_user_from_request()
-    empresa_id = request.args.get('empresa_id')
-    data_inicio = request.args.get('data_inicio')
-    data_fim = request.args.get('data_fim')
-
-    # -------------------------
-    # EMPRESAS
-    # -------------------------
-    q_emp = Empresa.query
-    if user and user.role != 'super_admin' and user.empresa_id:
-        allowed_ids = get_all_sub_company_ids(user.empresa_id)
-        q_emp = q_emp.filter(Empresa.id.in_(allowed_ids))
-
-    empresas_data = []
-    for emp in q_emp.all():
-        q_ch = Chamado.query.filter(Chamado.empresa_id == emp.id)
-
-        if data_inicio:
-            q_ch = q_ch.filter(Chamado.data_abertura >= data_inicio)
-        if data_fim:
-            q_ch = q_ch.filter(Chamado.data_abertura <= data_fim)
-
-        empresas_data.append({
-            'id': emp.id,
-            'nome': emp.nome,
-            'total_chamados': q_ch.count(),
-            'total_gasto': (
-                db.session.query(func.sum(Chamado.valor_total))
-                .filter(Chamado.empresa_id == emp.id)
-                .scalar() or 0
-            ),
-            'total_ativos': Ativo.query.filter_by(empresa_id=emp.id).count()
-        })
-
-    # -------------------------
-    # ATIVOS
-    # -------------------------
-    q_at = apply_entity_filter(Ativo.query, Ativo, empresa_id, user)
-
-    ativos_data = []
-    for at in q_at.all():
-        q_ch_at = Chamado.query.filter(Chamado.ativo_id == at.id)
-
-        if data_inicio:
-            q_ch_at = q_ch_at.filter(Chamado.data_abertura >= data_inicio)
-        if data_fim:
-            q_ch_at = q_ch_at.filter(Chamado.data_abertura <= data_fim)
-
-        ativos_data.append({
-            'id': at.id,
-            'nome': at.nome,
-            'tag': at.tag,
-            'total_chamados': q_ch_at.count(),
-            'total_gasto': (
-                db.session.query(func.sum(Chamado.valor_total))
-                .filter(Chamado.ativo_id == at.id)
-                .scalar() or 0
-            ),
-            'tem_contrato': False  # ainda não existe vínculo contrato x ativo
-        })
-
-    # -------------------------
-    # CHAMADOS (STATUS)
-    # -------------------------
-    q_ch = apply_entity_filter(Chamado.query, Chamado, empresa_id, user)
-
-    if data_inicio:
-        q_ch = q_ch.filter(Chamado.data_abertura >= data_inicio)
-    if data_fim:
-        q_ch = q_ch.filter(Chamado.data_abertura <= data_fim)
-
-    status_count = (
-        db.session.query(Chamado.status, func.count(Chamado.id))
-        .select_from(q_ch.subquery())
-        .group_by(Chamado.status)
-        .all()
-    )
-
-    # -------------------------
-    # CONTRATOS
-    # -------------------------
-    q_con = apply_entity_filter(Contrato.query, Contrato, empresa_id, user)
-    hoje = datetime.now()
-
-    contratos_stats = {
-        'ativos': q_con.filter(Contrato.data_fim >= hoje).count(),
-        'vencidos': q_con.filter(Contrato.data_fim < hoje).count(),
-        'a_vencer_30': q_con.filter(
-            Contrato.data_fim <= hoje + timedelta(days=30),
-            Contrato.data_fim >= hoje
-        ).count(),
-        'a_vencer_60': q_con.filter(
-            Contrato.data_fim <= hoje + timedelta(days=60),
-            Contrato.data_fim >= hoje
-        ).count(),
-    }
-
-    # -------------------------
-    # FINANCEIRO
-    # -------------------------
-    resumo_financeiro = {
-        'total_gasto': (
-            db.session.query(func.sum(Chamado.valor_total))
-            .select_from(q_ch.subquery())
-            .scalar() or 0
-        ),
-        'media_por_chamado': (
-            db.session.query(func.avg(Chamado.valor_total))
-            .select_from(q_ch.subquery())
-            .scalar() or 0
+        for emp_id, total in gastos_orc_raw:
+            if emp_id in stats_map: stats_map[emp_id]["gasto_orcamentos"] = float(total or 0)
+                
+        # Custos por Chamados (valor_total)
+        custos_cham_raw = (
+            db.session.query(Chamado.empresa_id, func.sum(Chamado.valor_total))
+            .filter(Chamado.ativo == True)
+            .group_by(Chamado.empresa_id).all()
         )
-    }
+        for emp_id, total in custos_cham_raw:
+            if emp_id in stats_map: stats_map[emp_id]["custo_chamados"] = float(total or 0)
 
-    return jsonify({
-        'empresas': sorted(empresas_data, key=lambda x: x['total_chamados'], reverse=True),
-        'ativos': sorted(ativos_data, key=lambda x: x['total_chamados'], reverse=True),
-        'chamados_status': {s: c for s, c in status_count},
-        'contratos': contratos_stats,
-        'resumo_financeiro': resumo_financeiro
-    })
+        # Qtd Ativos
+        ativos_raw = db.session.query(Ativo.empresa_id, func.count(Ativo.id)).group_by(Ativo.empresa_id).all()
+        for emp_id, qtd in ativos_raw:
+            if emp_id in stats_map: stats_map[emp_id]["ativos"] = int(qtd or 0)
+        
+        # Qtd Ativos sem Contrato por Empresa
+        ativos_sem_contrato_raw = (
+            db.session.query(Ativo.empresa_id, func.count(Ativo.id))
+            .filter(Ativo.contrato_id == None)
+            .group_by(Ativo.empresa_id).all()
+        )
+        for emp_id, qtd in ativos_sem_contrato_raw:
+            if emp_id in stats_map: stats_map[emp_id]["ativos_sem_contrato"] = int(qtd or 0)
+        
+        empresas_stats = sorted(list(stats_map.values()), key=lambda x: x["nome"])
+
+        # 2. Ativos com maior custo (Chamados + Orçamentos)
+        # Custos de Chamados por Ativo
+        custos_ativos_chamados = []
+        try:
+            ativos_custos_chamados = (
+                db.session.query(Ativo.nome, func.sum(Chamado.valor_total))
+                .join(Chamado, Chamado.ativo_id == Ativo.id)
+                .filter(Chamado.ativo == True)
+                .group_by(Ativo.nome)
+                .order_by(func.sum(Chamado.valor_total).desc())
+                .limit(10).all()
+            )
+            custos_ativos_chamados = [[a[0], float(a[1] or 0)] for a in ativos_custos_chamados]
+        except Exception as e:
+            print(f"Erro ao buscar custos de chamados por ativo: {e}")
+
+        # Gastos de Orçamentos por Ativo
+        gastos_ativos_orcamentos = []
+        try:
+            ativos_gastos_orc = (
+                db.session.query(Ativo.nome, func.sum(Orcamento.valor))
+                .join(Orcamento, Ativo.orcamento_id == Orcamento.id)
+                .filter(Orcamento.status == 'Aprovado')
+                .group_by(Ativo.nome)
+                .order_by(func.sum(Orcamento.valor).desc())
+                .limit(10).all()
+            )
+            gastos_ativos_orcamentos = [[a[0], float(a[1] or 0)] for a in ativos_gastos_orc]
+        except Exception as e:
+            print(f"Erro ao buscar gastos de orçamentos por ativo: {e}")
+
+        # 3. Ativos sem contratos (Total Global)
+        ativos_sem_contrato_count = db.session.query(func.count(Ativo.id)).filter(Ativo.contrato_id == None).scalar() or 0
+
+        # 4. Gasto médio global (Orçamentos)
+        gasto_medio_global = db.session.query(func.avg(Orcamento.valor)).filter(Orcamento.status == 'Aprovado').scalar() or 0
+
+        # 5. Chamados por categoria
+        categorias_count = (
+            db.session.query(CategoriaChamado.nome, func.count(Chamado.id))
+            .join(Chamado, Chamado.categoria_id == CategoriaChamado.id)
+            .filter(Chamado.ativo == True)
+            .group_by(CategoriaChamado.nome).all()
+        )
+        chamados_por_categoria = [[c[0], int(c[1] or 0)] for c in categorias_count]
+
+        # 6. Evolução Mensal
+        chamados_mes = (
+            db.session.query(extract('month', Chamado.created_at), extract('year', Chamado.created_at), func.count(Chamado.id))
+            .filter(Chamado.ativo == True)
+            .group_by(extract('year', Chamado.created_at), extract('month', Chamado.created_at))
+            .order_by(extract('year', Chamado.created_at).desc(), extract('month', Chamado.created_at).desc())
+            .limit(12).all()
+        )
+        chamados_mes.reverse()
+        meses_nomes = ["", "Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
+        chamados_por_mes = []
+        for c in chamados_mes:
+            try:
+                chamados_por_mes.append([f"{meses_nomes[int(c[0])]}/{str(int(c[1]))[-2:]}", int(c[2])])
+            except: continue
+
+        # 7. Resumo Geral
+        total_ativos = db.session.query(func.count(Ativo.id)).scalar() or 0
+        total_chamados = db.session.query(func.count(Chamado.id)).filter(Chamado.ativo == True).scalar() or 0
+        total_gasto_orcamentos = db.session.query(func.sum(Orcamento.valor)).filter(Orcamento.status == 'Aprovado').scalar() or 0
+        total_custo_chamados = db.session.query(func.sum(Chamado.valor_total)).filter(Chamado.ativo == True).scalar() or 0
+
+        return jsonify({
+            "empresas_stats": empresas_stats,
+            "custos_ativos_chamados": custos_ativos_chamados,
+            "gastos_ativos_orcamentos": gastos_ativos_orcamentos,
+            "ativos_sem_contrato": int(ativos_sem_contrato_count),
+            "gasto_medio_global": float(gasto_medio_global),
+            "chamados_por_categoria": chamados_por_categoria,
+            "chamados_por_mes": chamados_por_mes,
+            "resumo": {
+                "total_ativos": int(total_ativos),
+                "total_chamados": int(total_chamados),
+                "total_gasto_orcamentos": float(total_gasto_orcamentos or 0),
+                "total_custo_chamados": float(total_custo_chamados or 0),
+                "ativos_sem_contrato": int(ativos_sem_contrato_count)
+            }
+        })
+    except Exception as e:
+        import traceback
+        print(traceback.format_exc())
+        return jsonify({"error": str(e)}), 500
+
+
+@relatorio_bp.route("/export/empresas_stats", methods=["GET"])
+def export_empresas_stats():
+    try:
+        empresas = Empresa.query.all()
+        stats_map = {}
+        for emp in empresas:
+            stats_map[emp.id] = {
+                "nome": emp.nome,
+                "gasto_orcamentos": 0.0,
+                "custo_chamados": 0.0,
+                "ativos": 0,
+                "ativos_sem_contrato": 0
+            }
+            
+        gastos_orc_raw = (
+            db.session.query(Orcamento.empresa_id, func.sum(Orcamento.valor))
+            .filter(Orcamento.status == 'Aprovado')
+            .group_by(Orcamento.empresa_id).all()
+        )
+        for emp_id, total in gastos_orc_raw:
+            if emp_id in stats_map: stats_map[emp_id]["gasto_orcamentos"] = float(total or 0)
+                
+        custos_cham_raw = (
+            db.session.query(Chamado.empresa_id, func.sum(Chamado.valor_total))
+            .filter(Chamado.ativo == True)
+            .group_by(Chamado.empresa_id).all()
+        )
+        for emp_id, total in custos_cham_raw:
+            if emp_id in stats_map: stats_map[emp_id]["custo_chamados"] = float(total or 0)
+
+        ativos_raw = db.session.query(Ativo.empresa_id, func.count(Ativo.id)).group_by(Ativo.empresa_id).all()
+        for emp_id, qtd in ativos_raw:
+            if emp_id in stats_map: stats_map[emp_id]["ativos"] = int(qtd or 0)
+        
+        ativos_sem_contrato_raw = (
+            db.session.query(Ativo.empresa_id, func.count(Ativo.id))
+            .filter(Ativo.contrato_id == None)
+            .group_by(Ativo.empresa_id).all()
+        )
+        for emp_id, qtd in ativos_sem_contrato_raw:
+            if emp_id in stats_map: stats_map[emp_id]["ativos_sem_contrato"] = int(qtd or 0)
+        
+        empresas_stats = sorted(list(stats_map.values()), key=lambda x: x["nome"])
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Empresas Stats"
+
+        headers = ["Empresa", "Qtd. Ativos", "Ativos sem Contrato", "Custo Chamados", "Gasto Orçamentos"]
+        ws.append(headers)
+
+        for e in empresas_stats:
+            ws.append([
+                e["nome"],
+                e["ativos"],
+                e["ativos_sem_contrato"],
+                e["custo_chamados"],
+                e["gasto_orcamentos"]
+            ])
+
+        excel_file = BytesIO()
+        wb.save(excel_file)
+        excel_file.seek(0)
+
+        return send_file(
+            excel_file,
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            as_attachment=True,
+            download_name="empresas_stats.xlsx"
+        )
+    except Exception as e:
+        import traceback
+        print(traceback.format_exc())
+        return jsonify({"error": str(e)}), 500
+
+@relatorio_bp.route("/export/custos_ativos_chamados", methods=["GET"])
+def export_custos_ativos_chamados():
+    try:
+        custos_ativos_chamados = []
+        ativos_custos_chamados = (
+            db.session.query(Ativo.nome, func.sum(Chamado.valor_total))
+            .join(Chamado, Chamado.ativo_id == Ativo.id)
+            .filter(Chamado.ativo == True)
+            .group_by(Ativo.nome)
+            .order_by(func.sum(Chamado.valor_total).desc())
+            .all()
+        )
+        custos_ativos_chamados = [[a[0], float(a[1] or 0)] for a in ativos_custos_chamados]
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Custos Chamados por Ativo"
+
+        headers = ["Ativo", "Custo Total Chamados"]
+        ws.append(headers)
+
+        for a in custos_ativos_chamados:
+            ws.append([a[0], a[1]])
+
+        excel_file = BytesIO()
+        wb.save(excel_file)
+        excel_file.seek(0)
+
+        return send_file(
+            excel_file,
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            as_attachment=True,
+            download_name="custos_ativos_chamados.xlsx"
+        )
+    except Exception as e:
+        import traceback
+        print(traceback.format_exc())
+        return jsonify({"error": str(e)}), 500
+
+@relatorio_bp.route("/export/gastos_ativos_orcamentos", methods=["GET"])
+def export_gastos_ativos_orcamentos():
+    try:
+        gastos_ativos_orcamentos = []
+        ativos_gastos_orc = (
+            db.session.query(Ativo.nome, func.sum(Orcamento.valor))
+            .join(Orcamento, Ativo.orcamento_id == Orcamento.id)
+            .filter(Orcamento.status == 'Aprovado')
+            .group_by(Ativo.nome)
+            .order_by(func.sum(Orcamento.valor).desc())
+            .all()
+        )
+        gastos_ativos_orcamentos = [[a[0], float(a[1] or 0)] for a in ativos_gastos_orc]
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Gastos Orçamentos por Ativo"
+
+        headers = ["Ativo", "Gasto Total Orçamentos"]
+        ws.append(headers)
+
+        for a in gastos_ativos_orcamentos:
+            ws.append([a[0], a[1]])
+
+        excel_file = BytesIO()
+        wb.save(excel_file)
+        excel_file.seek(0)
+
+        return send_file(
+            excel_file,
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            as_attachment=True,
+            download_name="gastos_ativos_orcamentos.xlsx"
+        )
+    except Exception as e:
+        import traceback
+        print(traceback.format_exc())
+        return jsonify({"error": str(e)}), 500
+
+@relatorio_bp.route("/export/chamados_por_categoria", methods=["GET"])
+def export_chamados_por_categoria():
+    try:
+        categorias_count = (
+            db.session.query(CategoriaChamado.nome, func.count(Chamado.id))
+            .join(Chamado, Chamado.categoria_id == CategoriaChamado.id)
+            .filter(Chamado.ativo == True)
+            .group_by(CategoriaChamado.nome).all()
+        )
+        chamados_por_categoria = [[c[0], int(c[1] or 0)] for c in categorias_count]
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Chamados por Categoria"
+
+        headers = ["Categoria", "Qtd. Chamados"]
+        ws.append(headers)
+
+        for c in chamados_por_categoria:
+            ws.append([c[0], c[1]])
+
+        excel_file = BytesIO()
+        wb.save(excel_file)
+        excel_file.seek(0)
+
+        return send_file(
+            excel_file,
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            as_attachment=True,
+            download_name="chamados_por_categoria.xlsx"
+        )
+    except Exception as e:
+        import traceback
+        print(traceback.format_exc())
+        return jsonify({"error": str(e)}), 500
+
+@relatorio_bp.route("/export/chamados_por_mes", methods=["GET"])
+def export_chamados_por_mes():
+    try:
+        chamados_mes = (
+            db.session.query(extract('month', Chamado.created_at), extract('year', Chamado.created_at), func.count(Chamado.id))
+            .filter(Chamado.ativo == True)
+            .group_by(extract('year', Chamado.created_at), extract('month', Chamado.created_at))
+            .order_by(extract('year', Chamado.created_at).desc(), extract('month', Chamado.created_at).desc())
+            .all()
+        )
+        chamados_mes.reverse()
+        meses_nomes = ["", "Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
+        chamados_por_mes = []
+        for c in chamados_mes:
+            try:
+                chamados_por_mes.append([f"{meses_nomes[int(c[0])]}/{str(int(c[1]))[-2:]}", int(c[2])])
+            except: continue
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Evolução de Chamados"
+
+        headers = ["Mês/Ano", "Qtd. Chamados"]
+        ws.append(headers)
+
+        for c in chamados_por_mes:
+            ws.append([c[0], c[1]])
+
+        excel_file = BytesIO()
+        wb.save(excel_file)
+        excel_file.seek(0)
+
+        return send_file(
+            excel_file,
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            as_attachment=True,
+            download_name="chamados_por_mes.xlsx"
+        )
+    except Exception as e:
+        import traceback
+        print(traceback.format_exc())
+        return jsonify({"error": str(e)}), 500
+
+@relatorio_bp.route("/export/ativos_sem_contrato", methods=["GET"])
+def export_ativos_sem_contrato():
+    try:
+        ativos_sem_contrato_detalhes = (
+            db.session.query(Ativo.nome, Empresa.nome, Ativo.localizacao)
+            .join(Empresa, Ativo.empresa_id == Empresa.id)
+            .filter(Ativo.contrato_id == None)
+            .all()
+        )
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Ativos sem Contrato"
+
+        headers = ["Ativo", "Empresa", "Localização"]
+        ws.append(headers)
+
+        for a in ativos_sem_contrato_detalhes:
+            ws.append([a[0], a[1], a[2]])
+
+        excel_file = BytesIO()
+        wb.save(excel_file)
+        excel_file.seek(0)
+
+        return send_file(
+            excel_file,
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            as_attachment=True,
+            download_name="ativos_sem_contrato.xlsx"
+        )
+    except Exception as e:
+        import traceback
+        print(traceback.format_exc())
+        return jsonify({"error": str(e)}), 500

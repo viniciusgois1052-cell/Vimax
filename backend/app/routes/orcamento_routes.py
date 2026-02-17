@@ -71,17 +71,18 @@ def create_orcamento():
         current_app.logger.exception("Erro ao ler request body")
         data = {}
 
-    # Validação mínima
-    if not data.get('titulo') or not data.get('empresa_id'):
-        return jsonify({"error": "Título e Empresa são obrigatórios", "received": data}), 400
+    # Validação mínima - aceita tanto 'numero' quanto 'titulo'
+    numero_campo = data.get('numero') or data.get('titulo')
+    if not numero_campo or not data.get('empresa_id'):
+        return jsonify({"error": "Número e Empresa são obrigatórios", "received": data}), 400
 
     try:
         novo_orcamento = Orcamento(
-            numero = data.get('titulo'),
+            numero = numero_campo,
             descricao = data.get('descricao'),
-            data_inicial = parse_datetime(data.get('data_inicial')),
+            data_inicial = parse_datetime(data.get('data_inicial') or data.get('data_emissao')),
             data_final = parse_datetime(data.get('data_final')),
-            valor = to_float(data.get('valor_total')),
+            valor = to_float(data.get('valor') or data.get('valor_total')),
             data_validade = parse_datetime(data.get('data_validade')),
             status = data.get('status', 'Pendente'),
             empresa_id = to_int(data.get('empresa_id')),
@@ -91,8 +92,9 @@ def create_orcamento():
 
         anexos_data = data.get('anexos', [])
         for anexo_data in anexos_data:
-            nome = anexo_data.get('nome')
-            caminho = anexo_data.get('caminho')
+            # Aceita tanto 'nome'/'caminho' quanto 'name'/'path'
+            nome = anexo_data.get('nome') or anexo_data.get('name') or anexo_data.get('filename')
+            caminho = anexo_data.get('caminho') or anexo_data.get('path') or anexo_data.get('url')
             if nome and caminho:
                 anexo = Anexo(nome=nome, caminho=caminho)
                 novo_orcamento.anexos.append(anexo)
@@ -112,14 +114,16 @@ def update_orcamento(id):
     orcamento = Orcamento.query.get_or_404(id)
     data = request.get_json() or {}
     try:
-        if 'titulo' in data:
-            orcamento.numero = data.get('titulo')
+        # Aceita tanto 'numero' quanto 'titulo'
+        if 'numero' in data or 'titulo' in data:
+            orcamento.numero = data.get('numero') or data.get('titulo')
         if 'descricao' in data:
             orcamento.descricao = data.get('descricao')
-        if 'valor_total' in data:
-            orcamento.valor = to_float(data.get('valor_total'))
-        if 'data_inicial' in data:
-            orcamento.data_inicial = parse_datetime(data.get('data_inicial'))
+        # Aceita tanto 'valor' quanto 'valor_total'
+        if 'valor' in data or 'valor_total' in data:
+            orcamento.valor = to_float(data.get('valor') or data.get('valor_total'))
+        if 'data_inicial' in data or 'data_emissao' in data:
+            orcamento.data_inicial = parse_datetime(data.get('data_inicial') or data.get('data_emissao'))
         if 'data_final' in data:
             orcamento.data_final = parse_datetime(data.get('data_final'))
         if 'data_validade' in data:
@@ -137,8 +141,9 @@ def update_orcamento(id):
         Anexo.query.filter_by(orcamento_id=orcamento.id).delete()
         anexos_data = data.get('anexos', [])
         for anexo_data in anexos_data:
-            nome = anexo_data.get('nome')
-            caminho = anexo_data.get('caminho')
+            # Aceita tanto 'nome'/'caminho' quanto 'name'/'path'
+            nome = anexo_data.get('nome') or anexo_data.get('name') or anexo_data.get('filename')
+            caminho = anexo_data.get('caminho') or anexo_data.get('path') or anexo_data.get('url')
             if nome and caminho:
                 anexo = Anexo(nome=nome, caminho=caminho)
                 orcamento.anexos.append(anexo)

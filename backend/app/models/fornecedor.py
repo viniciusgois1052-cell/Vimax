@@ -7,12 +7,14 @@ class Fornecedor(db.Model):
     nome = db.Column(db.String(100), nullable=False)
     cnpj = db.Column(db.String(18))
     servico = db.Column(db.String(255))
+    tipo_servico_id = db.Column(db.Integer, db.ForeignKey('tipos_servico.id'), nullable=True)
     email = db.Column(db.String(100))
     telefone = db.Column(db.String(20))
     endereco = db.Column(db.String(255))
     
     empresa_id = db.Column(db.Integer, db.ForeignKey('empresas.id'), nullable=True)
     empresa = db.relationship('Empresa', backref=db.backref('fornecedores', lazy=True))
+    tipo_servico = db.relationship('TipoServico', backref=db.backref('fornecedores', lazy=True))
 
     def to_dict(self):
         return {
@@ -20,6 +22,8 @@ class Fornecedor(db.Model):
             'nome': self.nome, 
             'cnpj': self.cnpj,
             'servico': self.servico,
+            'tipo_servico_id': self.tipo_servico_id,
+            'tipo_servico_nome': self.tipo_servico.nome if self.tipo_servico else None,
             'email': self.email, 
             'telefone': self.telefone,
             'endereco': self.endereco,

@@ -12,6 +12,7 @@ const Fornecedores = () => {
     const { user } = useAuth();
     const [fornecedores, setFornecedores] = useState([]);
     const [empresas, setEmpresas] = useState([]);
+    const [tiposServico, setTiposServico] = useState([]);
     
     const [searchTerm, setSearchTerm] = useState('');
     const [empresaFilter, setEmpresaFilter] = useState('Todas');
@@ -21,7 +22,7 @@ const Fornecedores = () => {
     const [currentFornecedor, setCurrentFornecedor] = useState(null);
 
     const [formData, setFormData] = useState({
-        nome: '', cnpj: '', servico: '', email: '', 
+        nome: '', cnpj: '', servico: '', tipo_servico_id: '', email: '', 
         telefone: '', endereco: '', empresa_id: ''
     });
 
@@ -36,16 +37,18 @@ const Fornecedores = () => {
 
             const queryParams = selectedEntity !== 'all' ? `?empresa_id=${selectedEntity}` : '';
 
-            const [f, e] = await Promise.all([
+            const [f, e, ts] = await Promise.all([
                 fetch(`${API_URL}/fornecedores${queryParams}`, { headers }),
-                fetch(`${API_URL}/empresas`, { headers })
+                fetch(`${API_URL}/empresas`, { headers }),
+                fetch(`${API_URL}/tipos-servico`, { headers })
             ]);
             if (f.ok) setFornecedores(await f.json());
             if (e.ok) setEmpresas(await e.json());
+            if (ts.ok) setTiposServico(await ts.json());
         } catch (error) { console.error("Erro ao carregar dados:", error); }
-    }, []);
+    }, [user, selectedEntity]);
 
-    useEffect(() => { fetchData(); }, [fetchData, selectedEntity]);
+    useEffect(() => { fetchData(); }, [fetchData]);
 
     const handleOpenModal = (fornecedor = null) => {
         if (fornecedor) {
@@ -55,6 +58,7 @@ const Fornecedores = () => {
                 nome: fornecedor.nome || '',
                 cnpj: fornecedor.cnpj || '',
                 servico: fornecedor.servico || '',
+                tipo_servico_id: fornecedor.tipo_servico_id?.toString() || '',
                 email: fornecedor.email || '',
                 telefone: fornecedor.telefone || '',
                 endereco: fornecedor.endereco || '',
@@ -64,7 +68,7 @@ const Fornecedores = () => {
             setIsEditing(false);
             setCurrentFornecedor(null);
             setFormData({
-                nome: '', cnpj: '', servico: '', email: '', 
+                nome: '', cnpj: '', servico: '', tipo_servico_id: '', email: '', 
                 telefone: '', endereco: '', empresa_id: ''
             });
         }
@@ -76,7 +80,8 @@ const Fornecedores = () => {
         
         const payload = {
             ...formData,
-            empresa_id: formData.empresa_id ? parseInt(formData.empresa_id) : null
+            empresa_id: formData.empresa_id ? parseInt(formData.empresa_id) : null,
+            tipo_servico_id: formData.tipo_servico_id ? parseInt(formData.tipo_servico_id) : null
         };
 
         const method = isEditing ? 'PUT' : 'POST';
@@ -108,7 +113,6 @@ const Fornecedores = () => {
         }
     };
 
-    // Função para construir o caminho hierárquico da empresa (ex: Matriz > Filial)
     const buildEmpresaHierarchy = useCallback((empresaId) => {
         if (!empresaId) return '';
         const empresa = empresas.find(e => e.id === empresaId);
@@ -129,7 +133,6 @@ const Fornecedores = () => {
         return hierarchy;
     }, [empresas]);
 
-    // Função para renderizar as opções do select com indentação visual
     const renderEmpresaOptions = () => {
         const buildTree = (parentId = null, level = 0) => {
             return empresas
@@ -167,7 +170,6 @@ const Fornecedores = () => {
                 </button>
             </div>
 
-            {/* Filtros */}
             <div className="bg-white p-4 rounded-xl shadow-sm mb-6 border border-gray-200 grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="relative">
                     <FaSearch className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
@@ -193,14 +195,14 @@ const Fornecedores = () => {
                 </select>
             </div>
 
-            {/* Tabela de Fornecedores */}
             <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
                 <table className="w-full text-left border-collapse">
                     <thead>
                         <tr className="bg-gray-50 border-b border-gray-200 text-gray-600 text-sm uppercase font-bold">
                             <th className="px-6 py-4">Nome / CNPJ</th>
                             <th className="px-6 py-4">Empresa (Vínculo)</th>
-                            <th className="px-6 py-4">Serviço</th>
+                            <th className="px-6 py-4">Tipo de Serviço</th>
+                            <th className="px-6 py-4">Serviço (Detalhes)</th>
                             <th className="px-6 py-4">Contato</th>
                             <th className="px-6 py-4 text-right">Ações</th>
                         </tr>
@@ -228,6 +230,11 @@ const Fornecedores = () => {
                                 </td>
                                 <td className="px-6 py-4">
                                     <span className="text-sm text-gray-600 flex items-center gap-2">
+                                        <FaInfoCircle className="text-blue-400" /> {f.tipo_servico_nome || '-'}
+                                    </span>
+                                </td>
+                                <td className="px-6 py-4">
+                                    <span className="text-sm text-gray-600 flex items-center gap-2">
                                         <FaBriefcase className="text-green-400" /> {f.servico || '-'}
                                     </span>
                                 </td>
@@ -249,7 +256,6 @@ const Fornecedores = () => {
                 </table>
             </div>
 
-            {/* Modal de Cadastro/Edição */}
             {isModalOpen && (
                 <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
                     <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col">
@@ -275,7 +281,20 @@ const Fornecedores = () => {
                                         <input type="text" className="w-full p-2 border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500" value={formData.cnpj} onChange={(e) => setFormData({...formData, cnpj: e.target.value})} />
                                     </div>
                                     <div>
-                                        <label className="block text-xs font-bold text-gray-700 mb-1">Serviço</label>
+                                        <label className="block text-xs font-bold text-gray-700 mb-1">Tipo de Serviço</label>
+                                        <select 
+                                            className="w-full p-2 border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500" 
+                                            value={formData.tipo_servico_id} 
+                                            onChange={(e) => setFormData({...formData, tipo_servico_id: e.target.value})}
+                                        >
+                                            <option value="">Selecione o Tipo de Serviço</option>
+                                            {tiposServico.map(ts => (
+                                                <option key={ts.id} value={ts.id.toString()}>{ts.nome}</option>
+                                            ))}
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs font-bold text-gray-700 mb-1">Serviço (Detalhes)</label>
                                         <input type="text" className="w-full p-2 border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500" value={formData.servico} onChange={(e) => setFormData({...formData, servico: e.target.value})} />
                                     </div>
                                 </div>
