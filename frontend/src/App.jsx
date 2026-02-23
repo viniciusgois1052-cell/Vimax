@@ -19,6 +19,10 @@ import Relatorios from './pages/Relatorios'
 import Ativos from './pages/Ativos'
 import CategoriasChamado from './pages/CategoriasChamado'
 import TipoServico from './pages/TipoServico'
+import TipoInfraestrutura from './pages/TipoInfraestrutura'
+import Infraestrutura from './pages/Infraestrutura'
+import FormularioChamadoAdmin from './pages/FormularioChamadoAdmin'
+import FormularioChamadoPublico from './pages/FormularioChamadoPublico'
 import AbrirChamadoPublico from './pages/AbrirChamadoPublico'
 
 function Navigation({ isCollapsed, toggleCollapse }) {
@@ -26,7 +30,6 @@ function Navigation({ isCollapsed, toggleCollapse }) {
   const { selectedEntity, setSelectedEntity, treeEntities } = useEntity()
   const { user, logout } = useAuth()
   
-  // Se o usuário for do perfil 'publico', não renderiza a navegação lateral
   if (user && user.role === 'publico') {
     return null;
   }
@@ -38,6 +41,7 @@ function Navigation({ isCollapsed, toggleCollapse }) {
         { path: '/chamados', icon: Wrench, label: 'Chamados', roles: ['super_admin', 'admin'] },
         { path: '/categorias-chamado', icon: Tag, label: 'Tipo Chamado', roles: ['super_admin', 'admin'] },
         { path: '/tipos-servico', icon: Hammer, label: 'Tipo Serviço', roles: ['super_admin', 'admin'] },
+        { path: '/formularios-chamado', icon: FileText, label: 'Formulários Chamado', roles: ['super_admin', 'admin'] },
       ]
     },
     {
@@ -54,6 +58,8 @@ function Navigation({ isCollapsed, toggleCollapse }) {
         { path: '/localizacoes', icon: MapPin, label: 'Localização', roles: ['super_admin', 'admin'] },
         { path: '/ativos', icon: Box, label: 'Ativos', roles: ['super_admin', 'admin'] },
         { path: '/fornecedores', icon: Users, label: 'Fornecedores', roles: ['super_admin', 'admin'] },
+        { path: '/tipos-infraestrutura', icon: Hammer, label: 'Tipo Infraestrutura', roles: ['super_admin', 'admin'] },
+        { path: '/infraestruturas', icon: Wrench, label: 'Infraestrutura', roles: ['super_admin', 'admin'] },
       ]
     },
     {
@@ -230,7 +236,6 @@ function AppContent() {
 
   useEffect(() => {
     const checkAlertas = async () => {
-      // Perfil público não deve ver alertas de contrato
       if (user && user.role === 'publico') return;
 
       if (user && !sessionStorage.getItem('alertas_vistos')) {
@@ -255,8 +260,6 @@ function AppContent() {
 
   if (!user) return <LoginPage />
 
-  // Se o usuário for público e estiver na raiz, redireciona para algum lugar (embora o ideal seja ele entrar pelo link do QR Code)
-  // Mas vamos garantir que ele não veja nada além da página de abrir chamado
   const isPublicUser = user.role === 'publico';
   const mainMargin = isPublicUser ? 'ml-0' : (isCollapsed ? 'ml-20' : 'ml-64');
 
@@ -288,9 +291,13 @@ function AppContent() {
               <Route path="/relatorios" element={<Relatorios />} />
               <Route path="/categorias-chamado" element={<CategoriasChamado />} />
               <Route path="/tipos-servico" element={<TipoServico />} />
+              <Route path="/tipos-infraestrutura" element={<TipoInfraestrutura />} />
+              <Route path="/infraestruturas" element={<Infraestrutura />} />
+              <Route path="/formularios-chamado" element={<FormularioChamadoAdmin />} />
             </>
           ) : (
             <>
+              <Route path="/formulario-chamado/:id" element={<FormularioChamadoPublico />} />
               <Route path="/abrir-chamado/:id" element={<AbrirChamadoPublico />} />
               <Route path="*" element={<div className="flex items-center justify-center h-full text-muted-foreground">Acesso restrito via QR Code</div>} />
             </>
@@ -298,7 +305,6 @@ function AppContent() {
         </Routes>
       </main>
 
-      {/* Modal de Alertas de Contrato */}
       {showModal && alertas.length > 0 && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[100] p-4">
           <div className="bg-white rounded-3xl shadow-2xl max-w-2xl w-full overflow-hidden animate-in zoom-in duration-300">

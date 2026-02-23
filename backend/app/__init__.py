@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 from flask import Flask, send_from_directory, abort, jsonify, request
 from flask_sqlalchemy import SQLAlchemy
 from flask_cors import CORS
@@ -24,7 +25,6 @@ def create_app(config_class=None):
     # ============================================
     # 🚀 CORS - CONFIGURAÇÃO ABSOLUTA
     # ============================================
-    # Configurar CORS ANTES de qualquer outra coisa
     CORS(app, 
          origins="*",
          allow_headers=["Content-Type", "Authorization", "X-API-Token"],
@@ -32,12 +32,8 @@ def create_app(config_class=None):
          supports_credentials=True,
          max_age=3600)
 
-    # ============================================
-    # 🚀 MIDDLEWARE PARA GARANTIR CORS EM TUDO
-    # ============================================
     @app.after_request
     def after_request(response):
-        """Adicionar headers CORS a TODAS as respostas"""
         response.headers['Access-Control-Allow-Origin'] = '*'
         response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS, PATCH'
         response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-API-Token'
@@ -59,12 +55,9 @@ def create_app(config_class=None):
     # ============================================
     @app.errorhandler(Exception)
     def handle_error(error):
-        """Captura todos os erros e retorna JSON com CORS headers"""
-        # Registrar o erro para debug
         print(f"❌ ERRO: {error}")
         traceback.print_exc()
         
-        # Retornar erro em JSON
         response = jsonify({
             'success': False,
             'error': str(error),
@@ -72,7 +65,6 @@ def create_app(config_class=None):
         })
         response.status_code = 500
         
-        # Garantir que os headers CORS estejam presentes
         response.headers['Access-Control-Allow-Origin'] = '*'
         response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS, PATCH'
         response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-API-Token'
@@ -81,7 +73,6 @@ def create_app(config_class=None):
 
     @app.errorhandler(404)
     def not_found(error):
-        """Tratamento para rotas não encontradas"""
         response = jsonify({
             'success': False,
             'error': 'Rota não encontrada',
@@ -107,6 +98,9 @@ def create_app(config_class=None):
         from .routes.relatorio_routes import relatorio_bp
         from .routes.categoria_chamado_routes import categoria_chamado_bp
         from .routes.tipo_servico_routes import tipo_servico_bp
+        from .routes.tipo_infraestrutura_routes import tipo_infraestrutura_bp
+        from .routes.infraestrutura_routes import infraestrutura_bp
+        from .routes.formulario_chamado_routes import formulario_chamado_bp
         from .routes.public_routes import public_bp
         from .routes.config_email_routes import config_email_bp
 
@@ -122,6 +116,9 @@ def create_app(config_class=None):
         app.register_blueprint(relatorio_bp, url_prefix='/api/relatorios')
         app.register_blueprint(categoria_chamado_bp, url_prefix='/api/categorias-chamado')
         app.register_blueprint(tipo_servico_bp, url_prefix='/api/tipos-servico')
+        app.register_blueprint(tipo_infraestrutura_bp, url_prefix='/api/tipos-infraestrutura')
+        app.register_blueprint(infraestrutura_bp, url_prefix='/api/infraestruturas')
+        app.register_blueprint(formulario_chamado_bp, url_prefix='/api/formularios-chamado')
         app.register_blueprint(public_bp, url_prefix='/api/public')
         app.register_blueprint(config_email_bp, url_prefix='/api/config/email')
         
