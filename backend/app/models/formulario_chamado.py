@@ -9,12 +9,19 @@ class FormularioChamado(db.Model):
     nome = db.Column(db.String(255), nullable=False)
     tipo = db.Column(db.String(50), nullable=False)  # 'maquinario' ou 'infraestrutura'
     empresa_id = db.Column(db.Integer, db.ForeignKey('empresas.id'), nullable=False)
-    opcoes = db.Column(db.Text)  # JSON com as opções
+    
+    # ✅ NOVO: Vincular a um Ativo ou Infraestrutura específica
+    ativo_id = db.Column(db.Integer, db.ForeignKey('ativos.id'), nullable=True)
+    infraestrutura_id = db.Column(db.Integer, db.ForeignKey('infraestrutura.id'), nullable=True)
+    
+    opcoes = db.Column(db.Text)  # JSON com as opções (problemas)
     ativo = db.Column(db.Boolean, default=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     empresa = db.relationship('Empresa', backref='formularios_chamado')
+    ativo_rel = db.relationship('Ativo', foreign_keys=[ativo_id], backref='formularios_chamado')
+    infraestrutura_rel = db.relationship('Infraestrutura', foreign_keys=[infraestrutura_id], backref='formularios_chamado')
     
     def to_dict(self):
         return {
@@ -23,6 +30,10 @@ class FormularioChamado(db.Model):
             'tipo': self.tipo,
             'empresa_id': self.empresa_id,
             'empresa_nome': self.empresa.nome if self.empresa else None,
+            'ativo_id': self.ativo_id,
+            'ativo_nome': self.ativo_rel.nome if self.ativo_rel else None,
+            'infraestrutura_id': self.infraestrutura_id,
+            'infraestrutura_nome': self.infraestrutura_rel.nome if self.infraestrutura_rel else None,
             'opcoes': json.loads(self.opcoes) if self.opcoes else [],
             'ativo': self.ativo,
             'created_at': self.created_at.isoformat() if self.created_at else None,

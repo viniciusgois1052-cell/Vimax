@@ -24,6 +24,7 @@ import Infraestrutura from './pages/Infraestrutura'
 import FormularioChamadoAdmin from './pages/FormularioChamadoAdmin'
 import FormularioChamadoPublico from './pages/FormularioChamadoPublico'
 import AbrirChamadoPublico from './pages/AbrirChamadoPublico'
+import PortalChamadoEmpresa from './pages/PortalChamadoEmpresa'
 
 function Navigation({ isCollapsed, toggleCollapse }) {
   const location = useLocation()
@@ -258,7 +259,22 @@ function AppContent() {
     checkAlertas()
   }, [user])
 
-  if (!user) return <LoginPage />
+  // Permitir acesso ao portal sem login no sistema administrativo
+  const isPortalRoute = window.location.pathname.match(/^\/portal\/\d+$/);
+  if (!user && !isPortalRoute) return <LoginPage />
+  
+  // Se for rota do portal e não tem usuário, renderiza o portal (ele tem seu próprio login)
+  if (!user && isPortalRoute) {
+    return (
+      <div className="flex min-h-screen bg-background">
+        <main className="flex-1 p-8 transition-all duration-300">
+          <Routes>
+            <Route path="/portal/:empresa_id" element={<PortalChamadoEmpresa />} />
+          </Routes>
+        </main>
+      </div>
+    )
+  }
 
   const isPublicUser = user.role === 'publico';
   const mainMargin = isPublicUser ? 'ml-0' : (isCollapsed ? 'ml-20' : 'ml-64');
@@ -267,7 +283,7 @@ function AppContent() {
     <div className="flex min-h-screen bg-background">
       <Navigation isCollapsed={isCollapsed} toggleCollapse={() => setIsCollapsed(!isCollapsed)} />
       <main className={`flex-1 p-8 transition-all duration-300 ${mainMargin}`}>
-        {isPublicUser && (
+        {user && isPublicUser && (
           <div className="fixed top-4 right-4 z-[60]">
             <button onClick={logout} className="flex items-center gap-2 px-4 py-2 bg-white border border-red-200 text-red-500 rounded-xl font-bold shadow-sm hover:bg-red-50 transition-all">
               <LogOut className="w-4 h-4" />
@@ -276,7 +292,11 @@ function AppContent() {
           </div>
         )}
         <Routes>
-          {!isPublicUser ? (
+          {/* Rota do Portal - Acessível sem login administrativo */}
+          <Route path="/portal/:empresa_id" element={<PortalChamadoEmpresa />} />
+          
+          {/* Rotas administrativas - Requerem login */}
+          {user && !isPublicUser ? (
             <>
               <Route path="/" element={<Navigate to="/chamados" replace />} />
               <Route path="/empresas" element={<Empresas />} />

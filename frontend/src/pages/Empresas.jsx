@@ -233,6 +233,7 @@ const Empresas = () => {
                 <table className="w-full text-left border-collapse">
                     <thead>
                         <tr className="bg-gray-50 border-b border-gray-200 text-gray-600 text-sm uppercase font-bold">
+                            <th className="px-6 py-4">ID</th>
                             <th className="px-6 py-4">Empresa</th>
                             <th className="px-6 py-4">Contato</th>
                             <th className="px-6 py-4 text-right">Ações</th>
@@ -241,6 +242,9 @@ const Empresas = () => {
                     <tbody className="divide-y divide-gray-100">
                         {filteredEmpresas.map(e => (
                             <tr key={e.id} className="hover:bg-indigo-50/30 transition-colors group">
+                                <td className="px-6 py-4">
+                                    <span className="text-gray-600 font-mono text-sm font-bold">{e.id}</span>
+                                </td>
                                 <td className="px-6 py-4">
                                     <div className="flex flex-col">
                                         <span className="text-gray-800 font-semibold flex items-center gap-2">

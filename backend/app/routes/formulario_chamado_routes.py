@@ -54,6 +54,8 @@ def create_formulario():
             nome=data.get('nome'),
             tipo=data.get('tipo'),  # 'maquinario' ou 'infraestrutura'
             empresa_id=safe_int(data.get('empresa_id')),
+            ativo_id=safe_int(data.get('ativo_id')),
+            infraestrutura_id=safe_int(data.get('infraestrutura_id')),
             opcoes=json.dumps(data.get('opcoes', [])),
             ativo=data.get('ativo', True)
         )
@@ -88,6 +90,8 @@ def update_formulario(id):
         if 'nome' in data: form.nome = data.get('nome')
         if 'tipo' in data: form.tipo = data.get('tipo')
         if 'empresa_id' in data: form.empresa_id = safe_int(data.get('empresa_id'))
+        if 'ativo_id' in data: form.ativo_id = safe_int(data.get('ativo_id'))
+        if 'infraestrutura_id' in data: form.infraestrutura_id = safe_int(data.get('infraestrutura_id'))
         if 'opcoes' in data: form.opcoes = json.dumps(data.get('opcoes', []))
         if 'ativo' in data: form.ativo = data.get('ativo')
 

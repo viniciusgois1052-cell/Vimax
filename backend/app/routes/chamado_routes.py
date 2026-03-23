@@ -23,6 +23,7 @@ def safe_float(val):
 def list_chamados():
     include_inactive = request.args.get('include_inactive', '0') in ('1', 'true', 'True')
     empresa_id = request.args.get('empresa_id')
+    tipo_filter = request.args.get('tipo')
     q = (request.args.get('q') or '').strip()
     page = int(request.args.get('page', 1))
     per_page = int(request.args.get('per_page', 100))
@@ -36,6 +37,9 @@ def list_chamados():
             query = query.filter(Chamado.empresa_id == int(empresa_id))
         except Exception:
             pass
+
+    if tipo_filter and tipo_filter in ('maquinario', 'infraestrutura'):
+        query = query.filter(Chamado.tipo == tipo_filter)
 
     if q:
         like = f"%{q}%"
@@ -59,11 +63,17 @@ def create_chamado():
 
     try:
         criticidade = data.get('criticidade_informada')
+        
+        # Processar opcoes_selecionadas
+        opcoes = data.get('opcoes_selecionadas')
+        opcoes_json = json.dumps(opcoes) if opcoes is not None else None
+        
         novo = Chamado(
             titulo = data.get('titulo'),
             descricao = data.get('descricao'),
             status = data.get('status') or 'aberto',
             prioridade = data.get('prioridade'),
+            tipo = data.get('tipo') or 'maquinario',
             valor_total = safe_float(data.get('valor_total')),
             criticidade_informada = criticidade,
             criticidade_real = data.get('criticidade_real') or criticidade,
@@ -72,11 +82,13 @@ def create_chamado():
             usuario_responsavel_id = safe_int(data.get('usuario_responsavel_id')),
             categoria_id = safe_int(data.get('categoria_id')),
             ativo_id = safe_int(data.get('ativo_id')),
+            infraestrutura_id = safe_int(data.get('infraestrutura_id')),
             fornecedor_id = safe_int(data.get('fornecedor_id')),
             contrato_id = safe_int(data.get('contrato_id')),
             orcamento_id = safe_int(data.get('orcamento_id')),
+            opcoes_selecionadas = opcoes_json,
             anexos = json.dumps(data.get('anexos')) if data.get('anexos') is not None else None,
-            data_abertura = datetime.utcnow(), # Sempre UTC
+            data_abertura = datetime.utcnow(),
             ativo = True,
             deleted_at = None
         )
@@ -84,14 +96,14 @@ def create_chamado():
         # Lógica automática de data de solução na criação
         status_resolvidos = ['resolvido', 'concluído', 'fechado']
         if novo.status.lower() in status_resolvidos:
-            novo.data_solucao = datetime.utcnow() # Sempre UTC
+            novo.data_solucao = datetime.utcnow()
 
         db.session.add(novo)
         db.session.commit()
 
         try:
             create_log(user=user, action='create_chamado', entity='chamado', entity_id=novo.id,
-                       details={'titulo': novo.titulo, 'payload': data}, req=request)
+                       details={'titulo': novo.titulo, 'tipo': novo.tipo, 'payload': data}, req=request)
         except Exception:
             pass
 
@@ -122,6 +134,7 @@ def update_chamado(id):
         if 'descricao' in data: c.descricao = data.get('descricao')
         if 'status' in data: c.status = data.get('status')
         if 'prioridade' in data: c.prioridade = data.get('prioridade')
+        if 'tipo' in data: c.tipo = data.get('tipo')
         if 'valor_total' in data: c.valor_total = safe_float(data.get('valor_total'))
         if 'criticidade_real' in data: c.criticidade_real = data.get('criticidade_real')
         
@@ -130,9 +143,14 @@ def update_chamado(id):
         if 'usuario_responsavel_id' in data: c.usuario_responsavel_id = safe_int(data.get('usuario_responsavel_id'))
         if 'categoria_id' in data: c.categoria_id = safe_int(data.get('categoria_id'))
         if 'ativo_id' in data: c.ativo_id = safe_int(data.get('ativo_id'))
+        if 'infraestrutura_id' in data: c.infraestrutura_id = safe_int(data.get('infraestrutura_id'))
         if 'fornecedor_id' in data: c.fornecedor_id = safe_int(data.get('fornecedor_id'))
         if 'contrato_id' in data: c.contrato_id = safe_int(data.get('contrato_id'))
         if 'orcamento_id' in data: c.orcamento_id = safe_int(data.get('orcamento_id'))
+        
+        if 'opcoes_selecionadas' in data:
+            opcoes = data.get('opcoes_selecionadas')
+            c.opcoes_selecionadas = json.dumps(opcoes) if opcoes is not None else None
         
         if 'anexos' in data:
             c.anexos = json.dumps(data.get('anexos')) if data.get('anexos') is not None else None
@@ -141,10 +159,8 @@ def update_chamado(id):
         new_status = (c.status or '').lower()
         status_resolvidos = ['resolvido', 'concluído', 'fechado']
         
-        # Se mudou para resolvido e não estava resolvido antes, marca a data atual em UTC
         if new_status in status_resolvidos and old_status not in status_resolvidos:
             c.data_solucao = datetime.utcnow()
-        # Se saiu do status resolvido, limpa a data de solução
         elif new_status not in status_resolvidos:
             c.data_solucao = None
 
