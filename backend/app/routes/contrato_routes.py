@@ -91,33 +91,58 @@ def delete_contrato(contrato_id):
     db.session.commit()
     return jsonify({'message': 'Contrato excluído com sucesso'}), 200
 
-@contrato_bp.route('/alertas', methods=['GET'])
-def get_alertas_vencimento():
-    empresa_id = request.args.get('empresa_id')
-    api_token = request.headers.get('X-API-Token')
-    
-    user = None
-    if api_token:
-        user = Usuario.query.filter_by(api_token=api_token).first()
+@contrato_bp.route('/alertas-expiracao', methods=['GET'])
+def get_alertas_expiracao():
+    """Retorna contratos vencidos e próximos do vencimento"""
+    try:
+        hoje = datetime.now().date()
+        contratos = Contrato.query.all()
         
-    query = Contrato.query
-    query = apply_entity_filter(query, Contrato, empresa_id, user)
-    contratos = query.all()
-    
-    hoje = datetime.now().date()
-    alertas = []
-    
-    for c in contratos:
-        if c.data_fim:
-            dias_para_vencer = (c.data_fim - hoje).days
-            if 0 <= dias_para_vencer <= (c.dias_aviso_vencimento or 30):
+        alertas = []
+        
+        for contrato in contratos:
+            if not contrato.data_fim:
+                continue
+            
+            dias_restantes = (contrato.data_fim - hoje).days
+            
+            # Contrato VENCIDO (passou da data de fim)
+            if dias_restantes < 0:
                 alertas.append({
-                    'id': c.id,
-                    'numero': c.numero,
-                    'empresa_nome': c.empresa.nome if c.empresa else 'N/A',
-                    'fornecedor_nome': c.fornecedor.nome if c.fornecedor else 'N/A',
-                    'data_fim': c.data_fim.isoformat(),
-                    'dias_restantes': dias_para_vencer
+                    'id': contrato.id,
+                    'numero': contrato.numero,
+                    'fornecedor_nome': contrato.fornecedor.nome if contrato.fornecedor else 'Não informado',
+                    'data_fim': contrato.data_fim.isoformat(),
+                    'dias_restantes': dias_restantes,
+                    'status': 'VENCIDO',
+                    'observacao': contrato.observacao
                 })
-                
-    return jsonify(alertas), 200
+            # Contrato PRÓXIMO DO VENCIMENTO (entre hoje e dias_aviso_vencimento)
+            elif 0 <= dias_restantes <= contrato.dias_aviso_vencimento:
+                alertas.append({
+                    'id': contrato.id,
+                    'numero': contrato.numero,
+                    'fornecedor_nome': contrato.fornecedor.nome if contrato.fornecedor else 'Não informado',
+                    'data_fim': contrato.data_fim.isoformat(),
+                    'dias_restantes': dias_restantes,
+                    'status': 'PROXIMO',
+                    'observacao': contrato.observacao
+                })
+        
+        # Ordenar: vencidos primeiro (por data), depois próximos
+        alertas_vencidos = [a for a in alertas if a['status'] == 'VENCIDO']
+        alertas_proximos = [a for a in alertas if a['status'] == 'PROXIMO']
+        
+        alertas_vencidos.sort(key=lambda x: x['dias_restantes'])
+        alertas_proximos.sort(key=lambda x: x['dias_restantes'])
+        
+        return jsonify(alertas_vencidos + alertas_proximos), 200
+        
+    except Exception as e:
+        print(f"Erro ao buscar alertas: {e}")
+        return jsonify([]), 200
+
+@contrato_bp.route('/alertas', methods=['GET'])
+def get_alertas():
+    """Rota alternativa para compatibilidade - retorna contratos com alertas de vencimento"""
+    return get_alertas_expiracao()

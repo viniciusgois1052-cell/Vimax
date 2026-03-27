@@ -3,7 +3,8 @@ import {
     FaPlus, FaEdit, FaTrashAlt, FaFilter, FaEye, FaTag, 
     FaDollarSign, FaCalendarAlt, FaMapMarkerAlt, FaFileContract, 
     FaShoppingCart, FaTimes, FaBox, FaUser, FaPaperclip, FaCheckCircle,
-    FaExclamationCircle, FaClock, FaInfoCircle, FaSearch, FaBuilding, FaBolt, FaTools, FaQrcode, FaTruck
+    FaExclamationCircle, FaClock, FaInfoCircle, FaSearch, FaBuilding, FaBolt, FaTools, FaQrcode, FaTruck,
+    FaIndustry, FaLayerGroup
 } from 'react-icons/fa';
 import { format, parseISO } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
@@ -19,12 +20,14 @@ const Chamados = () => {
     const [contratos, setContratos] = useState([]);
     const [orcamentos, setOrcamentos] = useState([]);
     const [ativos, setAtivos] = useState([]);
+    const [infraestruturas, setInfraestruturas] = useState([]);
     const [empresas, setEmpresas] = useState([]);
     const [categorias, setCategorias] = useState([]);
     
     const [searchTerm, setSearchTerm] = useState('');
     const [statusFilter, setStatusFilter] = useState('Não Encerrados');
     const [empresaFilter, setEmpresaFilter] = useState('Todas');
+    const [tipoFilter, setTipoFilter] = useState('Todos');
     
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [isEditing, setIsEditing] = useState(false);
@@ -36,9 +39,10 @@ const Chamados = () => {
         titulo: '', descricao: '', status: 'Aberto',
         empresa_id: '', fornecedor_id: '', localizacao_id: '', 
         contrato_id: '', orcamento_id: '', ativo_id: '', 
+        infraestrutura_id: '',
         categoria_id: '',
         criticidade_informada: 'Média', criticidade_real: 'Média',
-        valor_total: 0, anexos: []
+        valor_total: 0, anexos: [], tipo: 'maquinario'
     });
     
     const [uploading, setUploading] = useState(false);
@@ -67,13 +71,14 @@ const Chamados = () => {
 
             const queryParams = selectedEntity && selectedEntity !== 'all' ? `?empresa_id=${selectedEntity}` : '';
 
-            const [c, f, l, con, o, a, emp, cat] = await Promise.all([
+            const [c, f, l, con, o, a, infra, emp, cat] = await Promise.all([
                 fetch(`${API_URL}/chamados${queryParams}`, { headers }),
                 fetch(`${API_URL}/fornecedores${queryParams}`, { headers }),
                 fetch(`${API_URL}/localizacoes${queryParams}`, { headers }),
                 fetch(`${API_URL}/contratos${queryParams}`, { headers }),
                 fetch(`${API_URL}/orcamentos${queryParams}`, { headers }),
                 fetch(`${API_URL}/ativos${queryParams}`, { headers }),
+                fetch(`${API_URL}/infraestruturas${queryParams}`, { headers }),
                 fetch(`${API_URL}/empresas`, { headers }),
                 fetch(`${API_URL}/categorias-chamado`, { headers })
             ]);
@@ -87,6 +92,10 @@ const Chamados = () => {
             if (con.ok) setContratos(await con.json());
             if (o.ok) setOrcamentos(await o.json());
             if (a.ok) setAtivos(await a.json());
+            if (infra.ok) {
+                const infraData = await infra.json();
+                setInfraestruturas(Array.isArray(infraData.infraestruturas) ? infraData.infraestruturas : (Array.isArray(infraData) ? infraData : []));
+            }
             if (emp.ok) setEmpresas(await emp.json());
             if (cat.ok) setCategorias(await cat.json());
         } catch (error) {
@@ -137,11 +146,13 @@ const Chamados = () => {
                 contrato_id: chamado.contrato_id?.toString() || '',
                 orcamento_id: chamado.orcamento_id?.toString() || '',
                 ativo_id: chamado.ativo_id?.toString() || '',
+                infraestrutura_id: chamado.infraestrutura_id?.toString() || '',
                 categoria_id: chamado.categoria_id?.toString() || '',
                 criticidade_informada: chamado.criticidade_informada || 'Média',
                 criticidade_real: chamado.criticidade_real || 'Média',
                 valor_total: chamado.valor_total || 0,
-                anexos: Array.isArray(chamado.anexos) ? chamado.anexos : (typeof chamado.anexos === 'string' ? JSON.parse(chamado.anexos) : [])
+                anexos: Array.isArray(chamado.anexos) ? chamado.anexos : (typeof chamado.anexos === 'string' ? JSON.parse(chamado.anexos) : []),
+                tipo: chamado.tipo || 'maquinario'
             });
         } else {
             setIsEditing(false);
@@ -150,9 +161,10 @@ const Chamados = () => {
                 titulo: '', descricao: '', status: 'Aberto',
                 empresa_id: '', fornecedor_id: '', localizacao_id: '', 
                 contrato_id: '', orcamento_id: '', ativo_id: '', 
+                infraestrutura_id: '',
                 categoria_id: '',
                 criticidade_informada: 'Média', criticidade_real: 'Média',
-                valor_total: 0, anexos: []
+                valor_total: 0, anexos: [], tipo: 'maquinario'
             });
         }
         setIsModalOpen(true);
@@ -206,19 +218,21 @@ const Chamados = () => {
         const url = isEditing ? `${API_URL}/chamados/${currentChamado.id}` : `${API_URL}/chamados`;
         const method = isEditing ? 'PUT' : 'POST';
         try {
+            const payload = {
+                ...formData,
+                empresa_id: formData.empresa_id ? parseInt(formData.empresa_id) : null,
+                fornecedor_id: formData.fornecedor_id ? parseInt(formData.fornecedor_id) : null,
+                localizacao_id: formData.localizacao_id ? parseInt(formData.localizacao_id) : null,
+                contrato_id: formData.contrato_id ? parseInt(formData.contrato_id) : null,
+                orcamento_id: formData.orcamento_id ? parseInt(formData.orcamento_id) : null,
+                ativo_id: formData.tipo === 'maquinario' && formData.ativo_id ? parseInt(formData.ativo_id) : null,
+                infraestrutura_id: formData.tipo === 'infraestrutura' && formData.infraestrutura_id ? parseInt(formData.infraestrutura_id) : null,
+                categoria_id: formData.categoria_id ? parseInt(formData.categoria_id) : null,
+                anexos: formData.anexos
+            };
             const res = await fetch(url, {
                 method, headers,
-                body: JSON.stringify({
-                    ...formData,
-                    empresa_id: formData.empresa_id ? parseInt(formData.empresa_id) : null,
-                    fornecedor_id: formData.fornecedor_id ? parseInt(formData.fornecedor_id) : null,
-                    localizacao_id: formData.localizacao_id ? parseInt(formData.localizacao_id) : null,
-                    contrato_id: formData.contrato_id ? parseInt(formData.contrato_id) : null,
-                    orcamento_id: formData.orcamento_id ? parseInt(formData.orcamento_id) : null,
-                    ativo_id: formData.ativo_id ? parseInt(formData.ativo_id) : null,
-                    categoria_id: formData.categoria_id ? parseInt(formData.categoria_id) : null,
-                    anexos: formData.anexos
-                })
+                body: JSON.stringify(payload)
             });
             if (res.ok) { setIsModalOpen(false); fetchData(); }
         } catch (err) { console.error('Save error', err); } finally { setIsSaving(false); }
@@ -241,14 +255,20 @@ const Chamados = () => {
             const matchesStatus = statusFilter === 'Todos' || 
                                  (statusFilter === 'Não Encerrados' ? ['Aberto', 'Em Atendimento'].includes(c.status) : c.status === statusFilter);
             const matchesEmpresa = empresaFilter === 'Todas' || c.empresa_id?.toString() === empresaFilter;
-            return matchesSearch && matchesStatus && matchesEmpresa;
+            const matchesTipo = tipoFilter === 'Todos' || c.tipo === tipoFilter;
+            return matchesSearch && matchesStatus && matchesEmpresa && matchesTipo;
         });
-    }, [chamados, searchTerm, statusFilter, empresaFilter]);
+    }, [chamados, searchTerm, statusFilter, empresaFilter, tipoFilter]);
 
     const filteredAtivosForm = useMemo(() => {
         if (!formData.empresa_id) return ativos;
         return ativos.filter(a => a.empresa_id?.toString() === formData.empresa_id);
     }, [ativos, formData.empresa_id]);
+
+    const filteredInfraForm = useMemo(() => {
+        if (!formData.empresa_id) return infraestruturas;
+        return infraestruturas.filter(i => i.empresa_id?.toString() === formData.empresa_id);
+    }, [infraestruturas, formData.empresa_id]);
 
     const filteredLocalizacoesForm = useMemo(() => {
         if (!formData.empresa_id) return localizacoes;
@@ -269,6 +289,22 @@ const Chamados = () => {
         return `${API_BASE}/${path}`;
     };
 
+    // Badge de tipo do chamado
+    const TipoBadge = ({ tipo }) => {
+        if (tipo === 'infraestrutura') {
+            return (
+                <span className="inline-flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded-full font-bold uppercase bg-indigo-50 text-indigo-600 border border-indigo-100">
+                    <FaLayerGroup size={8} /> Infra
+                </span>
+            );
+        }
+        return (
+            <span className="inline-flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded-full font-bold uppercase bg-blue-50 text-blue-600 border border-blue-100">
+                <FaIndustry size={8} /> Maq.
+            </span>
+        );
+    };
+
     return (
         <div className="p-4 md:p-8 space-y-6 max-w-7xl mx-auto">
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -283,6 +319,7 @@ const Chamados = () => {
                 </button>
             </div>
 
+            {/* Filtros */}
             <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 flex flex-wrap gap-4 items-center">
                 <div className="flex-1 min-w-[200px] relative">
                     <FaSearch className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
@@ -296,19 +333,25 @@ const Chamados = () => {
                     <option value="Concluído">Concluído</option>
                     <option value="Cancelado">Cancelado</option>
                 </select>
+                <select className="px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary/20 text-sm font-medium" value={tipoFilter} onChange={(e) => setTipoFilter(e.target.value)}>
+                    <option value="Todos">Todos os Tipos</option>
+                    <option value="maquinario">Maquinário</option>
+                    <option value="infraestrutura">Infraestrutura</option>
+                </select>
                 <select className="px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary/20 text-sm font-medium" value={empresaFilter} onChange={(e) => setEmpresaFilter(e.target.value)}>
                     <option value="Todas">Todas as Empresas</option>
                     {empresas.map(e => <option key={e.id} value={e.id.toString()}>{e.nome}</option>)}
                 </select>
             </div>
 
+            {/* Tabela */}
             <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
                 <div className="overflow-x-auto">
                     <table className="w-full text-left border-collapse">
                         <thead>
                             <tr className="bg-slate-50/50 border-b border-slate-100 text-[11px] font-bold text-slate-500 uppercase tracking-wider">
                                 <th className="p-4">ID / Título</th>
-                                <th className="p-4">Ativo / Fornecedor</th>
+                                <th className="p-4">Tipo / Item</th>
                                 <th className="p-4">Status / Prioridade</th>
                                 <th className="p-4">Datas</th>
                                 <th className="p-4">Valor</th>
@@ -326,9 +369,22 @@ const Chamados = () => {
                                         </div>
                                     </td>
                                     <td className="p-4">
-                                        <div className="flex flex-col">
-                                            <span className="text-sm font-bold text-slate-700 flex items-center gap-1"><FaBox className="text-primary/60" size={12} /> {c.ativo_nome || 'Sem Ativo'}</span>
-                                            <span className="text-[10px] text-slate-400 uppercase font-bold flex items-center gap-1"><FaTruck className="text-slate-300" size={10} /> {c.fornecedor_nome || 'Sem Fornecedor'}</span>
+                                        <div className="flex flex-col gap-1">
+                                            <TipoBadge tipo={c.tipo} />
+                                            {c.tipo === 'infraestrutura' ? (
+                                                <span className="text-sm font-bold text-slate-700 flex items-center gap-1">
+                                                    <FaLayerGroup className="text-indigo-400" size={12} /> 
+                                                    {c.infraestrutura_nome || 'Sem Infraestrutura'}
+                                                </span>
+                                            ) : (
+                                                <span className="text-sm font-bold text-slate-700 flex items-center gap-1">
+                                                    <FaBox className="text-primary/60" size={12} /> 
+                                                    {c.ativo_nome || 'Sem Ativo'}
+                                                </span>
+                                            )}
+                                            <span className="text-[10px] text-slate-400 uppercase font-bold flex items-center gap-1">
+                                                <FaTruck className="text-slate-300" size={10} /> {c.fornecedor_nome || 'Sem Fornecedor'}
+                                            </span>
                                         </div>
                                     </td>
                                     <td className="p-4">
@@ -339,6 +395,17 @@ const Chamados = () => {
                                                 <span className="text-[10px] font-bold text-slate-400 flex items-center gap-1"><FaQrcode className="text-slate-300" /> {c.criticidade_informada || 'Média'}</span>
                                             </div>
                                             {c.contrato_nome && <span className="text-[10px] font-bold text-slate-400 flex items-center gap-1"><FaFileContract className="text-primary/60" /> {c.contrato_nome}</span>}
+                                            {/* Opções selecionadas do formulário */}
+                                            {c.opcoes_selecionadas && c.opcoes_selecionadas.length > 0 && (
+                                                <div className="flex flex-wrap gap-1 mt-1">
+                                                    {c.opcoes_selecionadas.slice(0, 2).map((op, idx) => (
+                                                        <span key={idx} className="text-[9px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded font-medium">{op}</span>
+                                                    ))}
+                                                    {c.opcoes_selecionadas.length > 2 && (
+                                                        <span className="text-[9px] bg-slate-100 text-slate-400 px-1.5 py-0.5 rounded font-medium">+{c.opcoes_selecionadas.length - 2}</span>
+                                                    )}
+                                                </div>
+                                            )}
                                         </div>
                                     </td>
                                     <td className="p-4">
@@ -365,6 +432,15 @@ const Chamados = () => {
                                     </td>
                                 </tr>
                             ))}
+                            {filteredChamados.length === 0 && (
+                                <tr>
+                                    <td colSpan={6} className="p-12 text-center text-slate-400">
+                                        <FaTools className="mx-auto mb-3 text-slate-200" size={32} />
+                                        <p className="font-medium">Nenhum chamado encontrado</p>
+                                        <p className="text-sm mt-1">Tente ajustar os filtros ou abrir um novo chamado</p>
+                                    </td>
+                                </tr>
+                            )}
                         </tbody>
                     </table>
                 </div>
@@ -393,7 +469,7 @@ const Chamados = () => {
                 </div>
             )}
 
-            {/* Cadastro/Edição Modal */}
+            {/* Modal Cadastro/Edição */}
             {isModalOpen && (
                 <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
                     <div className="bg-white rounded-3xl shadow-2xl w-full max-w-5xl max-h-[90vh] overflow-hidden flex flex-col animate-in fade-in zoom-in duration-200">
@@ -402,6 +478,33 @@ const Chamados = () => {
                             <button onClick={() => setIsModalOpen(false)} className="p-2 hover:bg-slate-100 rounded-full transition-colors"><FaTimes /></button>
                         </div>
                         <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-8">
+                            {/* TIPO DE CHAMADO */}
+                            <div className="mb-8 border-2 border-blue-400 rounded-xl p-4 bg-blue-50">
+                                <label className="block text-sm font-bold text-gray-700 mb-3">TIPO DE CHAMADO *</label>
+                                <div className="grid grid-cols-2 gap-4">
+                                    <label className={`p-4 border-2 rounded-lg cursor-pointer transition-all ${formData.tipo === 'maquinario' ? 'border-blue-600 bg-blue-100' : 'border-gray-300 bg-white hover:border-blue-300'}`}>
+                                        <input 
+                                            type="radio" 
+                                            value="maquinario" 
+                                            checked={formData.tipo === 'maquinario'}
+                                            onChange={(e) => setFormData({...formData, tipo: e.target.value, ativo_id: '', infraestrutura_id: ''})}
+                                            className="mr-2"
+                                        />
+                                        <span className="font-bold"><FaIndustry className="inline mr-1 text-blue-600" /> Maquinário</span>
+                                    </label>
+                                    <label className={`p-4 border-2 rounded-lg cursor-pointer transition-all ${formData.tipo === 'infraestrutura' ? 'border-indigo-600 bg-indigo-100' : 'border-gray-300 bg-white hover:border-indigo-300'}`}>
+                                        <input 
+                                            type="radio" 
+                                            value="infraestrutura" 
+                                            checked={formData.tipo === 'infraestrutura'}
+                                            onChange={(e) => setFormData({...formData, tipo: e.target.value, ativo_id: '', infraestrutura_id: ''})}
+                                            className="mr-2"
+                                        />
+                                        <span className="font-bold"><FaLayerGroup className="inline mr-1 text-indigo-600" /> Infraestrutura</span>
+                                    </label>
+                                </div>
+                            </div>
+
                             <div className="grid grid-cols-1 lg:grid-cols-2 gap-12">
                                 <div className="space-y-6">
                                     <div className="space-y-4">
@@ -438,13 +541,30 @@ const Chamados = () => {
                                     </div>
                                     <div className="space-y-4">
                                         <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest border-b border-slate-100 pb-2">Vínculos e Ativos</h3>
-                                        <div className="space-y-1">
-                                            <label className="text-xs font-bold text-slate-600 uppercase ml-1">Equipamento / Ativo</label>
-                                            <select className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary/20 transition-all" value={formData.ativo_id} onChange={(e) => handleAtivoChange(e.target.value)}>
-                                                <option value="">Selecione um Ativo (Opcional)</option>
-                                                {ativos.map(a => <option key={a.id} value={a.id.toString()}>{a.nome} {a.numero_serie ? `(S/N: ${a.numero_serie})` : ''}</option>)}
-                                            </select>
-                                        </div>
+                                        
+                                        {/* Campo condicional: Ativo ou Infraestrutura */}
+                                        {formData.tipo === 'maquinario' ? (
+                                            <div className="space-y-1">
+                                                <label className="text-xs font-bold text-slate-600 uppercase ml-1 flex items-center gap-1">
+                                                    <FaIndustry className="text-blue-500" /> Equipamento / Ativo
+                                                </label>
+                                                <select className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary/20 transition-all" value={formData.ativo_id} onChange={(e) => handleAtivoChange(e.target.value)}>
+                                                    <option value="">Selecione um Ativo (Opcional)</option>
+                                                    {filteredAtivosForm.map(a => <option key={a.id} value={a.id.toString()}>{a.nome} {a.numero_serie ? `(S/N: ${a.numero_serie})` : ''}</option>)}
+                                                </select>
+                                            </div>
+                                        ) : (
+                                            <div className="space-y-1">
+                                                <label className="text-xs font-bold text-slate-600 uppercase ml-1 flex items-center gap-1">
+                                                    <FaLayerGroup className="text-indigo-500" /> Item de Infraestrutura
+                                                </label>
+                                                <select className="w-full px-4 py-2.5 bg-indigo-50 border border-indigo-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-300 transition-all" value={formData.infraestrutura_id} onChange={(e) => setFormData({...formData, infraestrutura_id: e.target.value})}>
+                                                    <option value="">Selecione uma Infraestrutura (Opcional)</option>
+                                                    {filteredInfraForm.map(i => <option key={i.id} value={i.id.toString()}>{i.nome}</option>)}
+                                                </select>
+                                            </div>
+                                        )}
+
                                         <div className="space-y-1">
                                             <label className="text-xs font-bold text-slate-600 uppercase ml-1">Empresa / Clínica *</label>
                                             <select required className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary/20 transition-all" value={formData.empresa_id} onChange={(e) => setFormData({...formData, empresa_id: e.target.value})}>

@@ -242,7 +242,7 @@ function AppContent() {
       if (user && !sessionStorage.getItem('alertas_vistos')) {
         try {
           const headers = user.api_token ? { 'X-API-Token': user.api_token } : {}
-          const response = await fetch('/api/contratos/alertas', { headers })
+          const response = await fetch('/api/contratos/alertas-expiracao', { headers })
           if (response.ok) {
             const data = await response.json()
             if (data && data.length > 0) {
@@ -328,39 +328,64 @@ function AppContent() {
       {showModal && alertas.length > 0 && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[100] p-4">
           <div className="bg-white rounded-3xl shadow-2xl max-w-2xl w-full overflow-hidden animate-in zoom-in duration-300">
-            <div className="p-6 bg-amber-500 text-white flex items-center gap-4">
+            <div className="p-6 bg-gradient-to-r from-red-500 to-red-600 text-white flex items-center gap-4">
               <div className="p-3 bg-white/20 rounded-2xl">
                 <AlertTriangle size={32} />
               </div>
               <div>
-                <h2 className="text-xl font-bold">Atenção: Contratos a Vencer</h2>
-                <p className="text-amber-50 text-sm">Existem contratos que precisam de sua atenção imediata.</p>
+                <h2 className="text-xl font-bold">Atenção: Contratos que Requerem Ação</h2>
+                <p className="text-red-100 text-sm">Existem {alertas.length} contrato(s) que precisam de sua atenção imediata.</p>
               </div>
             </div>
             <div className="p-6 max-h-[60vh] overflow-y-auto">
               <div className="space-y-4">
-                {alertas.map((alerta, idx) => (
-                  <div key={idx} className="p-4 bg-slate-50 rounded-2xl border border-slate-100 flex justify-between items-center">
-                    <div>
-                      <p className="font-bold text-slate-800">{alerta.numero}</p>
-                      <p className="text-xs text-slate-500">{alerta.fornecedor_nome}</p>
+                {alertas.map((alerta, idx) => {
+                  const isVencido = alerta.status === 'VENCIDO'
+                  return (
+                    <div key={idx} className={`p-4 rounded-2xl border-l-4 ${
+                      isVencido 
+                        ? 'bg-red-50 border-red-500' 
+                        : 'bg-amber-50 border-amber-500'
+                    }`}>
+                      <div className="flex justify-between items-start">
+                        <div className="flex-1">
+                          <div className="flex items-center gap-2 mb-2">
+                            <span className={`px-3 py-1 text-xs font-bold rounded-full text-white ${
+                              isVencido ? 'bg-red-600' : 'bg-amber-600'
+                            }`}>
+                              {isVencido ? 'VENCIDO' : 'AVISO'}
+                            </span>
+                            <p className={`font-bold ${isVencido ? 'text-red-800' : 'text-amber-800'}`}>
+                              Contrato #{alerta.numero}
+                            </p>
+                          </div>
+                          <p className={`text-sm mb-1 ${isVencido ? 'text-red-700' : 'text-amber-700'}`}>
+                            <strong>Fornecedor:</strong> {alerta.fornecedor_nome}
+                          </p>
+                          <p className={`text-sm mb-2 ${isVencido ? 'text-red-700' : 'text-amber-700'}`}>
+                            <strong>Data de Vencimento:</strong> {new Date(alerta.data_fim).toLocaleDateString('pt-BR')}
+                          </p>
+                          <p className={`text-xs font-bold ${isVencido ? 'text-red-600' : 'text-amber-600'}`}>
+                            {isVencido ? `⚠️ Vencido há ${Math.abs(alerta.dias_restantes)} dia(s)` : `📅 Vence em ${alerta.dias_restantes} dia(s)`}
+                          </p>
+                          {alerta.observacao && (
+                            <p className={`text-xs mt-2 italic ${isVencido ? 'text-red-600' : 'text-amber-600'}`}>
+                              <strong>Obs:</strong> {alerta.observacao}
+                            </p>
+                          )}
+                        </div>
+                      </div>
                     </div>
-                    <div className="text-right">
-                      <p className={`text-sm font-bold ${alerta.dias_restantes <= 0 ? 'text-red-500' : 'text-amber-600'}`}>
-                        {alerta.dias_restantes <= 0 ? 'Vencido' : `Vence em ${alerta.dias_restantes} dias`}
-                      </p>
-                      <p className="text-[10px] text-slate-400 uppercase font-bold">{new Date(alerta.data_fim).toLocaleDateString('pt-BR')}</p>
-                    </div>
-                  </div>
-                ))}
+                  )
+                })}
               </div>
             </div>
-            <div className="p-6 bg-slate-50 border-t border-slate-100 flex justify-end">
+            <div className="p-6 bg-slate-50 border-t border-slate-200 flex justify-end">
               <button 
                 onClick={() => setShowModal(false)}
                 className="px-8 py-3 bg-slate-800 text-white rounded-xl font-bold hover:bg-slate-900 transition-all active:scale-95"
               >
-                Entendido
+                Entendi, Continuar
               </button>
             </div>
           </div>
