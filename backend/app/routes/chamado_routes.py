@@ -63,6 +63,7 @@ def create_chamado():
             titulo = data.get('titulo'),
             descricao = data.get('descricao'),
             status = data.get('status') or 'aberto',
+            tipo_chamado = data.get('tipo_chamado'),
             prioridade = data.get('prioridade'),
             valor_total = safe_float(data.get('valor_total')),
             criticidade_informada = criticidade,
@@ -96,9 +97,13 @@ def create_chamado():
             pass
 
         return jsonify(novo.to_dict()), 201
+    except TypeError as e:
+        try: db.session.rollback()
+        except Exception: pass
+        return jsonify({'error': 'invalid_field', 'success': False, 'type': 'TypeError'}), 400
     except Exception as e:
         try: db.session.rollback()
-        except: pass
+        except Exception: pass
         return jsonify({'error': 'db_error', 'detail': str(e)}), 500
 
 @chamado_bp.route('/<int:id>', methods=['GET'])
@@ -121,6 +126,7 @@ def update_chamado(id):
         if 'titulo' in data: c.titulo = data.get('titulo')
         if 'descricao' in data: c.descricao = data.get('descricao')
         if 'status' in data: c.status = data.get('status')
+        if 'tipo_chamado' in data: c.tipo_chamado = data.get('tipo_chamado')
         if 'prioridade' in data: c.prioridade = data.get('prioridade')
         if 'valor_total' in data: c.valor_total = safe_float(data.get('valor_total'))
         if 'criticidade_real' in data: c.criticidade_real = data.get('criticidade_real')
@@ -159,7 +165,7 @@ def update_chamado(id):
         return jsonify(c.to_dict()), 200
     except Exception as e:
         try: db.session.rollback()
-        except: pass
+        except Exception: pass
         return jsonify({'error': 'db_error', 'detail': str(e)}), 500
 
 @chamado_bp.route('/<int:id>', methods=['DELETE'])
@@ -182,5 +188,5 @@ def soft_delete_chamado(id):
         return jsonify({'ok': True}), 200
     except Exception as e:
         try: db.session.rollback()
-        except: pass
+        except Exception: pass
         return jsonify({'ok': False, 'error': 'db_error', 'detail': str(e)}), 500
