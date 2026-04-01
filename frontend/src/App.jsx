@@ -35,6 +35,79 @@ function Navigation({ isCollapsed, toggleCollapse }) {
     return null;
   }
 
+  // NOVO: Navegação limitada para empresa_restrita
+  if (user && user.role === 'empresa_restrita') {
+    const sidebarWidth = isCollapsed ? 'w-20' : 'w-64'
+    const linkPadding = isCollapsed ? 'px-0 justify-center' : 'px-4'
+    const logoFull = "http://wiki.digimaxdiagnostico.com.br/wp/wp-content/uploads/2026/01/Vimax-Logo.png"
+    const logoIcon = "http://wiki.digimaxdiagnostico.com.br/wp/wp-content/uploads/2026/01/Vimax-Icone.png"
+
+    return (
+      <nav className={`bg-card border-r border-border h-screen fixed left-0 top-0 flex flex-col transition-all duration-300 z-50 ${sidebarWidth}`}>
+        <div className="p-4 border-b border-border flex items-center justify-between min-h-[80px]">
+          <div className="flex items-center justify-center flex-1 overflow-hidden">
+            {isCollapsed ? (
+              <img src={logoIcon} alt="Vimax Icon" className="h-10 w-auto object-contain transition-all duration-300" />
+            ) : (
+              <img src={logoFull} alt="Vimax Logo" className="h-12 w-auto object-contain transition-all duration-300" />
+            )}
+          </div>
+          <button onClick={toggleCollapse} className="p-2 rounded-full hover:bg-accent text-foreground transition-colors ml-2">
+            {isCollapsed ? <Menu className="w-5 h-5" /> : <X className="w-5 h-5" />}
+          </button>
+        </div>
+        
+        <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
+          {user && (
+            <div className={`mb-6 p-3 bg-accent/50 rounded-xl ${isCollapsed ? 'text-center' : ''}`}>
+              {!isCollapsed && <p className="text-[10px] uppercase font-bold text-muted-foreground mb-1">Usuário</p>}
+              <p className="text-sm font-bold truncate text-primary">{user.username}</p>
+              {!isCollapsed && <p className="text-[10px] text-muted-foreground font-bold uppercase">EMPRESA RESTRITA</p>}
+              {!isCollapsed && user.empresa_nome && (
+                <p className="text-[10px] text-orange-600 font-bold truncate">{user.empresa_nome}</p>
+              )}
+            </div>
+          )}
+
+          <div className="space-y-6">
+            <div className="space-y-2">
+              {!isCollapsed && (
+                <div className="px-4 mb-2">
+                  <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground/60 border-b border-border/50 pb-1">
+                    HELPDESK
+                  </p>
+                </div>
+              )}
+              <ul className="space-y-1">
+                <li>
+                  <Link
+                    to="/chamados"
+                    className={`flex items-center gap-3 py-2.5 rounded-xl transition-all duration-200 ${linkPadding} ${
+                      location.pathname === '/chamados'
+                        ? 'bg-primary text-primary-foreground shadow-lg shadow-primary/20 font-bold' 
+                        : 'text-muted-foreground hover:bg-accent hover:text-foreground'
+                    }`}
+                    title={isCollapsed ? 'Chamados' : ''}
+                  >
+                    <Wrench className={`w-5 h-5 ${location.pathname === '/chamados' ? 'animate-pulse' : ''}`} />
+                    {!isCollapsed && <span className="text-sm">Chamados</span>}
+                  </Link>
+                </li>
+              </ul>
+            </div>
+          </div>
+        </div>
+
+        <div className="p-4 border-t border-border bg-card/50">
+          <button onClick={logout} className={`flex items-center gap-3 py-3 w-full rounded-xl text-red-500 hover:bg-red-50 hover:text-red-600 transition-all font-bold ${linkPadding}`}>
+            <LogOut className="w-5 h-5" />
+            {!isCollapsed && <span className="text-sm">Sair do Sistema</span>}
+          </button>
+        </div>
+      </nav>
+    )
+  }
+
   const menuGroups = [
     {
       title: 'Helpdesk',
@@ -277,6 +350,7 @@ function AppContent() {
   }
 
   const isPublicUser = user.role === 'publico';
+  const isEmpresaRestrita = user.role === 'empresa_restrita'; // NOVO
   const mainMargin = isPublicUser ? 'ml-0' : (isCollapsed ? 'ml-20' : 'ml-64');
 
   return (
@@ -295,8 +369,14 @@ function AppContent() {
           {/* Rota do Portal - Acessível sem login administrativo */}
           <Route path="/portal/:empresa_id" element={<PortalChamadoEmpresa />} />
           
-          {/* Rotas administrativas - Requerem login */}
-          {user && !isPublicUser ? (
+          {/* NOVO: Rotas para empresa_restrita - Só Chamados */}
+          {user && isEmpresaRestrita ? (
+            <>
+              <Route path="/" element={<Navigate to="/chamados" replace />} />
+              <Route path="/chamados" element={<Chamados />} />
+              <Route path="*" element={<Navigate to="/chamados" replace />} />
+            </>
+          ) : user && !isPublicUser ? (
             <>
               <Route path="/" element={<Navigate to="/chamados" replace />} />
               <Route path="/empresas" element={<Empresas />} />

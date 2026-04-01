@@ -1,29 +1,26 @@
 from flask import Blueprint, request, jsonify
 from ..models.chamado import Chamado
-from ..models.usuario import Usuario
+from ..models.empresa import Empresa
+from ..models.ativo import Ativo
+from ..models.localizacao import Localizacao
+from ..models.fornecedor import Fornecedor
+from ..models.contrato import Contrato
+from ..models.orcamento import Orcamento
+from ..models.categoria_chamado import CategoriaChamado
+from ..utils.filters import apply_entity_filter
+from ..utils.auth import token_required
 from .. import db
-from ..utils.logging import create_log
-from sqlalchemy import desc
+import os
+from werkzeug.utils import secure_filename
 from datetime import datetime
-import json
 
 chamado_bp = Blueprint('chamado_bp', __name__)
 
-def safe_int(val):
-    if val in [None, '', 'none', 'undefined']: return None
-    try: return int(val)
-    except: return None
-
-def safe_float(val):
-    if val in [None, '', 'none', 'undefined']: return 0.0
-    try: return float(val)
-    except: return 0.0
-
 @chamado_bp.route('', methods=['GET'])
-def list_chamados():
+@token_required
+def list_chamados(current_user):
     include_inactive = request.args.get('include_inactive', '0') in ('1', 'true', 'True')
     empresa_id = request.args.get('empresa_id')
-    tipo_filter = request.args.get('tipo')
     q = (request.args.get('q') or '').strip()
     page = int(request.args.get('page', 1))
     per_page = int(request.args.get('per_page', 100))
@@ -32,171 +29,151 @@ def list_chamados():
     if not include_inactive:
         query = query.filter(Chamado.ativo == True)
 
-    if empresa_id:
-        try:
-            query = query.filter(Chamado.empresa_id == int(empresa_id))
-        except Exception:
-            pass
-
-    if tipo_filter and tipo_filter in ('maquinario', 'infraestrutura'):
-        query = query.filter(Chamado.tipo == tipo_filter)
+    # Aplicar filtro baseado no usuário e role
+    query = apply_entity_filter(query, Chamado, empresa_id, current_user)
 
     if q:
         like = f"%{q}%"
         query = query.filter((Chamado.titulo.ilike(like)) | (Chamado.descricao.ilike(like)))
 
     total = query.count()
-    itens = query.order_by(desc(Chamado.created_at)).offset((page - 1) * per_page).limit(per_page).all()
+    chamados = query.order_by(Chamado.id.desc()).paginate(
+        page=page, per_page=per_page, error_out=False
+    ).items
+
+    result = []
+    for c in chamados:
+        chamado_dict = c.to_dict()
+        if c.empresa_id:
+            empresa = Empresa.query.get(c.empresa_id)
+            chamado_dict['empresa_nome'] = empresa.nome if empresa else None
+        if c.ativo_id:
+            ativo = Ativo.query.get(c.ativo_id)
+            chamado_dict['ativo_nome'] = ativo.nome if ativo else None
+        if c.localizacao_id:
+            localizacao = Localizacao.query.get(c.localizacao_id)
+            chamado_dict['localizacao_nome'] = localizacao.nome if localizacao else None
+        if c.fornecedor_id:
+            fornecedor = Fornecedor.query.get(c.fornecedor_id)
+            chamado_dict['fornecedor_nome'] = fornecedor.nome if fornecedor else None
+        if c.contrato_id:
+            contrato = Contrato.query.get(c.contrato_id)
+            chamado_dict['contrato_nome'] = contrato.nome if contrato else None
+        if c.orcamento_id:
+            orcamento = Orcamento.query.get(c.orcamento_id)
+            chamado_dict['orcamento_nome'] = orcamento.nome if orcamento else None
+        if c.categoria_id:
+            categoria = CategoriaChamado.query.get(c.categoria_id)
+            chamado_dict['categoria_nome'] = categoria.nome if categoria else None
+        result.append(chamado_dict)
 
     return jsonify({
+        'chamados': result,
         'total': total,
         'page': page,
         'per_page': per_page,
-        'chamados': [c.to_dict() for c in itens]
-    }), 200
+        'pages': (total // per_page) + (1 if total % per_page > 0 else 0)
+    })
 
 @chamado_bp.route('', methods=['POST'])
-def create_chamado():
-    data = request.get_json() or {}
-    api_token = request.headers.get('X-API-Token')
-    user = Usuario.query.filter_by(api_token=api_token).first() if api_token else None
+@token_required
+def create_chamado(current_user):
+    data = request.get_json()
+    
+    # Para perfil empresa_restrita, forçar empresa_id do usuário
+    if current_user.role == 'empresa_restrita':
+        if not current_user.empresa_id:
+            return jsonify({'error': 'Usuário não possui empresa vinculada'}), 400
+        data['empresa_id'] = current_user.empresa_id
+    
+    chamado = Chamado(
+        titulo=data.get('titulo'),
+        descricao=data.get('descricao'),
+        status=data.get('status', 'Aberto'),
+        criticidade_prevista=data.get('criticidade_prevista'),
+        criticidade_real=data.get('criticidade_real'),
+        valor_orcado=data.get('valor_orcado', 0),
+        valor_real=data.get('valor_real', 0),
+        data_abertura=datetime.utcnow(),
+        data_prevista=datetime.fromisoformat(data.get('data_prevista').replace('Z', '+00:00')) if data.get('data_prevista') else None,
+        data_conclusao=datetime.fromisoformat(data.get('data_conclusao').replace('Z', '+00:00')) if data.get('data_conclusao') else None,
+        empresa_id=data.get('empresa_id'),
+        ativo_id=data.get('ativo_id'),
+        localizacao_id=data.get('localizacao_id'),
+        fornecedor_id=data.get('fornecedor_id'),
+        contrato_id=data.get('contrato_id'),
+        orcamento_id=data.get('orcamento_id'),
+        categoria_id=data.get('categoria_id'),
+        anexos=data.get('anexos', [])
+    )
+    
+    db.session.add(chamado)
+    db.session.commit()
+    
+    return jsonify(chamado.to_dict()), 201
 
-    try:
-        criticidade = data.get('criticidade_informada')
-        
-        # Processar opcoes_selecionadas
-        opcoes = data.get('opcoes_selecionadas')
-        opcoes_json = json.dumps(opcoes) if opcoes is not None else None
-        
-        novo = Chamado(
-            titulo = data.get('titulo'),
-            descricao = data.get('descricao'),
-            status = data.get('status') or 'aberto',
-            prioridade = data.get('prioridade'),
-            tipo = data.get('tipo') or 'maquinario',
-            valor_total = safe_float(data.get('valor_total')),
-            criticidade_informada = criticidade,
-            criticidade_real = data.get('criticidade_real') or criticidade,
-            empresa_id = safe_int(data.get('empresa_id')),
-            localizacao_id = safe_int(data.get('localizacao_id')),
-            usuario_responsavel_id = safe_int(data.get('usuario_responsavel_id')),
-            categoria_id = safe_int(data.get('categoria_id')),
-            ativo_id = safe_int(data.get('ativo_id')),
-            infraestrutura_id = safe_int(data.get('infraestrutura_id')),
-            fornecedor_id = safe_int(data.get('fornecedor_id')),
-            contrato_id = safe_int(data.get('contrato_id')),
-            orcamento_id = safe_int(data.get('orcamento_id')),
-            opcoes_selecionadas = opcoes_json,
-            anexos = json.dumps(data.get('anexos')) if data.get('anexos') is not None else None,
-            data_abertura = datetime.utcnow(),
-            ativo = True,
-            deleted_at = None
-        )
-        
-        # Lógica automática de data de solução na criação
-        status_resolvidos = ['resolvido', 'concluído', 'fechado']
-        if novo.status.lower() in status_resolvidos:
-            novo.data_solucao = datetime.utcnow()
-
-        db.session.add(novo)
-        db.session.commit()
-
-        try:
-            create_log(user=user, action='create_chamado', entity='chamado', entity_id=novo.id,
-                       details={'titulo': novo.titulo, 'tipo': novo.tipo, 'payload': data}, req=request)
-        except Exception:
-            pass
-
-        return jsonify(novo.to_dict()), 201
-    except Exception as e:
-        try: db.session.rollback()
-        except: pass
-        return jsonify({'error': 'db_error', 'detail': str(e)}), 500
-
-@chamado_bp.route('/<int:id>', methods=['GET'])
-def get_chamado(id):
-    c = Chamado.query.get_or_404(id)
-    return jsonify(c.to_dict()), 200
-
-@chamado_bp.route('/<int:id>', methods=['PUT', 'PATCH'])
-def update_chamado(id):
-    api_token = request.headers.get('X-API-Token')
-    user = Usuario.query.filter_by(api_token=api_token).first() if api_token else None
-
-    c = Chamado.query.get_or_404(id)
-    data = request.get_json() or {}
-
-    try:
-        before = c.to_dict()
-        old_status = (c.status or '').lower()
-
-        if 'titulo' in data: c.titulo = data.get('titulo')
-        if 'descricao' in data: c.descricao = data.get('descricao')
-        if 'status' in data: c.status = data.get('status')
-        if 'prioridade' in data: c.prioridade = data.get('prioridade')
-        if 'tipo' in data: c.tipo = data.get('tipo')
-        if 'valor_total' in data: c.valor_total = safe_float(data.get('valor_total'))
-        if 'criticidade_real' in data: c.criticidade_real = data.get('criticidade_real')
-        
-        if 'empresa_id' in data: c.empresa_id = safe_int(data.get('empresa_id'))
-        if 'localizacao_id' in data: c.localizacao_id = safe_int(data.get('localizacao_id'))
-        if 'usuario_responsavel_id' in data: c.usuario_responsavel_id = safe_int(data.get('usuario_responsavel_id'))
-        if 'categoria_id' in data: c.categoria_id = safe_int(data.get('categoria_id'))
-        if 'ativo_id' in data: c.ativo_id = safe_int(data.get('ativo_id'))
-        if 'infraestrutura_id' in data: c.infraestrutura_id = safe_int(data.get('infraestrutura_id'))
-        if 'fornecedor_id' in data: c.fornecedor_id = safe_int(data.get('fornecedor_id'))
-        if 'contrato_id' in data: c.contrato_id = safe_int(data.get('contrato_id'))
-        if 'orcamento_id' in data: c.orcamento_id = safe_int(data.get('orcamento_id'))
-        
-        if 'opcoes_selecionadas' in data:
-            opcoes = data.get('opcoes_selecionadas')
-            c.opcoes_selecionadas = json.dumps(opcoes) if opcoes is not None else None
-        
-        if 'anexos' in data:
-            c.anexos = json.dumps(data.get('anexos')) if data.get('anexos') is not None else None
-        
-        # Lógica AUTOMÁTICA de data de solução
-        new_status = (c.status or '').lower()
-        status_resolvidos = ['resolvido', 'concluído', 'fechado']
-        
-        if new_status in status_resolvidos and old_status not in status_resolvidos:
-            c.data_solucao = datetime.utcnow()
-        elif new_status not in status_resolvidos:
-            c.data_solucao = None
-
-        db.session.commit()
-
-        try:
-            create_log(user=user, action='update_chamado', entity='chamado', entity_id=id,
-                       details={'before': before, 'after_payload': data}, req=request)
-        except Exception:
-            pass
-
-        return jsonify(c.to_dict()), 200
-    except Exception as e:
-        try: db.session.rollback()
-        except: pass
-        return jsonify({'error': 'db_error', 'detail': str(e)}), 500
+@chamado_bp.route('/<int:id>', methods=['PUT'])
+@token_required
+def update_chamado(id, current_user):
+    chamado = Chamado.query.get_or_404(id)
+    
+    # Verificar se o usuário empresa_restrita pode editar este chamado
+    if current_user.role == 'empresa_restrita':
+        if not current_user.empresa_id or chamado.empresa_id != current_user.empresa_id:
+            return jsonify({'error': 'Sem permissão para editar este chamado'}), 403
+    
+    data = request.get_json()
+    
+    chamado.titulo = data.get('titulo', chamado.titulo)
+    chamado.descricao = data.get('descricao', chamado.descricao)
+    chamado.status = data.get('status', chamado.status)
+    chamado.criticidade_prevista = data.get('criticidade_prevista', chamado.criticidade_prevista)
+    chamado.criticidade_real = data.get('criticidade_real', chamado.criticidade_real)
+    chamado.valor_orcado = data.get('valor_orcado', chamado.valor_orcado)
+    chamado.valor_real = data.get('valor_real', chamado.valor_real)
+    
+    if data.get('data_prevista'):
+        chamado.data_prevista = datetime.fromisoformat(data.get('data_prevista').replace('Z', '+00:00'))
+    if data.get('data_conclusao'):
+        chamado.data_conclusao = datetime.fromisoformat(data.get('data_conclusao').replace('Z', '+00:00'))
+    
+    # Para perfil empresa_restrita, não permitir mudança de empresa
+    if current_user.role != 'empresa_restrita':
+        chamado.empresa_id = data.get('empresa_id', chamado.empresa_id)
+    
+    chamado.ativo_id = data.get('ativo_id', chamado.ativo_id)
+    chamado.localizacao_id = data.get('localizacao_id', chamado.localizacao_id)
+    chamado.fornecedor_id = data.get('fornecedor_id', chamado.fornecedor_id)
+    chamado.contrato_id = data.get('contrato_id', chamado.contrato_id)
+    chamado.orcamento_id = data.get('orcamento_id', chamado.orcamento_id)
+    chamado.categoria_id = data.get('categoria_id', chamado.categoria_id)
+    chamado.anexos = data.get('anexos', chamado.anexos)
+    
+    db.session.commit()
+    return jsonify(chamado.to_dict())
 
 @chamado_bp.route('/<int:id>', methods=['DELETE'])
-def soft_delete_chamado(id):
-    api_token = request.headers.get('X-API-Token')
-    user = Usuario.query.filter_by(api_token=api_token).first() if api_token else None
-    c = Chamado.query.get_or_404(id)
-    if not c.ativo:
-        return jsonify({'ok': True, 'message': 'already_inactive'}), 200
-    try:
-        snapshot = c.to_dict()
-        c.ativo = False
-        c.deleted_at = datetime.utcnow()
-        db.session.commit()
-        try:
-            create_log(user=user, action='soft_delete_chamado', entity='chamado', entity_id=id,
-                       details={'deleted': snapshot}, req=request)
-        except Exception:
-            pass
-        return jsonify({'ok': True}), 200
-    except Exception as e:
-        try: db.session.rollback()
-        except: pass
-        return jsonify({'ok': False, 'error': 'db_error', 'detail': str(e)}), 500
+@token_required
+def delete_chamado(id, current_user):
+    chamado = Chamado.query.get_or_404(id)
+    
+    # Verificar se o usuário empresa_restrita pode deletar este chamado
+    if current_user.role == 'empresa_restrita':
+        if not current_user.empresa_id or chamado.empresa_id != current_user.empresa_id:
+            return jsonify({'error': 'Sem permissão para deletar este chamado'}), 403
+    
+    db.session.delete(chamado)
+    db.session.commit()
+    return '', 204
+
+@chamado_bp.route('/<int:id>', methods=['GET'])
+@token_required
+def get_chamado(id, current_user):
+    chamado = Chamado.query.get_or_404(id)
+    
+    # Verificar se o usuário empresa_restrita pode ver este chamado
+    if current_user.role == 'empresa_restrita':
+        if not current_user.empresa_id or chamado.empresa_id != current_user.empresa_id:
+            return jsonify({'error': 'Sem permissão para ver este chamado'}), 403
+    
+    return jsonify(chamado.to_dict())

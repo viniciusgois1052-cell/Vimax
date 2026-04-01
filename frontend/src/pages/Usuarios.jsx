@@ -50,6 +50,13 @@ export default function Usuarios() {
 
   const handleSubmit = async (e) => {
     e.preventDefault()
+    
+    // NOVA VALIDAÇÃO: empresa_restrita precisa de empresa
+    if (formData.role === 'empresa_restrita' && (!formData.empresa_id || formData.empresa_id === 'none')) {
+      alert('Perfil "Empresa Restrita" deve ter uma empresa vinculada obrigatoriamente!')
+      return
+    }
+    
     setLoading(true)
     const headers = { 'Content-Type': 'application/json' }
     if (currentUser?.api_token) headers['X-API-Token'] = currentUser.api_token
@@ -65,6 +72,28 @@ export default function Usuarios() {
     })
     if (res.ok) { cancelEdit(); fetchUsuarios(); }
     setLoading(false)
+  }
+
+  const getRoleDisplayName = (role) => {
+    const roles = {
+      'super_admin': 'Super Admin',
+      'admin': 'Admin',
+      'relatorios': 'Relatórios',
+      'publico': 'Público',
+      'empresa_restrita': 'Empresa Restrita'  // NOVO
+    }
+    return roles[role] || role
+  }
+
+  const getRoleColor = (role) => {
+    const colors = {
+      'super_admin': 'bg-red-100 text-red-600',
+      'admin': 'bg-blue-100 text-blue-600',
+      'relatorios': 'bg-green-100 text-green-600',
+      'publico': 'bg-indigo-100 text-indigo-600',
+      'empresa_restrita': 'bg-orange-100 text-orange-600'  // NOVO
+    }
+    return colors[role] || 'bg-slate-100 text-slate-600'
   }
 
   return (
@@ -98,14 +127,20 @@ export default function Usuarios() {
                 <option value="admin">Admin</option>
                 <option value="relatorios">Relatórios</option>
                 <option value="publico">Público (Apenas Abrir Chamado)</option>
+                <option value="empresa_restrita">Empresa Restrita (Apenas Chamados da Empresa)</option>
               </select>
             </div>
             <div className="space-y-1">
-              <label className="text-xs font-bold text-slate-500 uppercase ml-1">Empresa</label>
+              <label className="text-xs font-bold text-slate-500 uppercase ml-1">
+                Empresa {formData.role === 'empresa_restrita' && <span className="text-red-500">*</span>}
+              </label>
               <select className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary" value={formData.empresa_id} onChange={e => setFormData({...formData, empresa_id: e.target.value})}>
                 <option value="none">Acesso Global</option>
                 {empresas.map(e => <option key={e.id} value={e.id.toString()}>{e.nome}</option>)}
               </select>
+              {formData.role === 'empresa_restrita' && (
+                <p className="text-xs text-red-500 mt-1">Empresa obrigatória para este perfil</p>
+              )}
             </div>
             <div className="flex items-end">
               <div className="flex gap-2 w-full">
@@ -136,11 +171,16 @@ export default function Usuarios() {
                   <div className="text-xs text-slate-400">{u.email}</div>
                 </td>
                 <td className="p-4">
-                  <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase ${u.role === 'publico' ? 'bg-indigo-100 text-indigo-600' : 'bg-slate-100'}`}>
-                    {u.role === 'publico' ? 'Público' : u.role}
+                  <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase ${getRoleColor(u.role)}`}>
+                    {getRoleDisplayName(u.role)}
                   </span>
                 </td>
-                <td className="p-4 text-sm text-slate-600">{u.empresa_nome || 'Global'}</td>
+                <td className="p-4 text-sm text-slate-600">
+                  {u.empresa_nome || 'Global'}
+                  {u.role === 'empresa_restrita' && !u.empresa_nome && (
+                    <span className="text-red-500 text-xs block">⚠️ Empresa obrigatória</span>
+                  )}
+                </td>
                 <td className="p-4 text-right flex justify-end gap-2">
                   <button onClick={() => handleEdit(u)} className="p-2 text-slate-400 hover:text-amber-500"><Edit2 className="w-4 h-4" /></button>
                   <button onClick={() => handleDelete(u.id)} className="p-2 text-slate-400 hover:text-red-500"><Trash2 className="w-4 h-4" /></button>

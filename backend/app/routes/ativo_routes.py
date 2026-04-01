@@ -4,6 +4,7 @@ from ..models.ativo import Ativo
 from ..models.usuario import Usuario
 from ..utils.filters import apply_entity_filter
 from datetime import datetime
+from sqlalchemy.exc import IntegrityError
 
 ativo_bp = Blueprint('ativo_bp', __name__)
 
@@ -11,14 +12,14 @@ ativo_bp = Blueprint('ativo_bp', __name__)
 def get_ativos():
     empresa_id = request.args.get('empresa_id')
     api_token = request.headers.get('X-API-Token')
-    
+
     user = None
     if api_token:
         user = Usuario.query.filter_by(api_token=api_token).first()
-        
+
     query = Ativo.query
     query = apply_entity_filter(query, Ativo, empresa_id, user)
-    
+
     ativos = query.all()
     return jsonify([ativo.to_dict() for ativo in ativos])
 
@@ -52,8 +53,6 @@ def create_ativo():
     db.session.commit()
     return jsonify(novo_ativo.to_dict()), 201
 
-
-# ✅ SEU FRONTEND JÁ USA PUT — ESTA ROTA NÃO EXISTIA
 @ativo_bp.route('/<int:id>', methods=['PUT'])
 def update_ativo(id):
     ativo = Ativo.query.get_or_404(id)
@@ -71,8 +70,33 @@ def update_ativo(id):
     ativo.contrato_id = data.get('contrato_id')
     ativo.orcamento_id = data.get('orcamento_id')
 
-    # ✅ SALVAR ANEXOS
     ativo.anexos = data.get('anexos', [])
 
     db.session.commit()
     return jsonify(ativo.to_dict())
+
+@ativo_bp.route('/<int:id>', methods=['DELETE'])
+def delete_ativo(id):
+    ativo = Ativo.query.get(id)
+    if not ativo:
+        return jsonify({'error': 'Ativo não encontrado'}), 404
+
+    try:
+        from ..models.chamado import Chamado
+
+        Chamado.query.filter_by(ativo_id=id).update({'ativo_id': None}, synchronize_session=False)
+        db.session.delete(ativo)
+        db.session.commit()
+        return jsonify({'message': 'Ativo deletado com sucesso'}), 200
+
+    except IntegrityError:
+        db.session.rollback()
+        return jsonify({
+            'error': 'Não foi possível excluir o ativo devido a restrição de integridade. Remova ou atualize registros vinculados antes de excluir.'
+        }), 409
+
+    except Exception as e:
+        db.session.rollback()
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500

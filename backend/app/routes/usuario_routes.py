@@ -1,5 +1,6 @@
 from flask import Blueprint, request, jsonify
 from ..models.usuario import Usuario
+from ..utils.auth import token_required
 from .. import db, bcrypt
 
 usuario_bp = Blueprint('usuario_bp', __name__)
@@ -27,13 +28,30 @@ def login():
     return jsonify({'error': 'Usuário ou senha inválidos'}), 401
 
 @usuario_bp.route('', methods=['GET'])
-def get_usuarios():
-    usuarios = Usuario.query.all()
+@token_required
+def get_usuarios(current_user):
+    # Super admin vê todos, outros veem apenas da sua empresa
+    if current_user.role == 'super_admin':
+        usuarios = Usuario.query.all()
+    elif current_user.role in ['admin', 'relatorios']:
+        usuarios = Usuario.query.filter_by(empresa_id=current_user.empresa_id).all() if current_user.empresa_id else []
+    else:
+        usuarios = []
+    
     return jsonify([u.to_dict() for u in usuarios])
 
 @usuario_bp.route('', methods=['POST'])
-def create_usuario():
+@token_required
+def create_usuario(current_user):
+    # Só super_admin pode criar usuários
+    if current_user.role != 'super_admin':
+        return jsonify({'error': 'Sem permissão para criar usuários'}), 403
+        
     data = request.get_json()
+    
+    # Validar se role empresa_restrita tem empresa obrigatória
+    if data.get('role') == 'empresa_restrita' and not data.get('empresa_id'):
+        return jsonify({'error': 'Perfil "Empresa Restrita" deve ter uma empresa vinculada obrigatoriamente'}), 400
     
     if Usuario.query.filter_by(username=data.get('username')).first():
         return jsonify({'error': 'Nome de usuário já existe'}), 400
@@ -55,9 +73,18 @@ def create_usuario():
     return jsonify(novo_usuario.to_dict()), 201
 
 @usuario_bp.route('/<int:id>', methods=['PUT'])
-def update_usuario(id):
+@token_required
+def update_usuario(id, current_user):
+    # Só super_admin pode atualizar usuários
+    if current_user.role != 'super_admin':
+        return jsonify({'error': 'Sem permissão para atualizar usuários'}), 403
+        
     usuario = Usuario.query.get_or_404(id)
     data = request.get_json()
+    
+    # Validar se role empresa_restrita tem empresa obrigatória
+    if data.get('role') == 'empresa_restrita' and not data.get('empresa_id'):
+        return jsonify({'error': 'Perfil "Empresa Restrita" deve ter uma empresa vinculada obrigatoriamente'}), 400
     
     usuario.username = data.get('username', usuario.username)
     usuario.email = data.get('email', usuario.email)
@@ -73,15 +100,25 @@ def update_usuario(id):
     return jsonify(usuario.to_dict()), 200
 
 @usuario_bp.route('/<int:id>', methods=['DELETE'])
-def delete_usuario(id):
+@token_required
+def delete_usuario(id, current_user):
+    # Só super_admin pode deletar usuários
+    if current_user.role != 'super_admin':
+        return jsonify({'error': 'Sem permissão para deletar usuários'}), 403
+        
     usuario = Usuario.query.get_or_404(id)
     db.session.delete(usuario)
     db.session.commit()
     return '', 204
 
 @usuario_bp.route('/<int:id>/token', methods=['POST'])
-def generate_token(id):
+@token_required
+def generate_token(id, current_user):
+    # Só super_admin pode gerar tokens
+    if current_user.role != 'super_admin':
+        return jsonify({'error': 'Sem permissão'}), 403
+        
     usuario = Usuario.query.get_or_404(id)
-    token = usuario.generate_api_token()
+    usuario.generate_api_token()
     db.session.commit()
-    return jsonify({'token': token})
+    return jsonify({'api_token': usuario.api_token}), 200

@@ -8,7 +8,7 @@ class Usuario(db.Model):
     email = db.Column(db.String(100), unique=True, nullable=False)
     password_hash = db.Column(db.String(128), nullable=False)
     empresa_id = db.Column(db.Integer, db.ForeignKey('empresas.id'), nullable=True)
-    role = db.Column(db.String(20), default='admin') # super_admin, admin, relatorios
+    role = db.Column(db.String(20), default='admin') # super_admin, admin, relatorios, publico, empresa_restrita
     api_token = db.Column(db.String(100), unique=True, nullable=True)
     
     empresa = db.relationship('Empresa', backref=db.backref('usuarios', lazy=True))

@@ -83,49 +83,156 @@ def create_app(config_class=None):
         return response
 
     # ============================================
-    # 🚀 REGISTRAR BLUEPRINTS
+    # 🚀 REGISTRAR BLUEPRINTS - UM POR VEZ COM TRY/EXCEPT
     # ============================================
+    
+    # Upload routes
     try:
         from .routes.upload_routes import upload_bp
-        from .routes.empresa_routes import empresa_bp
-        from .routes.fornecedor_routes import fornecedor_bp
-        from .routes.localizacao_routes import localizacao_bp
-        from .routes.contrato_routes import contrato_bp
-        from .routes.orcamento_routes import orcamento_bp
-        from .routes.usuario_routes import usuario_bp
-        from .routes.ativo_routes import ativo_bp
-        from .routes.chamado_routes import chamado_bp
-        from .routes.relatorio_routes import relatorio_bp
-        from .routes.categoria_chamado_routes import categoria_chamado_bp
-        from .routes.tipo_servico_routes import tipo_servico_bp
-        from .routes.tipo_infraestrutura_routes import tipo_infraestrutura_bp
-        from .routes.infraestrutura_routes import infraestrutura_bp
-        from .routes.formulario_chamado_routes import formulario_chamado_bp
-        from .routes.public_routes import public_bp
-        from .routes.config_email_routes import config_email_bp
-
         app.register_blueprint(upload_bp, url_prefix='/api')
-        app.register_blueprint(empresa_bp, url_prefix='/api/empresas')
-        app.register_blueprint(fornecedor_bp, url_prefix='/api/fornecedores')
-        app.register_blueprint(localizacao_bp, url_prefix='/api/localizacoes')
-        app.register_blueprint(contrato_bp, url_prefix='/api/contratos')
-        app.register_blueprint(orcamento_bp, url_prefix='/api/orcamentos')
-        app.register_blueprint(usuario_bp, url_prefix='/api/usuarios')
-        app.register_blueprint(ativo_bp, url_prefix='/api/ativos')
-        app.register_blueprint(chamado_bp, url_prefix='/api/chamados')
-        app.register_blueprint(relatorio_bp, url_prefix='/api/relatorios')
-        app.register_blueprint(categoria_chamado_bp, url_prefix='/api/categorias-chamado')
-        app.register_blueprint(tipo_servico_bp, url_prefix='/api/tipos-servico')
-        app.register_blueprint(tipo_infraestrutura_bp, url_prefix='/api/tipos-infraestrutura')
-        app.register_blueprint(infraestrutura_bp, url_prefix='/api/infraestruturas')
-        app.register_blueprint(formulario_chamado_bp, url_prefix='/api/formularios-chamado')
-        app.register_blueprint(public_bp, url_prefix='/api/public')
-        app.register_blueprint(config_email_bp, url_prefix='/api/config/email')
-        
-        print("✓ Todos os blueprints registrados com sucesso")
+        print("✓ upload_bp registrado")
     except Exception as e:
-        print(f"❌ Erro ao registrar blueprints: {e}")
-        traceback.print_exc()
+        print(f"❌ Erro no upload_bp: {e}")
+
+    # Empresa routes - TESTE AMBOS OS FORMATOS
+    try:
+        # Primeiro tenta empresa_routes.py
+        from .routes.empresa_routes import empresa_bp
+        app.register_blueprint(empresa_bp, url_prefix='/api/empresas')
+        print("✓ empresa_bp registrado (empresa_routes.py)")
+    except ImportError:
+        try:
+            # Depois tenta empresa.routes.py
+            import importlib.util
+            spec = importlib.util.spec_from_file_location(
+                "empresa_routes", 
+                "/var/www/cmms_project/backend/app/routes/empresa.routes.py"
+            )
+            empresa_module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(empresa_module)
+            empresa_bp = empresa_module.empresa_bp
+            app.register_blueprint(empresa_bp, url_prefix='/api/empresas')
+            print("✓ empresa_bp registrado (empresa.routes.py)")
+        except Exception as e:
+            print(f"❌ Erro no empresa_bp: {e}")
+
+    # Usuario routes
+    try:
+        from .routes.usuario_routes import usuario_bp
+        app.register_blueprint(usuario_bp, url_prefix='/api/usuarios')
+        print("✓ usuario_bp registrado")
+    except Exception as e:
+        print(f"❌ Erro no usuario_bp: {e}")
+
+    # Chamado routes
+    try:
+        from .routes.chamado_routes import chamado_bp
+        app.register_blueprint(chamado_bp, url_prefix='/api/chamados')
+        print("✓ chamado_bp registrado")
+    except Exception as e:
+        print(f"❌ Erro no chamado_bp: {e}")
+
+    # Fornecedor routes
+    try:
+        from .routes.fornecedor_routes import fornecedor_bp
+        app.register_blueprint(fornecedor_bp, url_prefix='/api/fornecedores')
+        print("✓ fornecedor_bp registrado")
+    except Exception as e:
+        print(f"❌ Erro no fornecedor_bp: {e}")
+
+    # Localizacao routes
+    try:
+        from .routes.localizacao_routes import localizacao_bp
+        app.register_blueprint(localizacao_bp, url_prefix='/api/localizacoes')
+        print("✓ localizacao_bp registrado")
+    except Exception as e:
+        print(f"❌ Erro no localizacao_bp: {e}")
+
+    # Contrato routes
+    try:
+        from .routes.contrato_routes import contrato_bp
+        app.register_blueprint(contrato_bp, url_prefix='/api/contratos')
+        print("✓ contrato_bp registrado")
+    except Exception as e:
+        print(f"❌ Erro no contrato_bp: {e}")
+
+    # Orcamento routes
+    try:
+        from .routes.orcamento_routes import orcamento_bp
+        app.register_blueprint(orcamento_bp, url_prefix='/api/orcamentos')
+        print("✓ orcamento_bp registrado")
+    except Exception as e:
+        print(f"❌ Erro no orcamento_bp: {e}")
+
+    # Ativo routes
+    try:
+        from .routes.ativo_routes import ativo_bp
+        app.register_blueprint(ativo_bp, url_prefix='/api/ativos')
+        print("✓ ativo_bp registrado")
+    except Exception as e:
+        print(f"❌ Erro no ativo_bp: {e}")
+
+    # Relatorio routes
+    try:
+        from .routes.relatorio_routes import relatorio_bp
+        app.register_blueprint(relatorio_bp, url_prefix='/api/relatorios')
+        print("✓ relatorio_bp registrado")
+    except Exception as e:
+        print(f"❌ Erro no relatorio_bp: {e}")
+
+    # Categoria chamado routes
+    try:
+        from .routes.categoria_chamado_routes import categoria_chamado_bp
+        app.register_blueprint(categoria_chamado_bp, url_prefix='/api/categorias-chamado')
+        print("✓ categoria_chamado_bp registrado")
+    except Exception as e:
+        print(f"❌ Erro no categoria_chamado_bp: {e}")
+
+    # Tipo servico routes
+    try:
+        from .routes.tipo_servico_routes import tipo_servico_bp
+        app.register_blueprint(tipo_servico_bp, url_prefix='/api/tipos-servico')
+        print("✓ tipo_servico_bp registrado")
+    except Exception as e:
+        print(f"❌ Erro no tipo_servico_bp: {e}")
+
+    # Public routes
+    try:
+        from .routes.public_routes import public_bp
+        app.register_blueprint(public_bp, url_prefix='/api/public')
+        print("✓ public_bp registrado")
+    except Exception as e:
+        print(f"❌ Erro no public_bp: {e}")
+
+    # Config email routes
+    try:
+        from .routes.config_email_routes import config_email_bp
+        app.register_blueprint(config_email_bp, url_prefix='/api/config/email')
+        print("✓ config_email_bp registrado")
+    except Exception as e:
+        print(f"❌ Erro no config_email_bp: {e}")
+
+    # Rotas extras (que podem não existir)
+    try:
+        from .routes.tipo_infraestrutura_routes import tipo_infraestrutura_bp
+        app.register_blueprint(tipo_infraestrutura_bp, url_prefix='/api/tipos-infraestrutura')
+        print("✓ tipo_infraestrutura_bp registrado")
+    except ImportError:
+        print("⚠️ tipo_infraestrutura_routes não encontrado - pulando")
+
+    try:
+        from .routes.infraestrutura_routes import infraestrutura_bp
+        app.register_blueprint(infraestrutura_bp, url_prefix='/api/infraestruturas')
+        print("✓ infraestrutura_bp registrado")
+    except ImportError:
+        print("⚠️ infraestrutura_routes não encontrado - pulando")
+
+    try:
+        from .routes.formulario_chamado_routes import formulario_chamado_bp
+        app.register_blueprint(formulario_chamado_bp, url_prefix='/api/formularios-chamado')
+        print("✓ formulario_chamado_bp registrado")
+    except ImportError:
+        print("⚠️ formulario_chamado_routes não encontrado - pulando")
 
     # ============================================
     # 🚀 CRIAR TABELAS
@@ -137,5 +244,14 @@ def create_app(config_class=None):
     except Exception as e:
         print(f"❌ Erro ao criar tabelas: {e}")
         traceback.print_exc()
+
+    # Rota de teste
+    @app.route('/api/health')
+    def health():
+        return jsonify({
+            'status': 'ok',
+            'message': 'Backend Vimax funcionando!',
+            'registered_blueprints': [rule.rule for rule in app.url_map.iter_rules()]
+        })
 
     return app

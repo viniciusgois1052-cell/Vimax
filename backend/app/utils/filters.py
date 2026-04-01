@@ -19,6 +19,12 @@ def apply_entity_filter(query, model, empresa_id, user=None):
         except (ValueError, TypeError):
             return query
 
+    # NOVO: filtro para empresa_restrita
+    if user and user.role == 'empresa_restrita':
+        if not user.empresa_id: 
+            return query.filter(model.id == -1)
+        return query.filter(model.empresa_id == user.empresa_id)
+
     if user and (user.role == 'admin' or user.role == 'relatorios'):
         if not user.empresa_id: return query.filter(model.id == -1)
         allowed_ids = get_all_sub_company_ids(user.empresa_id)

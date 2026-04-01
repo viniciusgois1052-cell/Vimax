@@ -3,10 +3,14 @@ import {
     FaPlus, FaEdit, FaTrashAlt, FaFilter, FaEye, FaTag, 
     FaDollarSign, FaCalendarAlt, FaMapMarkerAlt, FaFileContract, 
     FaShoppingCart, FaTimes, FaBox, FaUser, FaPaperclip, FaCheckCircle,
-    FaExclamationCircle, FaClock, FaInfoCircle, FaSearch, FaBuilding, FaBolt, FaTools, FaQrcode, FaTruck,
-    FaIndustry, FaLayerGroup
+    FaExclamationCircle, FaClock, FaInfoCircle, FaSearch, FaBuilding, 
+    FaBolt, FaTools, FaQrcode, FaTruck, FaIndustry, FaLayerGroup,
+    FaComments, FaHistory, FaSave, FaArrowRight, FaPlay, FaPause,
+    FaStop, FaRedo, FaUndo, FaExpandArrowsAlt, FaCompressArrowsAlt,
+    FaStar, FaStarHalf, FaPrint, FaDownload, FaShare, FaCopy,
+    FaUserClock, FaUserCheck, FaCalendarDay, FaChartLine
 } from 'react-icons/fa';
-import { format, parseISO } from 'date-fns';
+import { format, parseISO, differenceInHours, differenceInDays } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { useEntity } from '../context/EntityContext';
 import { useAuth } from '../context/AuthContext';
@@ -14,6 +18,8 @@ import { useAuth } from '../context/AuthContext';
 const Chamados = () => {
     const { selectedEntity } = useEntity();
     const { user } = useAuth();
+    
+    // Estados principais
     const [chamados, setAtivosChamados] = useState([]);
     const [fornecedores, setFornecedores] = useState([]);
     const [localizacoes, setLocalizacoes] = useState([]);
@@ -24,25 +30,41 @@ const Chamados = () => {
     const [empresas, setEmpresas] = useState([]);
     const [categorias, setCategorias] = useState([]);
     
+    // Estados de filtros e busca
     const [searchTerm, setSearchTerm] = useState('');
     const [statusFilter, setStatusFilter] = useState('Não Encerrados');
     const [empresaFilter, setEmpresaFilter] = useState('Todas');
     const [tipoFilter, setTipoFilter] = useState('Todos');
+    const [prioridadeFilter, setPrioridadeFilter] = useState('Todas');
+    const [dataFilter, setDataFilter] = useState('Todas');
+    const [responsavelFilter, setResponsavelFilter] = useState('Todos');
     
+    // Estados de interface
+    const [viewMode, setViewMode] = useState('table');
     const [isModalOpen, setIsModalOpen] = useState(false);
+    const [isViewModalOpen, setIsViewModalOpen] = useState(false);
     const [isEditing, setIsEditing] = useState(false);
     const [currentChamado, setCurrentChamado] = useState(null);
+    const [selectedChamados, setSelectedChamados] = useState([]);
+    const [isFullscreen, setIsFullscreen] = useState(false);
     const [isAnexosModalOpen, setIsAnexosModalOpen] = useState(false);
     const [selectedAnexos, setSelectedAnexos] = useState([]);
     
+    // Estados específicos para modal de visualização
+    const [activeTab, setActiveTab] = useState('detalhes');
+    const [comentarios, setComentarios] = useState([]);
+    const [novoComentario, setNovoComentario] = useState('');
+    const [historico, setHistorico] = useState([]);
+    
+    // Estados do formulário
     const [formData, setFormData] = useState({
         titulo: '', descricao: '', status: 'Aberto',
         empresa_id: '', fornecedor_id: '', localizacao_id: '', 
         contrato_id: '', orcamento_id: '', ativo_id: '', 
-        infraestrutura_id: '',
-        categoria_id: '',
+        infraestrutura_id: '', categoria_id: '',
         criticidade_informada: 'Média', criticidade_real: 'Média',
-        valor_total: 0, anexos: [], tipo: 'maquinario'
+        valor_total: 0, anexos: [], tipo: 'maquinario',
+        data_prevista: '', data_conclusao: '', responsavel_id: ''
     });
     
     const [uploading, setUploading] = useState(false);
@@ -54,83 +76,9 @@ const Chamados = () => {
     const API_URL = `${API_BASE}/api`;
 
     const criticidades = ['Muito Baixa', 'Baixa', 'Média', 'Alta', 'Muito Alta'];
+    const statusOptions = ['Aberto', 'Em Atendimento', 'Aguardando Cliente', 'Pausado', 'Concluído', 'Cancelado'];
 
-    const formatCurrency = (value) => {
-        return new Intl.NumberFormat('pt-BR', {
-            style: 'currency',
-            currency: 'BRL'
-        }).format(value || 0);
-    };
-
-    const fetchData = useCallback(async () => {
-        try {
-            const headers = {};
-            if (user?.api_token) {
-                headers['X-API-Token'] = user.api_token;
-            }
-
-            const queryParams = selectedEntity && selectedEntity !== 'all' ? `?empresa_id=${selectedEntity}` : '';
-
-            const [c, f, l, con, o, a, infra, emp, cat] = await Promise.all([
-                fetch(`${API_URL}/chamados${queryParams}`, { headers }),
-                fetch(`${API_URL}/fornecedores${queryParams}`, { headers }),
-                fetch(`${API_URL}/localizacoes${queryParams}`, { headers }),
-                fetch(`${API_URL}/contratos${queryParams}`, { headers }),
-                fetch(`${API_URL}/orcamentos${queryParams}`, { headers }),
-                fetch(`${API_URL}/ativos${queryParams}`, { headers }),
-                fetch(`${API_URL}/infraestruturas${queryParams}`, { headers }),
-                fetch(`${API_URL}/empresas`, { headers }),
-                fetch(`${API_URL}/categorias-chamado`, { headers })
-            ]);
-            
-            if (c.ok) {
-                const data = await c.json();
-                setAtivosChamados(Array.isArray(data.chamados) ? data.chamados : (Array.isArray(data) ? data : []));
-            }
-            if (f.ok) setFornecedores(await f.json());
-            if (l.ok) setLocalizacoes(await l.json());
-            if (con.ok) setContratos(await con.json());
-            if (o.ok) setOrcamentos(await o.json());
-            if (a.ok) setAtivos(await a.json());
-            if (infra.ok) {
-                const infraData = await infra.json();
-                setInfraestruturas(Array.isArray(infraData.infraestruturas) ? infraData.infraestruturas : (Array.isArray(infraData) ? infraData : []));
-            }
-            if (emp.ok) setEmpresas(await emp.json());
-            if (cat.ok) setCategorias(await cat.json());
-        } catch (error) {
-            console.error("Erro ao carregar dados:", error);
-        }
-    }, [user?.api_token, selectedEntity, API_URL]);
-
-    useEffect(() => { fetchData(); }, [fetchData]);
-
-    const handleAtivoChange = (ativoId) => {
-        if (!ativoId) {
-            setFormData({ ...formData, ativo_id: '' });
-            return;
-        }
-
-        const selectedAtivo = ativos.find(a => a.id.toString() === ativoId);
-        if (selectedAtivo) {
-            setFormData({
-                ...formData,
-                ativo_id: ativoId,
-                empresa_id: selectedAtivo.empresa_id?.toString() || formData.empresa_id,
-                localizacao_id: selectedAtivo.localizacao_id?.toString() || formData.localizacao_id,
-                fornecedor_id: selectedAtivo.fornecedor_id?.toString() || formData.fornecedor_id,
-                contrato_id: selectedAtivo.contrato_id?.toString() || formData.contrato_id,
-                orcamento_id: selectedAtivo.orcamento_id?.toString() || formData.orcamento_id
-            });
-        } else {
-            setFormData({ ...formData, ativo_id: ativoId });
-        }
-    };
-
-    const handleOpenAnexosModal = (anexos) => {
-        setSelectedAnexos(anexos || []);
-        setIsAnexosModalOpen(true);
-    };
+    // ====== FUNÇÕES DO MODAL DE CRIAÇÃO/EDIÇÃO ======
 
     const handleOpenModal = (chamado = null) => {
         if (chamado) {
@@ -161,13 +109,34 @@ const Chamados = () => {
                 titulo: '', descricao: '', status: 'Aberto',
                 empresa_id: '', fornecedor_id: '', localizacao_id: '', 
                 contrato_id: '', orcamento_id: '', ativo_id: '', 
-                infraestrutura_id: '',
-                categoria_id: '',
+                infraestrutura_id: '', categoria_id: '',
                 criticidade_informada: 'Média', criticidade_real: 'Média',
                 valor_total: 0, anexos: [], tipo: 'maquinario'
             });
         }
         setIsModalOpen(true);
+    };
+
+    const handleAtivoChange = (ativoId) => {
+        if (!ativoId) {
+            setFormData({ ...formData, ativo_id: '' });
+            return;
+        }
+
+        const selectedAtivo = ativos.find(a => a.id.toString() === ativoId);
+        if (selectedAtivo) {
+            setFormData({
+                ...formData,
+                ativo_id: ativoId,
+                empresa_id: selectedAtivo.empresa_id?.toString() || formData.empresa_id,
+                localizacao_id: selectedAtivo.localizacao_id?.toString() || formData.localizacao_id,
+                fornecedor_id: selectedAtivo.fornecedor_id?.toString() || formData.fornecedor_id,
+                contrato_id: selectedAtivo.contrato_id?.toString() || formData.contrato_id,
+                orcamento_id: selectedAtivo.orcamento_id?.toString() || formData.orcamento_id
+            });
+        } else {
+            setFormData({ ...formData, ativo_id: ativoId });
+        }
     };
 
     const handleFileUpload = async (e) => {
@@ -213,10 +182,13 @@ const Chamados = () => {
     const handleSubmit = async (e) => {
         e.preventDefault();
         setIsSaving(true);
+        
         const headers = { 'Content-Type': 'application/json' };
         if (user?.api_token) headers['X-API-Token'] = user.api_token;
+        
         const url = isEditing ? `${API_URL}/chamados/${currentChamado.id}` : `${API_URL}/chamados`;
         const method = isEditing ? 'PUT' : 'POST';
+        
         try {
             const payload = {
                 ...formData,
@@ -230,35 +202,221 @@ const Chamados = () => {
                 categoria_id: formData.categoria_id ? parseInt(formData.categoria_id) : null,
                 anexos: formData.anexos
             };
+            
             const res = await fetch(url, {
-                method, headers,
+                method, 
+                headers,
                 body: JSON.stringify(payload)
             });
-            if (res.ok) { setIsModalOpen(false); fetchData(); }
-        } catch (err) { console.error('Save error', err); } finally { setIsSaving(false); }
+            
+            if (res.ok) { 
+                setIsModalOpen(false); 
+                fetchData(); 
+            } else {
+                const error = await res.json();
+                console.error('Error saving chamado:', error);
+                alert('Erro ao salvar chamado: ' + (error.message || 'Erro desconhecido'));
+            }
+        } catch (err) { 
+            console.error('Save error', err); 
+            alert('Erro ao salvar chamado: ' + err.message);
+        } finally { 
+            setIsSaving(false); 
+        }
     };
 
     const handleDelete = async (id) => {
         if (!window.confirm('Deseja realmente excluir este chamado?')) return;
+        
         const headers = {};
         if (user?.api_token) headers['X-API-Token'] = user.api_token;
+        
         try {
             const res = await fetch(`${API_URL}/chamados/${id}`, { method: 'DELETE', headers });
             if (res.ok) fetchData();
-        } catch (err) { console.error('Delete error', err); }
+        } catch (err) { 
+            console.error('Delete error', err); 
+        }
+    };
+
+    const handleOpenAnexosModal = (anexos) => {
+        setSelectedAnexos(anexos || []);
+        setIsAnexosModalOpen(true);
+    };
+
+    const getAnexoHref = (path) => {
+        if (!path) return '#';
+        if (path.startsWith('http')) return path;
+        return `${API_BASE}/${path}`;
+    };
+
+    // ====== RESTO DAS FUNÇÕES ======
+
+    const calculateResponseTime = (createdAt, status) => {
+        if (!createdAt) return null;
+        const created = parseISO(createdAt);
+        const now = new Date();
+        const hours = differenceInHours(now, created);
+        const days = differenceInDays(now, created);
+        
+        if (days > 0) return `${days}d ${hours % 24}h`;
+        return `${hours}h`;
+    };
+
+    const getPriorityColor = (priority) => {
+        const colors = {
+            'Muito Baixa': 'bg-gray-100 text-gray-600 border-gray-200',
+            'Baixa': 'bg-blue-100 text-blue-600 border-blue-200',
+            'Média': 'bg-yellow-100 text-yellow-600 border-yellow-200',
+            'Alta': 'bg-orange-100 text-orange-600 border-orange-200',
+            'Muito Alta': 'bg-red-100 text-red-600 border-red-200'
+        };
+        return colors[priority] || colors['Média'];
+    };
+
+    const getStatusColor = (status) => {
+        const colors = {
+            'Aberto': 'bg-blue-100 text-blue-700 border-blue-200',
+            'Em Atendimento': 'bg-amber-100 text-amber-700 border-amber-200',
+            'Aguardando Cliente': 'bg-purple-100 text-purple-700 border-purple-200',
+            'Pausado': 'bg-gray-100 text-gray-700 border-gray-200',
+            'Concluído': 'bg-green-100 text-green-700 border-green-200',
+            'Cancelado': 'bg-red-100 text-red-700 border-red-200'
+        };
+        return colors[status] || colors['Aberto'];
+    };
+
+    const formatCurrency = (value) => {
+        return new Intl.NumberFormat('pt-BR', {
+            style: 'currency',
+            currency: 'BRL'
+        }).format(value || 0);
+    };
+
+    const fetchData = useCallback(async () => {
+        try {
+            const headers = {};
+            if (user?.api_token) {
+                headers['X-API-Token'] = user.api_token;
+            }
+
+            let queryParams = '';
+            if (user?.role === 'empresa_restrita' && user?.empresa_id) {
+                queryParams = `?empresa_id=${user.empresa_id}`;
+            } else if (selectedEntity && selectedEntity !== 'all') {
+                queryParams = `?empresa_id=${selectedEntity}`;
+            }
+
+            const [c, f, l, con, o, a, infra, emp, cat] = await Promise.all([
+                fetch(`${API_URL}/chamados${queryParams}`, { headers }),
+                fetch(`${API_URL}/fornecedores${queryParams}`, { headers }),
+                fetch(`${API_URL}/localizacoes${queryParams}`, { headers }),
+                fetch(`${API_URL}/contratos${queryParams}`, { headers }),
+                fetch(`${API_URL}/orcamentos${queryParams}`, { headers }),
+                fetch(`${API_URL}/ativos${queryParams}`, { headers }),
+                fetch(`${API_URL}/infraestruturas${queryParams}`, { headers }),
+                fetch(`${API_URL}/empresas`, { headers }),
+                fetch(`${API_URL}/categorias-chamado`, { headers })
+            ]);
+            
+            if (c.ok) {
+                const data = await c.json();
+                setAtivosChamados(Array.isArray(data.chamados) ? data.chamados : (Array.isArray(data) ? data : []));
+            }
+            if (f.ok) setFornecedores(await f.json());
+            if (l.ok) setLocalizacoes(await l.json());
+            if (con.ok) setContratos(await con.json());
+            if (o.ok) setOrcamentos(await o.json());
+            if (a.ok) setAtivos(await a.json());
+            if (infra.ok) {
+                const infraData = await infra.json();
+                setInfraestruturas(Array.isArray(infraData.infraestruturas) ? infraData.infraestruturas : (Array.isArray(infraData) ? infraData : []));
+            }
+            if (emp.ok) setEmpresas(await emp.json());
+            if (cat.ok) setCategorias(await cat.json());
+        } catch (error) {
+            console.error("Erro ao carregar dados:", error);
+        }
+    }, [user?.api_token, user?.role, user?.empresa_id, selectedEntity, API_URL]);
+
+    useEffect(() => { fetchData(); }, [fetchData]);
+
+    const handleViewChamado = (chamado) => {
+        setCurrentChamado(chamado);
+        setIsViewModalOpen(true);
+        setActiveTab('detalhes');
+        loadChamadoDetails(chamado.id);
+    };
+
+    const loadChamadoDetails = async (chamadoId) => {
+        try {
+            const headers = {};
+            if (user?.api_token) headers['X-API-Token'] = user.api_token;
+            
+            setComentarios([]);
+            setHistorico([]);
+        } catch (error) {
+            console.error("Erro ao carregar detalhes do chamado:", error);
+        }
+    };
+
+    const handleAddComentario = async () => {
+        if (!novoComentario.trim()) return;
+        
+        try {
+            const novoComent = {
+                id: Date.now(),
+                autor: user.username,
+                texto: novoComentario,
+                data: new Date().toISOString()
+            };
+            setComentarios([...comentarios, novoComent]);
+            setNovoComentario('');
+        } catch (error) {
+            console.error("Erro ao adicionar comentário:", error);
+        }
+    };
+
+    const handleStatusChange = async (chamadoId, novoStatus) => {
+        try {
+            const headers = { 'Content-Type': 'application/json' };
+            if (user?.api_token) headers['X-API-Token'] = user.api_token;
+            
+            const res = await fetch(`${API_URL}/chamados/${chamadoId}`, {
+                method: 'PUT',
+                headers,
+                body: JSON.stringify({ status: novoStatus })
+            });
+            
+            if (res.ok) {
+                fetchData();
+                if (currentChamado && currentChamado.id === chamadoId) {
+                    setCurrentChamado({ ...currentChamado, status: novoStatus });
+                }
+            }
+        } catch (error) {
+            console.error("Erro ao alterar status:", error);
+        }
     };
 
     const filteredChamados = useMemo(() => {
         return chamados.filter(c => {
             const matchesSearch = c.titulo?.toLowerCase().includes(searchTerm.toLowerCase()) || 
-                                 c.id?.toString().includes(searchTerm);
+                                 c.id?.toString().includes(searchTerm) ||
+                                 c.descricao?.toLowerCase().includes(searchTerm.toLowerCase());
+            
             const matchesStatus = statusFilter === 'Todos' || 
-                                 (statusFilter === 'Não Encerrados' ? ['Aberto', 'Em Atendimento'].includes(c.status) : c.status === statusFilter);
+                                 (statusFilter === 'Não Encerrados' ? 
+                                  !['Concluído', 'Cancelado'].includes(c.status) : 
+                                  c.status === statusFilter);
+            
             const matchesEmpresa = empresaFilter === 'Todas' || c.empresa_id?.toString() === empresaFilter;
             const matchesTipo = tipoFilter === 'Todos' || c.tipo === tipoFilter;
-            return matchesSearch && matchesStatus && matchesEmpresa && matchesTipo;
+            const matchesPrioridade = prioridadeFilter === 'Todas' || c.criticidade_real === prioridadeFilter;
+            
+            return matchesSearch && matchesStatus && matchesEmpresa && matchesTipo && matchesPrioridade;
         });
-    }, [chamados, searchTerm, statusFilter, empresaFilter, tipoFilter]);
+    }, [chamados, searchTerm, statusFilter, empresaFilter, tipoFilter, prioridadeFilter]);
 
     const filteredAtivosForm = useMemo(() => {
         if (!formData.empresa_id) return ativos;
@@ -283,13 +441,6 @@ const Chamados = () => {
         } catch (e) { return '-'; }
     };
 
-    const getAnexoHref = (path) => {
-        if (!path) return '#';
-        if (path.startsWith('http')) return path;
-        return `${API_BASE}/${path}`;
-    };
-
-    // Badge de tipo do chamado
     const TipoBadge = ({ tipo }) => {
         if (tipo === 'infraestrutura') {
             return (
@@ -305,146 +456,388 @@ const Chamados = () => {
         );
     };
 
-    return (
-        <div className="p-4 md:p-8 space-y-6 max-w-7xl mx-auto">
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-                <div>
-                    <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-3">
-                        <FaTools className="text-primary" /> Gestão de Chamados
-                    </h1>
-                    <p className="text-slate-500 text-sm">Controle e manutenção de ativos</p>
-                </div>
-                <button onClick={() => handleOpenModal()} className="flex items-center gap-2 bg-primary text-white px-6 py-3 rounded-xl font-bold shadow-lg shadow-primary/20 hover:bg-primary/90 transition-all active:scale-95">
-                    <FaPlus /> Novo Chamado
-                </button>
-            </div>
-
-            {/* Filtros */}
-            <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 flex flex-wrap gap-4 items-center">
-                <div className="flex-1 min-w-[200px] relative">
-                    <FaSearch className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                    <input type="text" placeholder="Buscar por título ou ID..." className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary/20" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
-                </div>
-                <select className="px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary/20 text-sm font-medium" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
-                    <option value="Não Encerrados">Não Encerrados</option>
-                    <option value="Todos">Todos os Status</option>
-                    <option value="Aberto">Aberto</option>
-                    <option value="Em Atendimento">Em Atendimento</option>
-                    <option value="Concluído">Concluído</option>
-                    <option value="Cancelado">Cancelado</option>
-                </select>
-                <select className="px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary/20 text-sm font-medium" value={tipoFilter} onChange={(e) => setTipoFilter(e.target.value)}>
-                    <option value="Todos">Todos os Tipos</option>
-                    <option value="maquinario">Maquinário</option>
-                    <option value="infraestrutura">Infraestrutura</option>
-                </select>
-                <select className="px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary/20 text-sm font-medium" value={empresaFilter} onChange={(e) => setEmpresaFilter(e.target.value)}>
-                    <option value="Todas">Todas as Empresas</option>
-                    {empresas.map(e => <option key={e.id} value={e.id.toString()}>{e.nome}</option>)}
-                </select>
-            </div>
-
-            {/* Tabela */}
-            <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
-                <div className="overflow-x-auto">
-                    <table className="w-full text-left border-collapse">
-                        <thead>
-                            <tr className="bg-slate-50/50 border-b border-slate-100 text-[11px] font-bold text-slate-500 uppercase tracking-wider">
-                                <th className="p-4">ID / Título</th>
-                                <th className="p-4">Tipo / Item</th>
-                                <th className="p-4">Status / Prioridade</th>
-                                <th className="p-4">Datas</th>
-                                <th className="p-4">Valor</th>
-                                <th className="p-4 text-right">Ações</th>
-                            </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-50">
-                            {filteredChamados.map((c) => (
-                                <tr key={c.id} className="hover:bg-slate-50/50 transition-colors">
-                                    <td className="p-4">
-                                        <div className="flex flex-col">
-                                            <span className="text-xs font-bold text-primary">#{c.id}</span>
-                                            <span className="text-sm font-bold text-slate-700">{c.titulo}</span>
-                                            <span className="text-[10px] text-slate-400 uppercase font-bold">{c.empresa_nome || 'Empresa não vinculada'}</span>
-                                        </div>
-                                    </td>
-                                    <td className="p-4">
-                                        <div className="flex flex-col gap-1">
-                                            <TipoBadge tipo={c.tipo} />
-                                            {c.tipo === 'infraestrutura' ? (
-                                                <span className="text-sm font-bold text-slate-700 flex items-center gap-1">
-                                                    <FaLayerGroup className="text-indigo-400" size={12} /> 
-                                                    {c.infraestrutura_nome || 'Sem Infraestrutura'}
-                                                </span>
-                                            ) : (
-                                                <span className="text-sm font-bold text-slate-700 flex items-center gap-1">
-                                                    <FaBox className="text-primary/60" size={12} /> 
-                                                    {c.ativo_nome || 'Sem Ativo'}
-                                                </span>
-                                            )}
-                                            <span className="text-[10px] text-slate-400 uppercase font-bold flex items-center gap-1">
-                                                <FaTruck className="text-slate-300" size={10} /> {c.fornecedor_nome || 'Sem Fornecedor'}
-                                            </span>
-                                        </div>
-                                    </td>
-                                    <td className="p-4">
-                                        <div className="flex flex-col gap-1">
-                                            <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase border w-fit ${c.status === 'Aberto' ? 'bg-blue-50 text-blue-600 border-blue-100' : c.status === 'Em Atendimento' ? 'bg-amber-50 text-amber-600 border-amber-100' : 'bg-green-50 text-green-600 border-green-100'}`}>{c.status}</span>
-                                            <div className="flex items-center gap-2">
-                                                <span className="text-[10px] font-bold text-slate-500 flex items-center gap-1"><FaBolt className="text-amber-400" /> {c.criticidade_real || 'Média'}</span>
-                                                <span className="text-[10px] font-bold text-slate-400 flex items-center gap-1"><FaQrcode className="text-slate-300" /> {c.criticidade_informada || 'Média'}</span>
-                                            </div>
-                                            {c.contrato_nome && <span className="text-[10px] font-bold text-slate-400 flex items-center gap-1"><FaFileContract className="text-primary/60" /> {c.contrato_nome}</span>}
-                                            {/* Opções selecionadas do formulário */}
-                                            {c.opcoes_selecionadas && c.opcoes_selecionadas.length > 0 && (
-                                                <div className="flex flex-wrap gap-1 mt-1">
-                                                    {c.opcoes_selecionadas.slice(0, 2).map((op, idx) => (
-                                                        <span key={idx} className="text-[9px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded font-medium">{op}</span>
-                                                    ))}
-                                                    {c.opcoes_selecionadas.length > 2 && (
-                                                        <span className="text-[9px] bg-slate-100 text-slate-400 px-1.5 py-0.5 rounded font-medium">+{c.opcoes_selecionadas.length - 2}</span>
-                                                    )}
-                                                </div>
-                                            )}
-                                        </div>
-                                    </td>
-                                    <td className="p-4">
-                                        <div className="flex flex-col text-[11px]">
-                                            <span className="text-slate-400 font-bold uppercase">Abertura</span>
-                                            <span className="text-slate-600 font-medium">{formatDate(c.created_at)}</span>
-                                            {c.data_solucao && (
-                                                <>
-                                                    <span className="text-green-500 font-bold uppercase mt-1">Solução</span>
-                                                    <span className="text-green-600 font-medium">{formatDate(c.data_solucao)}</span>
-                                                </>
-                                            )}
-                                        </div>
-                                    </td>
-                                    <td className="p-4 text-sm font-bold text-slate-700">{formatCurrency(c.valor_total)}</td>
-                                    <td className="p-4 text-right">
-                                        <div className="flex justify-end gap-2">
-                                            {c.anexos && c.anexos.length > 0 && (
-                                                <button onClick={() => handleOpenAnexosModal(c.anexos)} className="p-2 text-primary hover:bg-primary/5 rounded-lg transition-all" title="Ver Anexos"><FaPaperclip size={16} /></button>
-                                            )}
-                                            <button onClick={() => handleOpenModal(c)} className="p-2 text-slate-400 hover:text-primary hover:bg-primary/5 rounded-lg transition-all"><FaEdit size={16} /></button>
-                                            <button onClick={() => handleDelete(c.id)} className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all"><FaTrashAlt size={16} /></button>
-                                        </div>
-                                    </td>
-                                </tr>
-                            ))}
-                            {filteredChamados.length === 0 && (
-                                <tr>
-                                    <td colSpan={6} className="p-12 text-center text-slate-400">
-                                        <FaTools className="mx-auto mb-3 text-slate-200" size={32} />
-                                        <p className="font-medium">Nenhum chamado encontrado</p>
-                                        <p className="text-sm mt-1">Tente ajustar os filtros ou abrir um novo chamado</p>
-                                    </td>
-                                </tr>
+    const ChamadoRow = ({ chamado }) => {
+        const [expanded, setExpanded] = useState(false);
+        
+        return (
+            <>
+                <tr 
+                    className={`hover:bg-slate-50/50 transition-all cursor-pointer border-l-4 ${
+                        chamado.criticidade_real === 'Muito Alta' ? 'border-red-500' :
+                        chamado.criticidade_real === 'Alta' ? 'border-orange-500' :
+                        chamado.criticidade_real === 'Média' ? 'border-yellow-500' :
+                        chamado.criticidade_real === 'Baixa' ? 'border-blue-500' : 'border-gray-300'
+                    }`}
+                    onClick={() => setExpanded(!expanded)}
+                >
+                    <td className="p-4">
+                        <div className="flex items-center gap-3">
+                            <input 
+                                type="checkbox" 
+                                onClick={(e) => e.stopPropagation()}
+                                onChange={(e) => {
+                                    if (e.target.checked) {
+                                        setSelectedChamados([...selectedChamados, chamado.id]);
+                                    } else {
+                                        setSelectedChamados(selectedChamados.filter(id => id !== chamado.id));
+                                    }
+                                }}
+                                className="rounded border-gray-300"
+                            />
+                            <div className="flex flex-col">
+                                <div className="flex items-center gap-2">
+                                    <span className="text-xs font-bold text-primary">#{chamado.id}</span>
+                                    {chamado.criticidade_real === 'Muito Alta' && (
+                                        <FaBolt className="text-red-500 animate-pulse" size={12} />
+                                    )}
+                                </div>
+                                <span className="text-sm font-bold text-slate-700 max-w-[200px] truncate">
+                                    {chamado.titulo}
+                                </span>
+                                <span className="text-[10px] text-slate-400 uppercase font-bold">
+                                    {chamado.empresa_nome || 'Empresa não vinculada'}
+                                </span>
+                            </div>
+                        </div>
+                    </td>
+                    
+                    <td className="p-4">
+                        <div className="flex flex-col gap-2">
+                            <span className={`text-[10px] px-3 py-1 rounded-full font-bold uppercase border ${getStatusColor(chamado.status)}`}>
+                                {chamado.status}
+                            </span>
+                            <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase border ${getPriorityColor(chamado.criticidade_real)}`}>
+                                {chamado.criticidade_real}
+                            </span>
+                        </div>
+                    </td>
+                    
+                    <td className="p-4">
+                        <div className="flex flex-col gap-1">
+                            <TipoBadge tipo={chamado.tipo} />
+                            {chamado.tipo === 'infraestrutura' ? (
+                                <span className="text-sm font-bold text-slate-700 flex items-center gap-1">
+                                    <FaLayerGroup className="text-indigo-400" size={12} /> 
+                                    {chamado.infraestrutura_nome || 'Sem Infraestrutura'}
+                                </span>
+                            ) : (
+                                <span className="text-sm font-bold text-slate-700 flex items-center gap-1">
+                                    <FaBox className="text-primary/60" size={12} /> 
+                                    {chamado.ativo_nome || 'Sem Ativo'}
+                                </span>
                             )}
-                        </tbody>
-                    </table>
+                            <span className="text-[10px] text-slate-400 uppercase font-bold flex items-center gap-1">
+                                <FaTruck className="text-slate-300" size={10} /> 
+                                {chamado.fornecedor_nome || 'Sem Fornecedor'}
+                            </span>
+                        </div>
+                    </td>
+                    
+                    <td className="p-4">
+                        <div className="flex flex-col text-[11px]">
+                            <span className="text-slate-400 font-bold uppercase">Abertura</span>
+                            <span className="text-slate-600 font-medium">
+                                {formatDate(chamado.created_at)}
+                            </span>
+                            {chamado.data_solucao && (
+                                <>
+                                    <span className="text-green-500 font-bold uppercase mt-1">Solução</span>
+                                    <span className="text-green-600 font-medium">{formatDate(chamado.data_solucao)}</span>
+                                </>
+                            )}
+                        </div>
+                    </td>
+                    
+                    <td className="p-4">
+                        <span className="text-sm font-bold text-slate-700">
+                            {formatCurrency(chamado.valor_total)}
+                        </span>
+                    </td>
+                    
+                    <td className="p-4">
+                        <div className="flex justify-end gap-1" onClick={(e) => e.stopPropagation()}>
+                            {chamado.anexos && chamado.anexos.length > 0 && (
+                                <button 
+                                    onClick={() => handleOpenAnexosModal(chamado.anexos)}
+                                    className="p-2 text-primary hover:bg-primary/5 rounded-lg transition-all" 
+                                    title="Ver Anexos"
+                                >
+                                    <FaPaperclip size={16} />
+                                </button>
+                            )}
+                            <button 
+                                onClick={() => handleViewChamado(chamado)}
+                                className="p-2 text-blue-500 hover:bg-blue-50 rounded-lg transition-all"
+                                title="Ver Detalhes"
+                            >
+                                <FaEye size={14} />
+                            </button>
+                            <button 
+                                onClick={() => handleOpenModal(chamado)}
+                                className="p-2 text-slate-400 hover:text-primary hover:bg-primary/5 rounded-lg transition-all"
+                                title="Editar"
+                            >
+                                <FaEdit size={14} />
+                            </button>
+                            <button 
+                                onClick={() => handleDelete(chamado.id)}
+                                className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all"
+                            >
+                                <FaTrashAlt size={16} />
+                            </button>
+                        </div>
+                    </td>
+                </tr>
+                
+                {expanded && (
+                    <tr className="bg-slate-50/50">
+                        <td colSpan={6} className="p-4">
+                            <div className="bg-white rounded-lg p-4 border border-slate-200">
+                                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
+                                    <div>
+                                        <strong>Descrição:</strong>
+                                        <p className="text-slate-600 mt-1">
+                                            {chamado.descricao || 'Sem descrição'}
+                                        </p>
+                                    </div>
+                                    <div>
+                                        <strong>Categoria:</strong>
+                                        <p className="text-slate-600 mt-1">
+                                            {chamado.categoria_nome || 'Sem categoria'}
+                                        </p>
+                                    </div>
+                                    <div>
+                                        <strong>Localização:</strong>
+                                        <p className="text-slate-600 mt-1">
+                                            {chamado.localizacao_nome || 'Não definida'}
+                                        </p>
+                                    </div>
+                                </div>
+                                
+                                {chamado.anexos && chamado.anexos.length > 0 && (
+                                    <div className="mt-3 pt-3 border-t border-slate-200">
+                                        <strong className="text-sm">Anexos:</strong>
+                                        <div className="flex gap-2 mt-1">
+                                            {chamado.anexos.map((anexo, idx) => (
+                                                <a 
+                                                    key={idx}
+                                                    href={getAnexoHref(anexo.path || anexo.url)}
+                                                    target="_blank"
+                                                    rel="noopener noreferrer"
+                                                    className="text-xs bg-primary/10 text-primary px-2 py-1 rounded hover:bg-primary/20 transition-colors"
+                                                >
+                                                    📎 {anexo.name || anexo.filename}
+                                                </a>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        </td>
+                    </tr>
+                )}
+            </>
+        );
+    };
+
+    const showEmpresaFilter = user?.role !== 'empresa_restrita';
+
+    return (
+        <div className={`p-4 md:p-8 space-y-6 max-w-full mx-auto transition-all duration-300 ${isFullscreen ? 'fixed inset-0 z-50 bg-white overflow-auto' : 'max-w-7xl'}`}>
+            {/* Header aprimorado */}
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                <div className="flex items-center gap-4">
+                    <div>
+                        <h1 className="text-3xl font-bold text-slate-800 flex items-center gap-3">
+                            <FaTools className="text-primary" /> 
+                            Gestão de Chamados
+                            {user?.role === 'empresa_restrita' && (
+                                <span className="text-sm bg-orange-100 text-orange-600 px-3 py-1 rounded-full font-medium">
+                                    {user.empresa_nome}
+                                </span>
+                            )}
+                        </h1>
+                        <p className="text-slate-500 text-sm">
+                            {filteredChamados.length} chamado(s) encontrado(s)
+                        </p>
+                    </div>
+                    <button 
+                        onClick={() => setIsFullscreen(!isFullscreen)}
+                        className="p-2 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100 transition-all"
+                        title={isFullscreen ? "Sair da tela cheia" : "Tela cheia"}
+                    >
+                        {isFullscreen ? <FaCompressArrowsAlt /> : <FaExpandArrowsAlt />}
+                    </button>
+                </div>
+                
+                <div className="flex items-center gap-3">
+                    <div className="flex rounded-lg border border-slate-200 bg-white">
+                        <button 
+                            onClick={() => setViewMode('table')}
+                            className={`px-3 py-2 text-sm font-medium rounded-l-lg transition-all ${
+                                viewMode === 'table' ? 'bg-primary text-white' : 'text-slate-600 hover:bg-slate-50'
+                            }`}
+                        >
+                            Tabela
+                        </button>
+                        <button 
+                            onClick={() => setViewMode('kanban')}
+                            className={`px-3 py-2 text-sm font-medium transition-all ${
+                                viewMode === 'kanban' ? 'bg-primary text-white' : 'text-slate-600 hover:bg-slate-50'
+                            }`}
+                        >
+                            Kanban
+                        </button>
+                        <button 
+                            onClick={() => setViewMode('timeline')}
+                            className={`px-3 py-2 text-sm font-medium rounded-r-lg transition-all ${
+                                viewMode === 'timeline' ? 'bg-primary text-white' : 'text-slate-600 hover:bg-slate-50'
+                            }`}
+                        >
+                            Timeline
+                        </button>
+                    </div>
+                    
+                    <button 
+                        onClick={() => handleOpenModal()} 
+                        className="flex items-center gap-2 bg-primary text-white px-6 py-3 rounded-xl font-bold shadow-lg shadow-primary/20 hover:bg-primary/90 transition-all active:scale-95"
+                    >
+                        <FaPlus /> Novo Chamado
+                    </button>
                 </div>
             </div>
+
+            {/* Filtros avançados */}
+            <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 xl:grid-cols-6 gap-4">
+                    <div className="lg:col-span-2 relative">
+                        <FaSearch className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                        <input 
+                            type="text" 
+                            placeholder="Buscar por título, ID ou descrição..." 
+                            className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary/20 transition-all" 
+                            value={searchTerm} 
+                            onChange={(e) => setSearchTerm(e.target.value)} 
+                        />
+                    </div>
+                    
+                    <select 
+                        className="px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary/20 text-sm font-medium" 
+                        value={statusFilter} 
+                        onChange={(e) => setStatusFilter(e.target.value)}
+                    >
+                        <option value="Não Encerrados">Não Encerrados</option>
+                        <option value="Todos">Todos os Status</option>
+                        {statusOptions.map(status => (
+                            <option key={status} value={status}>{status}</option>
+                        ))}
+                    </select>
+                    
+                    <select 
+                        className="px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary/20 text-sm font-medium" 
+                        value={prioridadeFilter} 
+                        onChange={(e) => setPrioridadeFilter(e.target.value)}
+                    >
+                        <option value="Todas">Todas Prioridades</option>
+                        {criticidades.map(crit => (
+                            <option key={crit} value={crit}>{crit}</option>
+                        ))}
+                    </select>
+                    
+                    <select 
+                        className="px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary/20 text-sm font-medium" 
+                        value={tipoFilter} 
+                        onChange={(e) => setTipoFilter(e.target.value)}
+                    >
+                        <option value="Todos">Todos os Tipos</option>
+                        <option value="maquinario">Maquinário</option>
+                        <option value="infraestrutura">Infraestrutura</option>
+                    </select>
+                    
+                    {showEmpresaFilter && (
+                        <select 
+                            className="px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary/20 text-sm font-medium" 
+                            value={empresaFilter} 
+                            onChange={(e) => setEmpresaFilter(e.target.value)}
+                        >
+                            <option value="Todas">Todas as Empresas</option>
+                            {empresas.map(e => (
+                                <option key={e.id} value={e.id.toString()}>{e.nome}</option>
+                            ))}
+                        </select>
+                    )}
+                </div>
+                
+                {selectedChamados.length > 0 && (
+                    <div className="mt-4 p-4 bg-primary/5 rounded-xl border border-primary/20">
+                        <div className="flex items-center justify-between">
+                            <span className="text-sm font-medium text-primary">
+                                {selectedChamados.length} chamado(s) selecionado(s)
+                            </span>
+                            <div className="flex gap-2">
+                                <button className="px-3 py-1.5 bg-green-500 text-white rounded-lg text-sm font-medium hover:bg-green-600 transition-colors">
+                                    Marcar como Concluído
+                                </button>
+                                <button className="px-3 py-1.5 bg-amber-500 text-white rounded-lg text-sm font-medium hover:bg-amber-600 transition-colors">
+                                    Alterar Prioridade
+                                </button>
+                                <button className="px-3 py-1.5 bg-blue-500 text-white rounded-lg text-sm font-medium hover:bg-blue-600 transition-colors">
+                                    Atribuir Responsável
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                )}
+            </div>
+
+            {/* Tabela melhorada */}
+            {viewMode === 'table' && (
+                <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+                    <div className="overflow-x-auto">
+                        <table className="w-full text-left border-collapse">
+                            <thead>
+                                <tr className="bg-gradient-to-r from-slate-50 to-slate-100 border-b border-slate-200">
+                                    <th className="p-4 text-[11px] font-bold text-slate-600 uppercase tracking-wider">
+                                        <div className="flex items-center gap-2">
+                                            <input 
+                                                type="checkbox" 
+                                                className="rounded border-gray-300"
+                                                onChange={(e) => {
+                                                    if (e.target.checked) {
+                                                        setSelectedChamados(filteredChamados.map(c => c.id));
+                                                    } else {
+                                                        setSelectedChamados([]);
+                                                    }
+                                                }}
+                                            />
+                                            ID / Título
+                                        </div>
+                                    </th>
+                                    <th className="p-4 text-[11px] font-bold text-slate-600 uppercase tracking-wider">Status / Prioridade</th>
+                                    <th className="p-4 text-[11px] font-bold text-slate-600 uppercase tracking-wider">Tipo / Item</th>
+                                    <th className="p-4 text-[11px] font-bold text-slate-600 uppercase tracking-wider">Datas</th>
+                                    <th className="p-4 text-[11px] font-bold text-slate-600 uppercase tracking-wider">Valor</th>
+                                    <th className="p-4 text-[11px] font-bold text-slate-600 uppercase tracking-wider text-right">Ações</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-50">
+                                {filteredChamados.map((chamado) => (
+                                    <ChamadoRow key={chamado.id} chamado={chamado} />
+                                ))}
+                                {filteredChamados.length === 0 && (
+                                    <tr>
+                                        <td colSpan={6} className="p-12 text-center text-slate-400">
+                                            <FaTools className="mx-auto mb-3 text-slate-200" size={32} />
+                                            <p className="font-medium">Nenhum chamado encontrado</p>
+                                            <p className="text-sm mt-1">Tente ajustar os filtros ou abrir um novo chamado</p>
+                                        </td>
+                                    </tr>
+                                )}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            )}
 
             {/* Modal de Anexos */}
             {isAnexosModalOpen && (
@@ -469,7 +862,7 @@ const Chamados = () => {
                 </div>
             )}
 
-            {/* Modal Cadastro/Edição */}
+            {/* Modal Cadastro/Edição - FUNCIONAL AGORA! */}
             {isModalOpen && (
                 <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
                     <div className="bg-white rounded-3xl shadow-2xl w-full max-w-5xl max-h-[90vh] overflow-hidden flex flex-col animate-in fade-in zoom-in duration-200">
@@ -521,10 +914,9 @@ const Chamados = () => {
                                             <div className="space-y-1">
                                                 <label className="text-xs font-bold text-slate-600 uppercase ml-1">Status</label>
                                                 <select className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary/20 transition-all" value={formData.status} onChange={(e) => setFormData({...formData, status: e.target.value})}>
-                                                    <option value="Aberto">Aberto</option>
-                                                    <option value="Em Atendimento">Em Atendimento</option>
-                                                    <option value="Concluído">Concluído</option>
-                                                    <option value="Cancelado">Cancelado</option>
+                                                    {statusOptions.map(status => (
+                                                        <option key={status} value={status}>{status}</option>
+                                                    ))}
                                                 </select>
                                             </div>
                                             <div className="space-y-1">
@@ -542,7 +934,6 @@ const Chamados = () => {
                                     <div className="space-y-4">
                                         <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest border-b border-slate-100 pb-2">Vínculos e Ativos</h3>
                                         
-                                        {/* Campo condicional: Ativo ou Infraestrutura */}
                                         {formData.tipo === 'maquinario' ? (
                                             <div className="space-y-1">
                                                 <label className="text-xs font-bold text-slate-600 uppercase ml-1 flex items-center gap-1">
@@ -647,6 +1038,396 @@ const Chamados = () => {
                                 <button type="submit" disabled={isSaving} className="px-8 py-2.5 bg-primary text-white rounded-xl font-bold shadow-lg shadow-primary/20 hover:bg-primary/90 transition-all disabled:opacity-50">{isSaving ? 'Salvando...' : 'Salvar Chamado'}</button>
                             </div>
                         </form>
+                    </div>
+                </div>
+            )}
+
+            {/* Modal de visualização detalhada */}
+            {isViewModalOpen && currentChamado && (
+                <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[200] flex items-center justify-center p-4">
+                    <div className="bg-white rounded-3xl shadow-2xl w-full max-w-6xl max-h-[90vh] overflow-hidden flex flex-col">
+                        {/* Header do modal */}
+                        <div className="p-6 border-b border-slate-200 flex items-center justify-between bg-gradient-to-r from-slate-50 to-white">
+                            <div className="flex items-center gap-4">
+                                <div className="p-3 bg-primary/10 rounded-2xl">
+                                    <FaTools className="text-primary" size={24} />
+                                </div>
+                                <div>
+                                    <h2 className="text-xl font-bold text-slate-800">
+                                        Chamado #{currentChamado.id} - {currentChamado.titulo}
+                                    </h2>
+                                    <div className="flex items-center gap-3 mt-1">
+                                        <span className={`text-xs px-2 py-1 rounded-full font-bold uppercase ${getStatusColor(currentChamado.status)}`}>
+                                            {currentChamado.status}
+                                        </span>
+                                        <span className={`text-xs px-2 py-1 rounded-full font-bold uppercase ${getPriorityColor(currentChamado.criticidade_real)}`}>
+                                            {currentChamado.criticidade_real}
+                                        </span>
+                                        <span className="text-xs text-slate-500">
+                                            📅 {format(parseISO(currentChamado.created_at), "dd/MM/yyyy HH:mm", { locale: ptBR })}
+                                        </span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                                <button className="p-2 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100 transition-all">
+                                    <FaPrint size={16} />
+                                </button>
+                                <button className="p-2 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100 transition-all">
+                                    <FaShare size={16} />
+                                </button>
+                                <button 
+                                    onClick={() => setIsViewModalOpen(false)}
+                                    className="p-2 text-slate-400 hover:text-red-500 rounded-lg hover:bg-red-50 transition-all"
+                                >
+                                    <FaTimes size={16} />
+                                </button>
+                            </div>
+                        </div>
+
+                        {/* Tabs */}
+                        <div className="flex border-b border-slate-200 bg-slate-50">
+                            {['detalhes', 'comentarios', 'historico', 'anexos'].map(tab => (
+                                <button
+                                    key={tab}
+                                    onClick={() => setActiveTab(tab)}
+                                    className={`px-6 py-3 text-sm font-medium capitalize transition-all ${
+                                        activeTab === tab 
+                                            ? 'text-primary border-b-2 border-primary bg-white' 
+                                            : 'text-slate-600 hover:text-slate-800'
+                                    }`}
+                                >
+                                    {tab === 'detalhes' ? 'Detalhes' : 
+                                     tab === 'comentarios' ? 'Comentários' :
+                                     tab === 'historico' ? 'Histórico' : 'Anexos'}
+                                </button>
+                            ))}
+                        </div>
+
+                        {/* Conteúdo das tabs */}
+                        <div className="flex-1 overflow-y-auto p-6">
+                            {activeTab === 'detalhes' && (
+                                <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                                    <div className="space-y-6">
+                                        <div>
+                                            <h3 className="text-lg font-bold text-slate-800 mb-4">Informações Gerais</h3>
+                                            <div className="space-y-4">
+                                                <div className="grid grid-cols-2 gap-4">
+                                                    <div>
+                                                        <label className="text-xs font-bold text-slate-500 uppercase">ID</label>
+                                                        <p className="text-sm font-medium text-slate-700">#{currentChamado.id}</p>
+                                                    </div>
+                                                    <div>
+                                                        <label className="text-xs font-bold text-slate-500 uppercase">Tipo</label>
+                                                        <p className="text-sm font-medium text-slate-700 capitalize">{currentChamado.tipo}</p>
+                                                    </div>
+                                                </div>
+                                                
+                                                <div>
+                                                    <label className="text-xs font-bold text-slate-500 uppercase">Título</label>
+                                                    <p className="text-sm font-medium text-slate-700">{currentChamado.titulo}</p>
+                                                </div>
+                                                
+                                                <div>
+                                                    <label className="text-xs font-bold text-slate-500 uppercase">Descrição</label>
+                                                    <p className="text-sm text-slate-600 bg-slate-50 p-3 rounded-lg">
+                                                        {currentChamado.descricao || 'Sem descrição fornecida'}
+                                                    </p>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        
+                                        <div>
+                                            <h3 className="text-lg font-bold text-slate-800 mb-4">Status e Prioridade</h3>
+                                            <div className="grid grid-cols-2 gap-4">
+                                                <div>
+                                                    <label className="text-xs font-bold text-slate-500 uppercase">Status Atual</label>
+                                                    <div className="mt-1">
+                                                        <span className={`inline-block px-3 py-1 rounded-full text-xs font-bold uppercase ${getStatusColor(currentChamado.status)}`}>
+                                                            {currentChamado.status}
+                                                        </span>
+                                                    </div>
+                                                </div>
+                                                <div>
+                                                    <label className="text-xs font-bold text-slate-500 uppercase">Criticidade</label>
+                                                    <div className="mt-1">
+                                                        <span className={`inline-block px-3 py-1 rounded-full text-xs font-bold uppercase ${getPriorityColor(currentChamado.criticidade_real)}`}>
+                                                            {currentChamado.criticidade_real}
+                                                        </span>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    
+                                    <div className="space-y-6">
+                                        <div>
+                                            <h3 className="text-lg font-bold text-slate-800 mb-4">Vínculos</h3>
+                                            <div className="space-y-3">
+                                                <div className="flex items-center gap-3 p-3 bg-slate-50 rounded-lg">
+                                                    <FaBuilding className="text-slate-400" />
+                                                    <div>
+                                                        <span className="text-xs font-bold text-slate-500 uppercase">Empresa</span>
+                                                        <p className="text-sm font-medium">{currentChamado.empresa_nome || 'Não vinculada'}</p>
+                                                    </div>
+                                                </div>
+                                                
+                                                {currentChamado.tipo === 'infraestrutura' ? (
+                                                    <div className="flex items-center gap-3 p-3 bg-slate-50 rounded-lg">
+                                                        <FaLayerGroup className="text-indigo-400" />
+                                                        <div>
+                                                            <span className="text-xs font-bold text-slate-500 uppercase">Infraestrutura</span>
+                                                            <p className="text-sm font-medium">{currentChamado.infraestrutura_nome || 'Não vinculada'}</p>
+                                                        </div>
+                                                    </div>
+                                                ) : (
+                                                    <div className="flex items-center gap-3 p-3 bg-slate-50 rounded-lg">
+                                                        <FaBox className="text-primary/60" />
+                                                        <div>
+                                                            <span className="text-xs font-bold text-slate-500 uppercase">Ativo</span>
+                                                            <p className="text-sm font-medium">{currentChamado.ativo_nome || 'Não vinculado'}</p>
+                                                        </div>
+                                                    </div>
+                                                )}
+                                                
+                                                <div className="flex items-center gap-3 p-3 bg-slate-50 rounded-lg">
+                                                    <FaTruck className="text-slate-400" />
+                                                    <div>
+                                                        <span className="text-xs font-bold text-slate-500 uppercase">Fornecedor</span>
+                                                        <p className="text-sm font-medium">{currentChamado.fornecedor_nome || 'Não atribuído'}</p>
+                                                    </div>
+                                                </div>
+                                                
+                                                <div className="flex items-center gap-3 p-3 bg-slate-50 rounded-lg">
+                                                    <FaDollarSign className="text-green-400" />
+                                                    <div>
+                                                        <span className="text-xs font-bold text-slate-500 uppercase">Valor</span>
+                                                        <p className="text-sm font-medium">{formatCurrency(currentChamado.valor_total)}</p>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        
+                                        <div>
+                                            <h3 className="text-lg font-bold text-slate-800 mb-4">Cronologia</h3>
+                                            <div className="space-y-3">
+                                                <div className="flex items-center gap-3 p-3 bg-blue-50 rounded-lg border border-blue-200">
+                                                    <FaClock className="text-blue-500" />
+                                                    <div>
+                                                        <span className="text-xs font-bold text-blue-600 uppercase">Aberto em</span>
+                                                        <p className="text-sm font-medium text-blue-700">
+                                                            {format(parseISO(currentChamado.created_at), "dd/MM/yyyy HH:mm", { locale: ptBR })}
+                                                        </p>
+                                                    </div>
+                                                </div>
+                                                
+                                                {currentChamado.data_solucao && (
+                                                    <div className="flex items-center gap-3 p-3 bg-green-50 rounded-lg border border-green-200">
+                                                        <FaCheckCircle className="text-green-500" />
+                                                        <div>
+                                                            <span className="text-xs font-bold text-green-600 uppercase">Concluído em</span>
+                                                            <p className="text-sm font-medium text-green-700">
+                                                                {format(parseISO(currentChamado.data_solucao), "dd/MM/yyyy HH:mm", { locale: ptBR })}
+                                                            </p>
+                                                        </div>
+                                                    </div>
+                                                )}
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+
+                            {activeTab === 'comentarios' && (
+                                <div className="space-y-6">
+                                    <div className="flex items-center justify-between">
+                                        <h3 className="text-lg font-bold text-slate-800">Comentários</h3>
+                                        <span className="text-sm text-slate-500">{comentarios.length} comentário(s)</span>
+                                    </div>
+                                    
+                                    <div className="space-y-4 max-h-[400px] overflow-y-auto">
+                                        {comentarios.length === 0 ? (
+                                            <div className="text-center py-8 text-slate-400">
+                                                <FaComments size={32} className="mx-auto mb-2" />
+                                                <p>Nenhum comentário ainda</p>
+                                            </div>
+                                        ) : (
+                                            comentarios.map((comentario) => (
+                                                <div key={comentario.id} className="bg-slate-50 p-4 rounded-lg border border-slate-200">
+                                                    <div className="flex items-center justify-between mb-2">
+                                                        <div className="flex items-center gap-2">
+                                                            <div className="w-8 h-8 bg-primary rounded-full flex items-center justify-center text-white text-sm font-bold">
+                                                                {comentario.autor.charAt(0).toUpperCase()}
+                                                            </div>
+                                                            <span className="font-medium text-slate-700">{comentario.autor}</span>
+                                                        </div>
+                                                        <span className="text-xs text-slate-500">
+                                                            {format(parseISO(comentario.data), "dd/MM HH:mm", { locale: ptBR })}
+                                                        </span>
+                                                    </div>
+                                                    <p className="text-sm text-slate-600">{comentario.texto}</p>
+                                                </div>
+                                            ))
+                                        )}
+                                    </div>
+                                    
+                                    <div className="border-t pt-4">
+                                        <div className="flex gap-3">
+                                            <div className="w-10 h-10 bg-primary rounded-full flex items-center justify-center text-white font-bold">
+                                                {user.username.charAt(0).toUpperCase()}
+                                            </div>
+                                            <div className="flex-1">
+                                                <textarea
+                                                    value={novoComentario}
+                                                    onChange={(e) => setNovoComentario(e.target.value)}
+                                                    placeholder="Adicionar um comentário..."
+                                                    rows="3"
+                                                    className="w-full p-3 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-primary/20 resize-none"
+                                                />
+                                                <div className="flex justify-end mt-2">
+                                                    <button
+                                                        onClick={handleAddComentario}
+                                                        disabled={!novoComentario.trim()}
+                                                        className="px-4 py-2 bg-primary text-white rounded-lg font-medium hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                                                    >
+                                                        Comentar
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+
+                            {activeTab === 'historico' && (
+                                <div className="space-y-6">
+                                    <div className="flex items-center justify-between">
+                                        <h3 className="text-lg font-bold text-slate-800">Histórico de Alterações</h3>
+                                    </div>
+                                    
+                                    <div className="space-y-4">
+                                        {historico.length === 0 ? (
+                                            <div className="text-center py-8 text-slate-400">
+                                                <FaHistory size={32} className="mx-auto mb-2" />
+                                                <p>Nenhuma alteração registrada</p>
+                                            </div>
+                                        ) : (
+                                            <div className="relative">
+                                                <div className="absolute left-4 top-0 bottom-0 w-0.5 bg-slate-200"></div>
+                                                {historico.map((evento, index) => (
+                                                    <div key={index} className="relative flex items-center gap-4 pb-6">
+                                                        <div className="w-8 h-8 bg-white border-2 border-primary rounded-full flex items-center justify-center relative z-10">
+                                                            <FaClock className="text-primary" size={12} />
+                                                        </div>
+                                                        <div className="flex-1 bg-slate-50 p-4 rounded-lg border border-slate-200">
+                                                            <div className="flex items-center justify-between mb-1">
+                                                                <span className="font-medium text-slate-700">{evento.acao}</span>
+                                                                <span className="text-xs text-slate-500">{evento.data}</span>
+                                                            </div>
+                                                            <p className="text-sm text-slate-600">{evento.detalhes}</p>
+                                                            <span className="text-xs text-slate-500">por {evento.usuario}</span>
+                                                        </div>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        )}
+                                    </div>
+                                </div>
+                            )}
+
+                            {activeTab === 'anexos' && (
+                                <div className="space-y-6">
+                                    <div className="flex items-center justify-between">
+                                        <h3 className="text-lg font-bold text-slate-800">Anexos</h3>
+                                        <span className="text-sm text-slate-500">
+                                            {currentChamado.anexos?.length || 0} arquivo(s)
+                                        </span>
+                                    </div>
+                                    
+                                    {(!currentChamado.anexos || currentChamado.anexos.length === 0) ? (
+                                        <div className="text-center py-8 text-slate-400">
+                                            <FaPaperclip size={32} className="mx-auto mb-2" />
+                                            <p>Nenhum anexo encontrado</p>
+                                        </div>
+                                    ) : (
+                                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                                            {currentChamado.anexos.map((anexo, index) => (
+                                                <div key={index} className="bg-slate-50 p-4 rounded-lg border border-slate-200 hover:border-primary/30 transition-all group">
+                                                    <div className="flex items-center gap-3 mb-3">
+                                                        <div className="p-3 bg-white rounded-lg shadow-sm group-hover:shadow-md transition-all">
+                                                            <FaPaperclip className="text-primary" size={20} />
+                                                        </div>
+                                                        <div className="flex-1 min-w-0">
+                                                            <p className="font-medium text-slate-700 truncate">
+                                                                {anexo.name || anexo.filename}
+                                                            </p>
+                                                            <p className="text-xs text-slate-500">
+                                                                Anexado em {format(parseISO(currentChamado.created_at), "dd/MM/yyyy", { locale: ptBR })}
+                                                            </p>
+                                                        </div>
+                                                    </div>
+                                                    <div className="flex gap-2">
+                                                        <button
+                                                            onClick={() => window.open(getAnexoHref(anexo.path || anexo.url), '_blank')}
+                                                            className="flex-1 px-3 py-2 bg-primary text-white rounded-lg text-sm font-medium hover:bg-primary/90 transition-all flex items-center justify-center gap-2"
+                                                        >
+                                                            <FaEye size={12} /> Ver
+                                                        </button>
+                                                        <button
+                                                            onClick={() => {
+                                                                const link = document.createElement('a');
+                                                                link.href = getAnexoHref(anexo.path || anexo.url);
+                                                                link.download = anexo.name || anexo.filename;
+                                                                link.click();
+                                                            }}
+                                                            className="px-3 py-2 bg-slate-200 text-slate-600 rounded-lg text-sm font-medium hover:bg-slate-300 transition-all"
+                                                        >
+                                                            <FaDownload size={12} />
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Footer com ações */}
+                        <div className="p-6 border-t border-slate-200 bg-slate-50 flex items-center justify-between">
+                            <div className="flex items-center gap-3">
+                                <span className="text-sm text-slate-600">Alterar status:</span>
+                                <div className="flex gap-1">
+                                    {statusOptions.filter(s => s !== currentChamado.status).slice(0, 3).map(status => (
+                                        <button
+                                            key={status}
+                                            onClick={() => handleStatusChange(currentChamado.id, status)}
+                                            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${getStatusColor(status).replace('border-', 'border-2 border-')}`}
+                                        >
+                                            {status}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                            
+                            <div className="flex items-center gap-3">
+                                <button 
+                                    onClick={() => {
+                                        setIsViewModalOpen(false);
+                                        handleOpenModal(currentChamado);
+                                    }}
+                                    className="px-4 py-2 bg-primary text-white rounded-lg font-medium hover:bg-primary/90 transition-all flex items-center gap-2"
+                                >
+                                    <FaEdit size={14} /> Editar
+                                </button>
+                                <button 
+                                    onClick={() => setIsViewModalOpen(false)}
+                                    className="px-4 py-2 bg-slate-200 text-slate-600 rounded-lg font-medium hover:bg-slate-300 transition-all"
+                                >
+                                    Fechar
+                                </button>
+                            </div>
+                        </div>
                     </div>
                 </div>
             )}
