@@ -31,6 +31,9 @@ class Chamado(db.Model):
     # Campo para valor total do serviço
     valor_total = db.Column(db.Float, nullable=True, default=0.0)
 
+    # Tipo do chamado (Maquinário, Infraestrutura, Outros)
+    tipo_chamado = db.Column(db.String(32), nullable=True)
+
     # Novos campos de criticidade
     criticidade_informada = db.Column(db.String(32), nullable=True)
     criticidade_real = db.Column(db.String(32), nullable=True)
@@ -48,6 +51,15 @@ class Chamado(db.Model):
     # campos extras que seu app possa usar (ex.: anexos JSON)
     anexos = db.Column(db.Text, nullable=True)
 
+    def _safe_rel(self, rel, attr):
+        try:
+            obj = getattr(self, rel, None)
+            if obj is None:
+                return None
+            return getattr(obj, attr, None)
+        except Exception:
+            return None
+
     def to_dict(self):
         def format_utc(dt):
             if not dt: return None
@@ -58,23 +70,24 @@ class Chamado(db.Model):
             'titulo': self.titulo,
             'descricao': self.descricao,
             'status': self.status,
+            'tipo_chamado': self.tipo_chamado,
             'prioridade': self.prioridade,
             'valor_total': float(self.valor_total or 0),
             'criticidade_informada': self.criticidade_informada,
             'criticidade_real': self.criticidade_real,
             'empresa_id': self.empresa_id,
-            'empresa_nome': self.empresa_rel.nome if self.empresa_rel else None,
+            'empresa_nome': self._safe_rel('empresa_rel', 'nome'),
             'localizacao_id': self.localizacao_id,
-            'localizacao_nome': self.localizacao_rel.nome if self.localizacao_rel else None,
+            'localizacao_nome': self._safe_rel('localizacao_rel', 'nome'),
             'usuario_responsavel_id': self.usuario_responsavel_id,
             'categoria_id': self.categoria_id,
-            'categoria_nome': self.categoria_rel.nome if self.categoria_rel else None,
+            'categoria_nome': self._safe_rel('categoria_rel', 'nome'),
             'ativo_id': self.ativo_id,
-            'ativo_nome': self.ativo_rel.nome if self.ativo_rel else None,
+            'ativo_nome': self._safe_rel('ativo_rel', 'nome'),
             'fornecedor_id': self.fornecedor_id,
-            'fornecedor_nome': self.fornecedor_rel.nome if self.fornecedor_rel else None,
+            'fornecedor_nome': self._safe_rel('fornecedor_rel', 'nome'),
             'contrato_id': self.contrato_id,
-            'contrato_nome': self.contrato_rel.numero if hasattr(self, 'contrato_rel') and self.contrato_rel else None,
+            'contrato_nome': self._safe_rel('contrato_rel', 'numero'),
             'orcamento_id': self.orcamento_id,
             'created_at': format_utc(self.created_at),
             'updated_at': format_utc(self.updated_at),

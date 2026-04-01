@@ -3,7 +3,8 @@ import {
     FaPlus, FaEdit, FaTrashAlt, FaFilter, FaEye, FaTag, 
     FaDollarSign, FaCalendarAlt, FaMapMarkerAlt, FaFileContract, 
     FaShoppingCart, FaTimes, FaBox, FaUser, FaPaperclip, FaCheckCircle,
-    FaExclamationCircle, FaClock, FaInfoCircle, FaSearch, FaBuilding, FaBolt, FaTools, FaQrcode, FaTruck
+    FaExclamationCircle, FaClock, FaInfoCircle, FaSearch, FaBuilding, FaBolt, FaTools, FaQrcode, FaTruck,
+    FaCog, FaLink, FaClipboardList, FaChevronRight
 } from 'react-icons/fa';
 import { format, parseISO } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
@@ -34,6 +35,7 @@ const Chamados = () => {
     
     const [formData, setFormData] = useState({
         titulo: '', descricao: '', status: 'Aberto',
+        tipo_chamado: '',
         empresa_id: '', fornecedor_id: '', localizacao_id: '', 
         contrato_id: '', orcamento_id: '', ativo_id: '', 
         categoria_id: '',
@@ -50,6 +52,14 @@ const Chamados = () => {
     const API_URL = `${API_BASE}/api`;
 
     const criticidades = ['Muito Baixa', 'Baixa', 'Média', 'Alta', 'Muito Alta'];
+    const tiposChamado = ['Maquinário', 'Infraestrutura', 'Outros'];
+
+    const getTipoBadge = (tipo) => {
+        if (!tipo) return null;
+        if (tipo === 'Maquinário') return { color: 'bg-blue-50 text-blue-600 border-blue-200', icon: <FaCog size={10} /> };
+        if (tipo === 'Infraestrutura') return { color: 'bg-green-50 text-green-600 border-green-200', icon: <FaBuilding size={10} /> };
+        return { color: 'bg-slate-50 text-slate-500 border-slate-200', icon: <FaTag size={10} /> };
+    };
 
     const formatCurrency = (value) => {
         return new Intl.NumberFormat('pt-BR', {
@@ -131,6 +141,7 @@ const Chamados = () => {
                 titulo: chamado.titulo || '',
                 descricao: chamado.descricao || '',
                 status: chamado.status || 'Aberto',
+                tipo_chamado: chamado.tipo_chamado || '',
                 empresa_id: chamado.empresa_id?.toString() || '',
                 fornecedor_id: chamado.fornecedor_id?.toString() || '',
                 localizacao_id: chamado.localizacao_id?.toString() || '',
@@ -148,6 +159,7 @@ const Chamados = () => {
             setCurrentChamado(null);
             setFormData({
                 titulo: '', descricao: '', status: 'Aberto',
+                tipo_chamado: '',
                 empresa_id: '', fornecedor_id: '', localizacao_id: '', 
                 contrato_id: '', orcamento_id: '', ativo_id: '', 
                 categoria_id: '',
@@ -209,7 +221,13 @@ const Chamados = () => {
             const res = await fetch(url, {
                 method, headers,
                 body: JSON.stringify({
-                    ...formData,
+                    titulo: formData.titulo,
+                    descricao: formData.descricao,
+                    status: formData.status,
+                    tipo_chamado: formData.tipo_chamado,
+                    criticidade_informada: formData.criticidade_informada,
+                    criticidade_real: formData.criticidade_real,
+                    valor_total: formData.valor_total,
                     empresa_id: formData.empresa_id ? parseInt(formData.empresa_id) : null,
                     fornecedor_id: formData.fornecedor_id ? parseInt(formData.fornecedor_id) : null,
                     localizacao_id: formData.localizacao_id ? parseInt(formData.localizacao_id) : null,
@@ -221,6 +239,10 @@ const Chamados = () => {
                 })
             });
             if (res.ok) { setIsModalOpen(false); fetchData(); }
+            else {
+                const errData = await res.json().catch(() => ({}));
+                console.error('Error saving chamado:', errData);
+            }
         } catch (err) { console.error('Save error', err); } finally { setIsSaving(false); }
     };
 
@@ -308,6 +330,7 @@ const Chamados = () => {
                         <thead>
                             <tr className="bg-slate-50/50 border-b border-slate-100 text-[11px] font-bold text-slate-500 uppercase tracking-wider">
                                 <th className="p-4">ID / Título</th>
+                                <th className="p-4">Tipo</th>
                                 <th className="p-4">Ativo / Fornecedor</th>
                                 <th className="p-4">Status / Prioridade</th>
                                 <th className="p-4">Datas</th>
@@ -316,7 +339,9 @@ const Chamados = () => {
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-50">
-                            {filteredChamados.map((c) => (
+                            {filteredChamados.map((c) => {
+                                const tipoBadge = getTipoBadge(c.tipo_chamado);
+                                return (
                                 <tr key={c.id} className="hover:bg-slate-50/50 transition-colors">
                                     <td className="p-4">
                                         <div className="flex flex-col">
@@ -324,6 +349,13 @@ const Chamados = () => {
                                             <span className="text-sm font-bold text-slate-700">{c.titulo}</span>
                                             <span className="text-[10px] text-slate-400 uppercase font-bold">{c.empresa_nome || 'Empresa não vinculada'}</span>
                                         </div>
+                                    </td>
+                                    <td className="p-4">
+                                        {tipoBadge ? (
+                                            <span className={`inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full font-bold uppercase border w-fit ${tipoBadge.color}`}>
+                                                {tipoBadge.icon} {c.tipo_chamado}
+                                            </span>
+                                        ) : <span className="text-slate-300 text-xs">—</span>}
                                     </td>
                                     <td className="p-4">
                                         <div className="flex flex-col">
@@ -364,7 +396,8 @@ const Chamados = () => {
                                         </div>
                                     </td>
                                 </tr>
-                            ))}
+                                );
+                            })}
                         </tbody>
                     </table>
                 </div>
@@ -393,143 +426,211 @@ const Chamados = () => {
                 </div>
             )}
 
-            {/* Cadastro/Edição Modal */}
-            {isModalOpen && (
-                <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
-                    <div className="bg-white rounded-3xl shadow-2xl w-full max-w-5xl max-h-[90vh] overflow-hidden flex flex-col animate-in fade-in zoom-in duration-200">
-                        <div className="p-6 border-b border-slate-100 flex items-center justify-between">
-                            <h2 className="text-xl font-bold text-slate-800">{isEditing ? `Editar Chamado #${currentChamado.id}` : 'Abrir Novo Chamado'}</h2>
-                            <button onClick={() => setIsModalOpen(false)} className="p-2 hover:bg-slate-100 rounded-full transition-colors"><FaTimes /></button>
-                        </div>
-                        <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-8">
-                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-12">
-                                <div className="space-y-6">
-                                    <div className="space-y-4">
-                                        <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest border-b border-slate-100 pb-2">Informações do Problema</h3>
-                                        <div className="space-y-1">
-                                            <label className="text-xs font-bold text-slate-600 uppercase ml-1">Título do Chamado *</label>
-                                            <input type="text" required className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary/20 transition-all" placeholder="Ex: Ar condicionado não liga" value={formData.titulo} onChange={(e) => setFormData({...formData, titulo: e.target.value})} />
-                                        </div>
-                                        <div className="space-y-1">
-                                            <label className="text-xs font-bold text-slate-600 uppercase ml-1">Descrição Detalhada</label>
-                                            <textarea rows="4" className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary/20 transition-all resize-none" placeholder="Descreva o problema..." value={formData.descricao} onChange={(e) => setFormData({...formData, descricao: e.target.value})}></textarea>
-                                        </div>
-                                        <div className="grid grid-cols-2 gap-4">
-                                            <div className="space-y-1">
-                                                <label className="text-xs font-bold text-slate-600 uppercase ml-1">Status</label>
-                                                <select className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary/20 transition-all" value={formData.status} onChange={(e) => setFormData({...formData, status: e.target.value})}>
-                                                    <option value="Aberto">Aberto</option>
-                                                    <option value="Em Atendimento">Em Atendimento</option>
-                                                    <option value="Concluído">Concluído</option>
-                                                    <option value="Cancelado">Cancelado</option>
-                                                </select>
-                                            </div>
-                                            <div className="space-y-1">
-                                                <label className="text-xs font-bold text-slate-600 uppercase ml-1">Criticidade Real</label>
-                                                <select className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary/20 transition-all" value={formData.criticidade_real} onChange={(e) => setFormData({...formData, criticidade_real: e.target.value})}>
-                                                    {criticidades.map(c => <option key={c} value={c}>{c}</option>)}
-                                                </select>
-                                            </div>
-                                        </div>
-                                        <div className="space-y-1">
-                                            <label className="text-xs font-bold text-slate-600 uppercase ml-1">Criticidade Informada (QR)</label>
-                                            <input type="text" disabled className="w-full px-4 py-2.5 bg-slate-100 border border-slate-200 rounded-xl outline-none text-slate-500 cursor-not-allowed" value={formData.criticidade_informada} />
-                                        </div>
+            {/* Cadastro/Edição Modal — estilo GLPI */}
+            {isModalOpen && (() => {
+                const tipoBadge = getTipoBadge(formData.tipo_chamado);
+                return (
+                <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
+                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-5xl max-h-[92vh] overflow-hidden flex flex-col animate-in fade-in zoom-in duration-200">
+                        
+                        {/* Header GLPI */}
+                        <div className="bg-gradient-to-r from-primary to-primary/80 px-6 py-4 flex items-center justify-between">
+                            <div className="flex items-center gap-3">
+                                <div className="p-2 bg-white/10 rounded-xl"><FaClipboardList className="text-white" size={18} /></div>
+                                <div>
+                                    <div className="flex items-center gap-2">
+                                        {isEditing && (
+                                            <span className={`inline-flex items-center gap-1 text-[11px] px-2.5 py-1 rounded-full font-bold border ${tipoBadge ? tipoBadge.color : 'bg-white/20 text-white border-white/30'}`}>
+                                                {tipoBadge?.icon} #{currentChamado.id}{formData.tipo_chamado ? ` — ${formData.tipo_chamado}` : ''}
+                                            </span>
+                                        )}
                                     </div>
-                                    <div className="space-y-4">
-                                        <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest border-b border-slate-100 pb-2">Vínculos e Ativos</h3>
+                                    <h2 className="text-lg font-bold text-white mt-0.5">
+                                        {isEditing ? 'Editar Chamado' : 'Abrir Novo Chamado'}
+                                    </h2>
+                                </div>
+                            </div>
+                            <button onClick={() => setIsModalOpen(false)} className="p-2 bg-white/10 hover:bg-white/20 rounded-full transition-colors text-white"><FaTimes /></button>
+                        </div>
+
+                        <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto">
+                            <div className="p-6 space-y-6">
+
+                                {/* Seção 1 — Informações do Chamado */}
+                                <div className="border border-slate-200 rounded-xl overflow-hidden">
+                                    <div className="bg-slate-50 px-4 py-2.5 flex items-center gap-2 border-b border-slate-200">
+                                        <FaTools className="text-primary" size={13} />
+                                        <span className="text-xs font-bold text-slate-600 uppercase tracking-wider">Informações do Chamado</span>
+                                    </div>
+                                    <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+                                        <div className="md:col-span-2 space-y-1">
+                                            <label className="text-xs font-bold text-slate-700 flex items-center gap-1">Título do Chamado <span className="text-red-500">*</span></label>
+                                            <input type="text" required className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-sm outline-none focus:ring-2 focus:ring-primary/25 focus:border-primary transition-all" placeholder="Ex: Ar condicionado não liga" value={formData.titulo} onChange={(e) => setFormData({...formData, titulo: e.target.value})} />
+                                        </div>
                                         <div className="space-y-1">
-                                            <label className="text-xs font-bold text-slate-600 uppercase ml-1">Equipamento / Ativo</label>
-                                            <select className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary/20 transition-all" value={formData.ativo_id} onChange={(e) => handleAtivoChange(e.target.value)}>
-                                                <option value="">Selecione um Ativo (Opcional)</option>
-                                                {ativos.map(a => <option key={a.id} value={a.id.toString()}>{a.nome} {a.numero_serie ? `(S/N: ${a.numero_serie})` : ''}</option>)}
+                                            <label className="text-xs font-bold text-slate-700 flex items-center gap-2">
+                                                {formData.tipo_chamado === 'Maquinário' && <FaCog className="text-blue-500" size={12} />}
+                                                {formData.tipo_chamado === 'Infraestrutura' && <FaBuilding className="text-green-500" size={12} />}
+                                                Tipo do Chamado
+                                            </label>
+                                            <select className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-sm outline-none focus:ring-2 focus:ring-primary/25 focus:border-primary transition-all" value={formData.tipo_chamado} onChange={(e) => setFormData({...formData, tipo_chamado: e.target.value})}>
+                                                <option value="">Selecione o Tipo</option>
+                                                {tiposChamado.map(t => <option key={t} value={t}>{t}</option>)}
                                             </select>
                                         </div>
                                         <div className="space-y-1">
-                                            <label className="text-xs font-bold text-slate-600 uppercase ml-1">Empresa / Clínica *</label>
-                                            <select required className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary/20 transition-all" value={formData.empresa_id} onChange={(e) => setFormData({...formData, empresa_id: e.target.value})}>
+                                            <label className="text-xs font-bold text-slate-700">Categoria do Chamado</label>
+                                            <select className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-sm outline-none focus:ring-2 focus:ring-primary/25 focus:border-primary transition-all" value={formData.categoria_id} onChange={(e) => setFormData({...formData, categoria_id: e.target.value})}>
+                                                <option value="">Selecione uma Categoria</option>
+                                                {categorias.map(c => <option key={c.id} value={c.id.toString()}>{c.nome}</option>)}
+                                            </select>
+                                        </div>
+                                        <div className="md:col-span-2 space-y-1">
+                                            <label className="text-xs font-bold text-slate-700">Descrição Detalhada</label>
+                                            <textarea rows="3" className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-sm outline-none focus:ring-2 focus:ring-primary/25 focus:border-primary transition-all resize-none" placeholder="Descreva o problema com detalhes..." value={formData.descricao} onChange={(e) => setFormData({...formData, descricao: e.target.value})}></textarea>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* Seção 2 — Criticidade e Status */}
+                                <div className="border border-slate-200 rounded-xl overflow-hidden">
+                                    <div className="bg-slate-50 px-4 py-2.5 flex items-center gap-2 border-b border-slate-200">
+                                        <FaBolt className="text-amber-500" size={13} />
+                                        <span className="text-xs font-bold text-slate-600 uppercase tracking-wider">Criticidade e Status</span>
+                                    </div>
+                                    <div className="p-4 grid grid-cols-1 md:grid-cols-3 gap-4">
+                                        <div className="space-y-1">
+                                            <label className="text-xs font-bold text-slate-700">Status</label>
+                                            <select className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-sm outline-none focus:ring-2 focus:ring-primary/25 focus:border-primary transition-all" value={formData.status} onChange={(e) => setFormData({...formData, status: e.target.value})}>
+                                                <option value="Aberto">Aberto</option>
+                                                <option value="Em Atendimento">Em Atendimento</option>
+                                                <option value="Concluído">Concluído</option>
+                                                <option value="Cancelado">Cancelado</option>
+                                            </select>
+                                        </div>
+                                        <div className="space-y-1">
+                                            <label className="text-xs font-bold text-slate-700">Criticidade Real</label>
+                                            <select className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-sm outline-none focus:ring-2 focus:ring-primary/25 focus:border-primary transition-all" value={formData.criticidade_real} onChange={(e) => setFormData({...formData, criticidade_real: e.target.value})}>
+                                                {criticidades.map(c => <option key={c} value={c}>{c}</option>)}
+                                            </select>
+                                        </div>
+                                        <div className="space-y-1">
+                                            <label className="text-xs font-bold text-slate-700">Criticidade Informada (QR)</label>
+                                            <input type="text" disabled className="w-full px-3 py-2 bg-slate-100 border border-slate-200 rounded-lg text-sm text-slate-500 cursor-not-allowed" value={formData.criticidade_informada} />
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* Seção 3 — Vínculos */}
+                                <div className="border border-slate-200 rounded-xl overflow-hidden">
+                                    <div className="bg-slate-50 px-4 py-2.5 flex items-center gap-2 border-b border-slate-200">
+                                        <FaLink className="text-primary" size={13} />
+                                        <span className="text-xs font-bold text-slate-600 uppercase tracking-wider">Vínculos</span>
+                                    </div>
+                                    <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+                                        <div className="space-y-1">
+                                            <label className="text-xs font-bold text-slate-700 flex items-center gap-1"><FaBuilding className="text-primary/60" size={11} /> Empresa / Clínica <span className="text-red-500">*</span></label>
+                                            <select required className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-sm outline-none focus:ring-2 focus:ring-primary/25 focus:border-primary transition-all" value={formData.empresa_id} onChange={(e) => setFormData({...formData, empresa_id: e.target.value})}>
                                                 <option value="">Selecione uma Empresa</option>
                                                 {empresas.map(e => <option key={e.id} value={e.id.toString()}>{e.nome}</option>)}
                                             </select>
                                         </div>
                                         <div className="space-y-1">
-                                            <label className="text-xs font-bold text-slate-600 uppercase ml-1">Localização Interna</label>
-                                            <select className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary/20 transition-all" value={formData.localizacao_id} onChange={(e) => setFormData({...formData, localizacao_id: e.target.value})}>
-                                                <option value="">Selecione um Local (Opcional)</option>
+                                            <label className="text-xs font-bold text-slate-700 flex items-center gap-1"><FaMapMarkerAlt className="text-primary/60" size={11} /> Localização Interna</label>
+                                            <select className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-sm outline-none focus:ring-2 focus:ring-primary/25 focus:border-primary transition-all" value={formData.localizacao_id} onChange={(e) => setFormData({...formData, localizacao_id: e.target.value})}>
+                                                <option value="">Selecione um Local</option>
                                                 {filteredLocalizacoesForm.map(l => <option key={l.id} value={l.id.toString()}>{l.nome}</option>)}
                                             </select>
                                         </div>
                                         <div className="space-y-1">
-                                            <label className="text-xs font-bold text-slate-600 uppercase ml-1">Categoria do Chamado</label>
-                                            <select className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary/20 transition-all" value={formData.categoria_id} onChange={(e) => setFormData({...formData, categoria_id: e.target.value})}>
-                                                <option value="">Selecione uma Categoria</option>
-                                                {categorias.map(c => <option key={c.id} value={c.id.toString()}>{c.nome}</option>)}
+                                            <label className="text-xs font-bold text-slate-700 flex items-center gap-1"><FaBox className="text-primary/60" size={11} /> Equipamento / Ativo</label>
+                                            <select className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-sm outline-none focus:ring-2 focus:ring-primary/25 focus:border-primary transition-all" value={formData.ativo_id} onChange={(e) => handleAtivoChange(e.target.value)}>
+                                                <option value="">Selecione um Ativo</option>
+                                                {filteredAtivosForm.map(a => <option key={a.id} value={a.id.toString()}>{a.nome}{a.numero_serie ? ` (S/N: ${a.numero_serie})` : ''}</option>)}
                                             </select>
                                         </div>
-                                    </div>
-                                </div>
-                                <div className="space-y-6">
-                                    <div className="space-y-4">
-                                        <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest border-b border-slate-100 pb-2">Custos e Fornecedores</h3>
                                         <div className="space-y-1">
-                                            <label className="text-xs font-bold text-slate-600 uppercase ml-1">Valor Total do Serviço (R$)</label>
-                                            <input type="number" step="0.01" className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary/20 transition-all" value={formData.valor_total} onChange={(e) => setFormData({...formData, valor_total: parseFloat(e.target.value) || 0})} />
-                                        </div>
-                                        <div className="space-y-1">
-                                            <label className="text-xs font-bold text-slate-600 uppercase ml-1">Fornecedor Responsável</label>
-                                            <select className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary/20 transition-all" value={formData.fornecedor_id} onChange={(e) => setFormData({...formData, fornecedor_id: e.target.value})}>
+                                            <label className="text-xs font-bold text-slate-700 flex items-center gap-1"><FaTruck className="text-primary/60" size={11} /> Fornecedor Responsável</label>
+                                            <select className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-sm outline-none focus:ring-2 focus:ring-primary/25 focus:border-primary transition-all" value={formData.fornecedor_id} onChange={(e) => setFormData({...formData, fornecedor_id: e.target.value})}>
                                                 <option value="">Selecione um Fornecedor</option>
                                                 {fornecedores.map(f => <option key={f.id} value={f.id.toString()}>{f.nome}</option>)}
                                             </select>
                                         </div>
                                         <div className="space-y-1">
-                                            <label className="text-xs font-bold text-slate-600 uppercase ml-1">Contrato Vinculado</label>
-                                            <select className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary/20 transition-all" value={formData.contrato_id} onChange={(e) => setFormData({...formData, contrato_id: e.target.value})}>
+                                            <label className="text-xs font-bold text-slate-700 flex items-center gap-1"><FaFileContract className="text-primary/60" size={11} /> Contrato Vinculado</label>
+                                            <select className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-sm outline-none focus:ring-2 focus:ring-primary/25 focus:border-primary transition-all" value={formData.contrato_id} onChange={(e) => setFormData({...formData, contrato_id: e.target.value})}>
                                                 <option value="">Selecione um Contrato</option>
                                                 {contratos.map(c => <option key={c.id} value={c.id.toString()}>{c.numero || c.nome}</option>)}
                                             </select>
                                         </div>
                                         <div className="space-y-1">
-                                            <label className="text-xs font-bold text-slate-600 uppercase ml-1">Orçamento Vinculado</label>
-                                            <select className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary/20 transition-all" value={formData.orcamento_id} onChange={(e) => setFormData({...formData, orcamento_id: e.target.value})}>
+                                            <label className="text-xs font-bold text-slate-700 flex items-center gap-1"><FaShoppingCart className="text-primary/60" size={11} /> Orçamento Vinculado</label>
+                                            <select className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-sm outline-none focus:ring-2 focus:ring-primary/25 focus:border-primary transition-all" value={formData.orcamento_id} onChange={(e) => setFormData({...formData, orcamento_id: e.target.value})}>
                                                 <option value="">Selecione um Orçamento</option>
                                                 {orcamentos.map(o => <option key={o.id} value={o.id.toString()}>{o.numero || o.titulo}</option>)}
                                             </select>
                                         </div>
                                     </div>
-                                    <div className="space-y-4">
-                                        <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest border-b border-slate-100 pb-2">Anexos e Documentos</h3>
-                                        <div className="grid grid-cols-1 gap-4">
-                                            <div className="relative group">
-                                                <input type="file" multiple className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" onChange={handleFileUpload} disabled={uploading} />
-                                                <div className="h-32 border-2 border-dashed border-slate-200 rounded-2xl flex flex-col items-center justify-center gap-2 bg-slate-50 group-hover:bg-primary/5 group-hover:border-primary/30 transition-all">
-                                                    <div className="p-3 bg-white rounded-xl shadow-sm text-slate-400 group-hover:text-primary transition-colors"><FaPaperclip size={20} /></div>
-                                                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">{uploading ? 'Enviando...' : 'Clique ou arraste arquivos'}</span>
-                                                </div>
-                                            </div>
-                                            <div className="space-y-2 max-h-48 overflow-y-auto pr-2">
-                                                {formData.anexos.map((file, idx) => (
-                                                    <div key={idx} className="flex items-center justify-between bg-slate-50 p-3 rounded-xl border border-slate-100 group animate-in zoom-in duration-200">
-                                                        <div className="flex items-center gap-3 truncate">
-                                                            <FaPaperclip className="text-primary shrink-0" size={12} />
-                                                            <span className="text-xs font-bold text-slate-600 truncate">{file.name}</span>
-                                                        </div>
-                                                        <button type="button" onClick={() => removeAnexo(idx)} className="p-1.5 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all"><FaTimes size={12} /></button>
-                                                    </div>
-                                                ))}
-                                            </div>
+                                </div>
+
+                                {/* Seção 4 — Custos */}
+                                <div className="border border-slate-200 rounded-xl overflow-hidden">
+                                    <div className="bg-slate-50 px-4 py-2.5 flex items-center gap-2 border-b border-slate-200">
+                                        <FaDollarSign className="text-green-500" size={13} />
+                                        <span className="text-xs font-bold text-slate-600 uppercase tracking-wider">Custos</span>
+                                    </div>
+                                    <div className="p-4">
+                                        <div className="max-w-xs space-y-1">
+                                            <label className="text-xs font-bold text-slate-700">Valor Total do Serviço (R$)</label>
+                                            <input type="number" step="0.01" min="0" className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-sm outline-none focus:ring-2 focus:ring-primary/25 focus:border-primary transition-all" value={formData.valor_total} onChange={(e) => setFormData({...formData, valor_total: parseFloat(e.target.value) || 0})} />
                                         </div>
                                     </div>
                                 </div>
+
+                                {/* Seção 5 — Anexos */}
+                                <div className="border border-slate-200 rounded-xl overflow-hidden">
+                                    <div className="bg-slate-50 px-4 py-2.5 flex items-center gap-2 border-b border-slate-200">
+                                        <FaPaperclip className="text-primary" size={13} />
+                                        <span className="text-xs font-bold text-slate-600 uppercase tracking-wider">Anexos</span>
+                                    </div>
+                                    <div className="p-4 space-y-3">
+                                        <div className="relative group">
+                                            <input type="file" multiple className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" onChange={handleFileUpload} disabled={uploading} />
+                                            <div className="h-24 border-2 border-dashed border-slate-200 rounded-xl flex flex-col items-center justify-center gap-2 bg-slate-50 group-hover:bg-primary/5 group-hover:border-primary/30 transition-all">
+                                                <FaPaperclip size={18} className="text-slate-300 group-hover:text-primary transition-colors" />
+                                                <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">{uploading ? 'Enviando...' : 'Clique ou arraste arquivos'}</span>
+                                            </div>
+                                        </div>
+                                        {formData.anexos.length > 0 && (
+                                            <div className="space-y-2 max-h-40 overflow-y-auto pr-1">
+                                                {formData.anexos.map((file, idx) => (
+                                                    <div key={idx} className="flex items-center justify-between bg-slate-50 p-2.5 rounded-lg border border-slate-100 group">
+                                                        <div className="flex items-center gap-2 truncate">
+                                                            <FaPaperclip className="text-primary shrink-0" size={11} />
+                                                            <span className="text-xs font-bold text-slate-600 truncate">{file.name}</span>
+                                                        </div>
+                                                        <button type="button" onClick={() => removeAnexo(idx)} className="p-1 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all"><FaTimes size={11} /></button>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        )}
+                                    </div>
+                                </div>
+
                             </div>
-                            <div className="mt-8 flex justify-end gap-4">
-                                <button type="button" onClick={() => setIsModalOpen(false)} className="px-6 py-2.5 bg-slate-100 text-slate-600 rounded-xl font-bold hover:bg-slate-200 transition-all">Cancelar</button>
-                                <button type="submit" disabled={isSaving} className="px-8 py-2.5 bg-primary text-white rounded-xl font-bold shadow-lg shadow-primary/20 hover:bg-primary/90 transition-all disabled:opacity-50">{isSaving ? 'Salvando...' : 'Salvar Chamado'}</button>
+
+                            {/* Footer */}
+                            <div className="sticky bottom-0 bg-white border-t border-slate-100 px-6 py-4 flex justify-end gap-3">
+                                <button type="button" onClick={() => setIsModalOpen(false)} className="px-5 py-2 bg-slate-100 text-slate-600 rounded-lg font-bold text-sm hover:bg-slate-200 transition-all">Cancelar</button>
+                                <button type="submit" disabled={isSaving} className="px-7 py-2 bg-primary text-white rounded-lg font-bold text-sm shadow-lg shadow-primary/20 hover:bg-primary/90 transition-all disabled:opacity-50 flex items-center gap-2">
+                                    {isSaving ? 'Salvando...' : <><FaCheckCircle size={14} /> Salvar Chamado</>}
+                                </button>
                             </div>
                         </form>
                     </div>
                 </div>
-            )}
+                );
+            })()}
         </div>
     );
 };
