@@ -20,6 +20,8 @@ import Ativos from './pages/Ativos'
 import CategoriasChamado from './pages/CategoriasChamado'
 import TipoServico from './pages/TipoServico'
 import AbrirChamadoPublico from './pages/AbrirChamadoPublico'
+import MarketingContatos from './pages/MarketingContatos'
+import MarketingGrupos from './pages/MarketingGrupos'
 
 function Navigation({ isCollapsed, toggleCollapse }) {
   const location = useLocation()
@@ -60,6 +62,13 @@ function Navigation({ isCollapsed, toggleCollapse }) {
       title: 'BI',
       items: [
         { path: '/relatorios', icon: BarChart, label: 'Relatórios', roles: ['super_admin', 'admin', 'relatorios'] },
+      ]
+    },
+    {
+      title: 'Email Marketing',
+      items: [
+        { path: '/marketing/contatos', icon: Users, label: 'Contatos', roles: ['super_admin', 'admin'] },
+        { path: '/marketing/grupos', icon: Tag, label: 'Grupos', roles: ['super_admin', 'admin'] },
       ]
     },
     {
@@ -288,6 +297,8 @@ function AppContent() {
               <Route path="/relatorios" element={<Relatorios />} />
               <Route path="/categorias-chamado" element={<CategoriasChamado />} />
               <Route path="/tipos-servico" element={<TipoServico />} />
+              <Route path="/marketing/contatos" element={<MarketingContatos />} />
+              <Route path="/marketing/grupos" element={<MarketingGrupos />} />
             </>
           ) : (
             <>
