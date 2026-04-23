@@ -109,6 +109,8 @@ def create_app(config_class=None):
         from .routes.tipo_servico_routes import tipo_servico_bp
         from .routes.public_routes import public_bp
         from .routes.config_email_routes import config_email_bp
+        from .routes.marketing_contato_routes import marketing_contato_bp
+        from .routes.marketing_grupo_routes import marketing_grupo_bp
 
         app.register_blueprint(upload_bp, url_prefix='/api')
         app.register_blueprint(empresa_bp, url_prefix='/api/empresas')
@@ -124,6 +126,8 @@ def create_app(config_class=None):
         app.register_blueprint(tipo_servico_bp, url_prefix='/api/tipos-servico')
         app.register_blueprint(public_bp, url_prefix='/api/public')
         app.register_blueprint(config_email_bp, url_prefix='/api/config/email')
+        app.register_blueprint(marketing_contato_bp, url_prefix='/api/marketing/contatos')
+        app.register_blueprint(marketing_grupo_bp, url_prefix='/api/marketing/grupos')
         
         print("✓ Todos os blueprints registrados com sucesso")
     except Exception as e:
