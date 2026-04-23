@@ -2,15 +2,16 @@ from flask import Blueprint, request, jsonify
 from ..models.marketing_contato import MarketingContato
 from ..models.marketing_grupo import MarketingGrupo
 from ..models.marketing_contato_grupo import MarketingContatoGrupo
-from ..models.usuario import Usuario
 from .. import db
+import logging
 
 marketing_contato_bp = Blueprint('marketing_contato_bp', __name__)
+logger = logging.getLogger(__name__)
 
 def safe_int(val):
     if val in [None, '', 'none', 'undefined']: return None
     try: return int(val)
-    except: return None
+    except (ValueError, TypeError): return None
 
 @marketing_contato_bp.route('', methods=['GET'])
 def list_contatos():
@@ -33,7 +34,8 @@ def list_contatos():
             result.append(d)
         return jsonify(result), 200
     except Exception as e:
-        return jsonify({'error': 'db_error', 'detail': str(e)}), 500
+        logger.error("Erro ao listar contatos: %s", e)
+        return jsonify({'error': 'db_error'}), 500
 
 @marketing_contato_bp.route('', methods=['POST'])
 def create_contato():
@@ -50,9 +52,12 @@ def create_contato():
         db.session.commit()
         return jsonify(novo.to_dict()), 201
     except Exception as e:
-        try: db.session.rollback()
-        except: pass
-        return jsonify({'error': 'db_error', 'detail': str(e)}), 500
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
+        logger.error("Erro ao criar contato: %s", e)
+        return jsonify({'error': 'db_error'}), 500
 
 @marketing_contato_bp.route('/<int:id>', methods=['GET'])
 def get_contato(id):
@@ -72,9 +77,12 @@ def update_contato(id):
         db.session.commit()
         return jsonify(c.to_dict()), 200
     except Exception as e:
-        try: db.session.rollback()
-        except: pass
-        return jsonify({'error': 'db_error', 'detail': str(e)}), 500
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
+        logger.error("Erro ao atualizar contato %s: %s", id, e)
+        return jsonify({'error': 'db_error'}), 500
 
 @marketing_contato_bp.route('/<int:id>', methods=['DELETE'])
 def delete_contato(id):
@@ -85,9 +93,12 @@ def delete_contato(id):
         db.session.commit()
         return jsonify({'ok': True}), 200
     except Exception as e:
-        try: db.session.rollback()
-        except: pass
-        return jsonify({'ok': False, 'error': 'db_error', 'detail': str(e)}), 500
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
+        logger.error("Erro ao excluir contato %s: %s", id, e)
+        return jsonify({'ok': False, 'error': 'db_error'}), 500
 
 @marketing_contato_bp.route('/<int:id>/grupos', methods=['GET'])
 def get_contato_grupos(id):
@@ -101,7 +112,8 @@ def get_contato_grupos(id):
         )
         return jsonify([g.to_dict() for g in grupos]), 200
     except Exception as e:
-        return jsonify({'error': 'db_error', 'detail': str(e)}), 500
+        logger.error("Erro ao listar grupos do contato %s: %s", id, e)
+        return jsonify({'error': 'db_error'}), 500
 
 @marketing_contato_bp.route('/<int:id>/grupos', methods=['POST'])
 def set_contato_grupos(id):
@@ -117,6 +129,9 @@ def set_contato_grupos(id):
         db.session.commit()
         return jsonify({'ok': True}), 200
     except Exception as e:
-        try: db.session.rollback()
-        except: pass
-        return jsonify({'error': 'db_error', 'detail': str(e)}), 500
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
+        logger.error("Erro ao vincular grupos ao contato %s: %s", id, e)
+        return jsonify({'error': 'db_error'}), 500
