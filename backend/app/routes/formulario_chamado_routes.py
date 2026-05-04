@@ -6,6 +6,7 @@ from .. import db
 from ..utils.logging import create_log
 from sqlalchemy import desc
 import json
+from ..utils.auth import get_current_user_from_request
 
 formulario_chamado_bp = Blueprint('formulario_chamado_bp', __name__)
 
@@ -54,6 +55,7 @@ def create_formulario():
             nome=data.get('nome'),
             tipo=data.get('tipo'),  # 'maquinario' ou 'infraestrutura'
             empresa_id=safe_int(data.get('empresa_id')),
+            localizacao_id=safe_int(data.get('localizacao_id')),
             ativo_id=safe_int(data.get('ativo_id')),
             infraestrutura_id=safe_int(data.get('infraestrutura_id')),
             opcoes=json.dumps(data.get('opcoes', [])),
@@ -92,6 +94,7 @@ def update_formulario(id):
         if 'empresa_id' in data: form.empresa_id = safe_int(data.get('empresa_id'))
         if 'ativo_id' in data: form.ativo_id = safe_int(data.get('ativo_id'))
         if 'infraestrutura_id' in data: form.infraestrutura_id = safe_int(data.get('infraestrutura_id'))
+        if 'localizacao_id' in data: form.localizacao_id = safe_int(data.get('localizacao_id'))
         if 'opcoes' in data: form.opcoes = json.dumps(data.get('opcoes', []))
         if 'ativo' in data: form.ativo = data.get('ativo')
 

@@ -1,19 +1,76 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { 
-    FaPlus, FaEdit, FaTrashAlt, FaFilter, FaEye, FaTag, 
-    FaDollarSign, FaCalendarAlt, FaMapMarkerAlt, FaFileContract, 
-    FaShoppingCart, FaTimes, FaBox, FaUser, FaPaperclip, FaCheckCircle,
-    FaExclamationCircle, FaClock, FaInfoCircle, FaSearch, FaBuilding, FaBolt, FaTools, FaQrcode, FaTruck,
-    FaIndustry, FaLayerGroup
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import {
+    FaPlus, FaEdit, FaTrashAlt, FaEye, FaTimes, FaBox, FaUser, FaPaperclip,
+    FaSearch, FaBolt, FaTools, FaQrcode, FaTruck, FaIndustry, FaLayerGroup,
+    FaComment, FaReply, FaClock, FaCheck, FaBan, FaUnlock, FaInfoCircle,
+    FaChevronDown, FaSync, FaPlay, FaPause, FaCalendarAlt, FaListAlt,
+    FaCaretDown
 } from 'react-icons/fa';
 import { format, parseISO } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { useEntity } from '../context/EntityContext';
 import { useAuth } from '../context/AuthContext';
 
+/* ─────────────────────────────────────────────────────────────
+   HELPERS
+───────────────────────────────────────────────────────────── */
+const FREQ_OPTIONS = [
+    { value: 'diario',      label: 'Diário' },
+    { value: 'semanal',     label: 'Semanal' },
+    { value: 'quinzenal',   label: 'Quinzenal' },
+    { value: 'mensal',      label: 'Mensal' },
+    { value: 'bimestral',   label: 'Bimestral' },
+    { value: 'trimestral',  label: 'Trimestral' },
+    { value: 'semestral',   label: 'Semestral' },
+    { value: 'anual',       label: 'Anual' },
+];
+
+const DIAS_SEMANA = ['Segunda','Terça','Quarta','Quinta','Sexta','Sábado','Domingo'];
+const CRITICIDADES = ['Muito Baixa','Baixa','Média','Alta','Muito Alta'];
+
+const statusConfig = {
+    'Aberto':         { bg:'bg-blue-50',  text:'text-blue-700',  border:'border-blue-200',  dot:'bg-blue-500',  icon:<FaUnlock size={10}/> },
+    'Em Atendimento': { bg:'bg-amber-50', text:'text-amber-700', border:'border-amber-200', dot:'bg-amber-500', icon:<FaClock size={10}/> },
+    'Concluído':      { bg:'bg-green-50', text:'text-green-700', border:'border-green-200', dot:'bg-green-500', icon:<FaCheck size={10}/> },
+    'Cancelado':      { bg:'bg-red-50',   text:'text-red-700',   border:'border-red-200',   dot:'bg-red-500',   icon:<FaBan size={10}/> },
+};
+const critConfig = {
+    'Muito Alta':'text-red-600','Alta':'text-orange-500',
+    'Média':'text-amber-500','Baixa':'text-blue-500','Muito Baixa':'text-slate-400'
+};
+const obsTypeConfig = {
+    'observacao': { bg:'bg-white',     border:'border-slate-200', badge:'bg-slate-100 text-slate-600',  label:'Observação' },
+    'solucao':    { bg:'bg-green-50',  border:'border-green-200', badge:'bg-green-100 text-green-700',   label:'Solução' },
+    'sistema':    { bg:'bg-blue-50',   border:'border-blue-200',  badge:'bg-blue-100 text-blue-700',    label:'Sistema' },
+};
+
+const StatusBadge = ({ status }) => {
+    const cfg = statusConfig[status] || statusConfig['Aberto'];
+    return (
+        <span className={`inline-flex items-center gap-1.5 text-[10px] px-2 py-0.5 rounded-full font-bold uppercase border ${cfg.bg} ${cfg.text} ${cfg.border}`}>
+            <span className={`w-1.5 h-1.5 rounded-full ${cfg.dot}`}/> {status}
+        </span>
+    );
+};
+const TipoBadge = ({ tipo }) => tipo === 'infraestrutura'
+    ? <span className="inline-flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded-full font-bold uppercase bg-indigo-50 text-indigo-600 border border-indigo-100"><FaLayerGroup size={8}/> Infra</span>
+    : <span className="inline-flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded-full font-bold uppercase bg-blue-50 text-blue-600 border border-blue-100"><FaIndustry size={8}/> Maq.</span>;
+
+const Avatar = ({ nome, size='sm' }) => {
+    const colors=['bg-blue-500','bg-purple-500','bg-green-500','bg-amber-500','bg-red-500','bg-indigo-500','bg-pink-500','bg-teal-500'];
+    const idx = nome ? nome.charCodeAt(0)%colors.length : 0;
+    const sz = size==='sm' ? 'w-8 h-8 text-xs' : 'w-10 h-10 text-sm';
+    return <div className={`${sz} ${colors[idx]} rounded-full flex items-center justify-center text-white font-bold shrink-0`}>{(nome||'?').charAt(0).toUpperCase()}</div>;
+};
+
+/* ─────────────────────────────────────────────────────────────
+   COMPONENTE PRINCIPAL
+───────────────────────────────────────────────────────────── */
 const Chamados = () => {
     const { selectedEntity } = useEntity();
     const { user } = useAuth();
+
+    /* dados */
     const [chamados, setAtivosChamados] = useState([]);
     const [fornecedores, setFornecedores] = useState([]);
     const [localizacoes, setLocalizacoes] = useState([]);
@@ -23,628 +80,983 @@ const Chamados = () => {
     const [infraestruturas, setInfraestruturas] = useState([]);
     const [empresas, setEmpresas] = useState([]);
     const [categorias, setCategorias] = useState([]);
-    
-    const [searchTerm, setSearchTerm] = useState('');
-    const [statusFilter, setStatusFilter] = useState('Não Encerrados');
-    const [empresaFilter, setEmpresaFilter] = useState('Todas');
-    const [tipoFilter, setTipoFilter] = useState('Todos');
-    
-    const [isModalOpen, setIsModalOpen] = useState(false);
-    const [isEditing, setIsEditing] = useState(false);
-    const [currentChamado, setCurrentChamado] = useState(null);
-    const [isAnexosModalOpen, setIsAnexosModalOpen] = useState(false);
-    const [selectedAnexos, setSelectedAnexos] = useState([]);
-    
-    const [formData, setFormData] = useState({
-        titulo: '', descricao: '', status: 'Aberto',
-        empresa_id: '', fornecedor_id: '', localizacao_id: '', 
-        contrato_id: '', orcamento_id: '', ativo_id: '', 
-        infraestrutura_id: '',
-        categoria_id: '',
-        criticidade_informada: 'Média', criticidade_real: 'Média',
-        valor_total: 0, anexos: [], tipo: 'maquinario'
-    });
-    
-    const [uploading, setUploading] = useState(false);
-    const [isSaving, setIsSaving] = useState(false);
 
-    const API_BASE = window.location.origin.includes('5173') 
+    /* filtros */
+    const [searchTerm, setSearchTerm]         = useState('');
+    const [statusFilter, setStatusFilter]     = useState('Não Encerrados');
+    const [empresaFilter, setEmpresaFilter]   = useState('Todas');
+    const [tipoFilter, setTipoFilter]         = useState('Todos');
+
+    /* painel lateral */
+    const [selectedChamado, setSelectedChamado] = useState(null);
+    const [isPanelOpen, setIsPanelOpen]         = useState(false);
+    const [activeTab, setActiveTab]             = useState('detalhes');
+    const [observacoes, setObservacoes]         = useState([]);
+    const [loadingObs, setLoadingObs]           = useState(false);
+    const [novaObs, setNovaObs]                 = useState('');
+    const [tipoObs, setTipoObs]                 = useState('observacao');
+    const [savingObs, setSavingObs]             = useState(false);
+    const obsEndRef = useRef(null);
+
+    /* modal chamado */
+    const [isModalOpen, setIsModalOpen]   = useState(false);
+    const [isEditing, setIsEditing]       = useState(false);
+    const [currentChamado, setCurrentChamado] = useState(null);
+    const [uploading, setUploading]       = useState(false);
+    const [isSaving, setIsSaving]         = useState(false);
+    const [formData, setFormData] = useState({
+        titulo:'', descricao:'', status:'Aberto',
+        empresa_id:'', fornecedor_id:'', localizacao_id:'',
+        contrato_id:'', orcamento_id:'', ativo_id:'',
+        infraestrutura_id:'', categoria_id:'',
+        criticidade_informada:'Média', criticidade_real:'Média',
+        valor_total:0, anexos:[], tipo:'maquinario'
+    });
+
+    /* modal recorrência */
+    const [isRecModalOpen, setIsRecModalOpen]   = useState(false);
+    const [recorrencias, setRecorrencias]       = useState([]);
+    const [recTab, setRecTab]                   = useState('lista'); // 'lista' | 'novo'
+    const [recForm, setRecForm] = useState({
+        titulo:'', descricao:'', tipo:'maquinario',
+        criticidade_real:'Média', empresa_id:'', localizacao_id:'',
+        ativo_id:'', infraestrutura_id:'', fornecedor_id:'',
+        contrato_id:'', orcamento_id:'', categoria_id:'',
+        frequencia:'mensal', dia_semana:0, dia_mes:1, hora:8, minuto:0,
+        data_inicio: new Date().toISOString().slice(0,10), data_fim:''
+    });
+    const [savingRec, setSavingRec]   = useState(false);
+    const [editingRec, setEditingRec] = useState(null);
+
+    /* dropdown Ações */
+    const [acDropOpen, setAcDropOpen] = useState(false);
+    const acDropRef = useRef(null);
+
+    /* anexos modal */
+    const [isAnexosModalOpen, setIsAnexosModalOpen] = useState(false);
+    const [selectedAnexos, setSelectedAnexos]       = useState([]);
+
+    const API_BASE = window.location.origin.includes('5173')
         ? `${window.location.protocol}//${window.location.hostname}:5002`
         : window.location.origin;
     const API_URL = `${API_BASE}/api`;
 
-    const criticidades = ['Muito Baixa', 'Baixa', 'Média', 'Alta', 'Muito Alta'];
+    const fmtCurrency = v => new Intl.NumberFormat('pt-BR',{style:'currency',currency:'BRL'}).format(v||0);
+    const fmtDate  = s => { try { return s ? format(parseISO(s),"dd/MM/yy HH:mm",{locale:ptBR}) : '-'; } catch{ return '-'; }};
+    const fmtDateF = s => { try { return s ? format(parseISO(s),"dd/MM/yyyy 'às' HH:mm",{locale:ptBR}) : '-'; } catch{ return '-'; }};
+    const getAnexoHref = p => { if(!p) return '#'; if(p.startsWith('http')) return p; return `${API_BASE}/${p}`; };
 
-    const formatCurrency = (value) => {
-        return new Intl.NumberFormat('pt-BR', {
-            style: 'currency',
-            currency: 'BRL'
-        }).format(value || 0);
-    };
-
+    /* ── fetch principal ── */
     const fetchData = useCallback(async () => {
-        try {
-            const headers = {};
-            if (user?.api_token) {
-                headers['X-API-Token'] = user.api_token;
-            }
+        const h = {}; if(user?.api_token) h['X-API-Token']=user.api_token;
+        const q = selectedEntity&&selectedEntity!=='all' ? `?empresa_id=${selectedEntity}` : '';
+        const [c,f,l,con,o,a,infra,emp,cat] = await Promise.all([
+            fetch(`${API_URL}/chamados${q}`,{headers:h}),
+            fetch(`${API_URL}/fornecedores${q}`,{headers:h}),
+            fetch(`${API_URL}/localizacoes${q}`,{headers:h}),
+            fetch(`${API_URL}/contratos${q}`,{headers:h}),
+            fetch(`${API_URL}/orcamentos${q}`,{headers:h}),
+            fetch(`${API_URL}/ativos${q}`,{headers:h}),
+            fetch(`${API_URL}/infraestruturas${q}`,{headers:h}),
+            fetch(`${API_URL}/empresas`,{headers:h}),
+            fetch(`${API_URL}/categorias-chamado`,{headers:h})
+        ]);
+        if(c.ok){ const d=await c.json(); setAtivosChamados(Array.isArray(d.chamados)?d.chamados:(Array.isArray(d)?d:[])); }
+        if(f.ok) setFornecedores(await f.json());
+        if(l.ok) setLocalizacoes(await l.json());
+        if(con.ok) setContratos(await con.json());
+        if(o.ok) setOrcamentos(await o.json());
+        if(a.ok) setAtivos(await a.json());
+        if(infra.ok){ const d=await infra.json(); setInfraestruturas(Array.isArray(d.infraestruturas)?d.infraestruturas:(Array.isArray(d)?d:[])); }
+        if(emp.ok) setEmpresas(await emp.json());
+        if(cat.ok) setCategorias(await cat.json());
+    },[user?.api_token,selectedEntity,API_URL]);
 
-            const queryParams = selectedEntity && selectedEntity !== 'all' ? `?empresa_id=${selectedEntity}` : '';
+    useEffect(()=>{ fetchData(); },[fetchData]);
 
-            const [c, f, l, con, o, a, infra, emp, cat] = await Promise.all([
-                fetch(`${API_URL}/chamados${queryParams}`, { headers }),
-                fetch(`${API_URL}/fornecedores${queryParams}`, { headers }),
-                fetch(`${API_URL}/localizacoes${queryParams}`, { headers }),
-                fetch(`${API_URL}/contratos${queryParams}`, { headers }),
-                fetch(`${API_URL}/orcamentos${queryParams}`, { headers }),
-                fetch(`${API_URL}/ativos${queryParams}`, { headers }),
-                fetch(`${API_URL}/infraestruturas${queryParams}`, { headers }),
-                fetch(`${API_URL}/empresas`, { headers }),
-                fetch(`${API_URL}/categorias-chamado`, { headers })
-            ]);
-            
-            if (c.ok) {
-                const data = await c.json();
-                setAtivosChamados(Array.isArray(data.chamados) ? data.chamados : (Array.isArray(data) ? data : []));
-            }
-            if (f.ok) setFornecedores(await f.json());
-            if (l.ok) setLocalizacoes(await l.json());
-            if (con.ok) setContratos(await con.json());
-            if (o.ok) setOrcamentos(await o.json());
-            if (a.ok) setAtivos(await a.json());
-            if (infra.ok) {
-                const infraData = await infra.json();
-                setInfraestruturas(Array.isArray(infraData.infraestruturas) ? infraData.infraestruturas : (Array.isArray(infraData) ? infraData : []));
-            }
-            if (emp.ok) setEmpresas(await emp.json());
-            if (cat.ok) setCategorias(await cat.json());
-        } catch (error) {
-            console.error("Erro ao carregar dados:", error);
-        }
-    }, [user?.api_token, selectedEntity, API_URL]);
+    /* fechar dropdown ao clicar fora */
+    useEffect(()=>{
+        const handler = e => { if(acDropRef.current && !acDropRef.current.contains(e.target)) setAcDropOpen(false); };
+        document.addEventListener('mousedown', handler);
+        return ()=> document.removeEventListener('mousedown', handler);
+    },[]);
 
-    useEffect(() => { fetchData(); }, [fetchData]);
+    /* ── recorrências ── */
+    const fetchRecorrencias = useCallback(async () => {
+        const h={}; if(user?.api_token) h['X-API-Token']=user.api_token;
+        const q = selectedEntity&&selectedEntity!=='all' ? `?empresa_id=${selectedEntity}` : '';
+        const res = await fetch(`${API_URL}/recorrencias${q}`,{headers:h});
+        if(res.ok) setRecorrencias(await res.json());
+    },[user?.api_token,selectedEntity,API_URL]);
 
+    const handleOpenRecModal = () => {
+        fetchRecorrencias();
+        setRecTab('lista');
+        setEditingRec(null);
+        resetRecForm();
+        setIsRecModalOpen(true);
+        setAcDropOpen(false);
+    };
+
+    const resetRecForm = () => setRecForm({
+        titulo:'', descricao:'', tipo:'maquinario', criticidade_real:'Média',
+        empresa_id:'', localizacao_id:'', ativo_id:'', infraestrutura_id:'',
+        fornecedor_id:'', contrato_id:'', orcamento_id:'', categoria_id:'',
+        frequencia:'mensal', dia_semana:0, dia_mes:1, hora:8, minuto:0,
+        data_inicio: new Date().toISOString().slice(0,10), data_fim:''
+    });
+
+    const handleEditRec = (rec) => {
+        setEditingRec(rec);
+        setRecForm({
+            titulo: rec.titulo||'', descricao: rec.descricao||'',
+            tipo: rec.tipo||'maquinario', criticidade_real: rec.criticidade_real||'Média',
+            empresa_id: rec.empresa_id?.toString()||'',
+            localizacao_id: rec.localizacao_id?.toString()||'',
+            ativo_id: rec.ativo_id?.toString()||'',
+            infraestrutura_id: rec.infraestrutura_id?.toString()||'',
+            fornecedor_id: rec.fornecedor_id?.toString()||'',
+            contrato_id: rec.contrato_id?.toString()||'',
+            orcamento_id: rec.orcamento_id?.toString()||'',
+            categoria_id: rec.categoria_id?.toString()||'',
+            frequencia: rec.frequencia||'mensal',
+            dia_semana: rec.dia_semana??0,
+            dia_mes: rec.dia_mes||1,
+            hora: rec.hora??8,
+            minuto: rec.minuto??0,
+            data_inicio: rec.data_inicio ? rec.data_inicio.slice(0,10) : new Date().toISOString().slice(0,10),
+            data_fim: rec.data_fim ? rec.data_fim.slice(0,10) : ''
+        });
+        setRecTab('novo');
+    };
+
+    const handleSaveRec = async () => {
+        if(!recForm.titulo.trim()) return alert('Informe o título');
+        setSavingRec(true);
+        const h={'Content-Type':'application/json'}; if(user?.api_token) h['X-API-Token']=user.api_token;
+        const si = n => n===''||n===null||n===undefined ? null : parseInt(n);
+        const payload = {
+            ...recForm,
+            empresa_id: si(recForm.empresa_id), localizacao_id: si(recForm.localizacao_id),
+            ativo_id: si(recForm.ativo_id), infraestrutura_id: si(recForm.infraestrutura_id),
+            fornecedor_id: si(recForm.fornecedor_id), contrato_id: si(recForm.contrato_id),
+            orcamento_id: si(recForm.orcamento_id), categoria_id: si(recForm.categoria_id),
+            dia_semana: parseInt(recForm.dia_semana), dia_mes: parseInt(recForm.dia_mes),
+            hora: parseInt(recForm.hora), minuto: parseInt(recForm.minuto),
+            data_inicio: recForm.data_inicio ? new Date(recForm.data_inicio).toISOString() : null,
+            data_fim: recForm.data_fim ? new Date(recForm.data_fim).toISOString() : null,
+        };
+        const url = editingRec ? `${API_URL}/recorrencias/${editingRec.id}` : `${API_URL}/recorrencias`;
+        const method = editingRec ? 'PUT' : 'POST';
+        const res = await fetch(url,{method,headers:h,body:JSON.stringify(payload)});
+        if(res.ok){ fetchRecorrencias(); setRecTab('lista'); setEditingRec(null); resetRecForm(); }
+        setSavingRec(false);
+    };
+
+    const handleDeleteRec = async (id) => {
+        if(!window.confirm('Excluir esta recorrência?')) return;
+        const h={}; if(user?.api_token) h['X-API-Token']=user.api_token;
+        await fetch(`${API_URL}/recorrencias/${id}`,{method:'DELETE',headers:h});
+        fetchRecorrencias();
+    };
+
+    const handleToggleRec = async (rec) => {
+        const h={'Content-Type':'application/json'}; if(user?.api_token) h['X-API-Token']=user.api_token;
+        await fetch(`${API_URL}/recorrencias/${rec.id}`,{method:'PUT',headers:h,body:JSON.stringify({ativo:!rec.ativo})});
+        fetchRecorrencias();
+    };
+
+    const handleExecutarRec = async (rec) => {
+        if(!window.confirm(`Gerar um chamado agora para "${rec.titulo}"?`)) return;
+        const h={'Content-Type':'application/json'}; if(user?.api_token) h['X-API-Token']=user.api_token;
+        const res = await fetch(`${API_URL}/recorrencias/${rec.id}/executar`,{method:'POST',headers:h});
+        if(res.ok){ const d=await res.json(); alert(`✅ Chamado #${d.chamado_id} gerado com sucesso!`); fetchData(); }
+    };
+
+    /* ── observações ── */
+    const fetchObservacoes = useCallback(async (id) => {
+        if(!id) return;
+        setLoadingObs(true);
+        const h={}; if(user?.api_token) h['X-API-Token']=user.api_token;
+        const res = await fetch(`${API_URL}/chamados/${id}/observacoes`,{headers:h});
+        if(res.ok) setObservacoes(await res.json());
+        setLoadingObs(false);
+    },[user?.api_token,API_URL]);
+
+    useEffect(()=>{ if(obsEndRef.current) obsEndRef.current.scrollIntoView({behavior:'smooth'}); },[observacoes]);
+
+    const handleOpenPanel = (c) => {
+        setSelectedChamado(c); setIsPanelOpen(true);
+        setActiveTab('detalhes'); setObservacoes([]); setNovaObs('');
+        fetchObservacoes(c.id);
+    };
+    const handleClosePanel = () => { setIsPanelOpen(false); setSelectedChamado(null); };
+
+    const handleSaveObs = async () => {
+        if(!novaObs.trim()||!selectedChamado) return;
+        setSavingObs(true);
+        const h={'Content-Type':'application/json'}; if(user?.api_token) h['X-API-Token']=user.api_token;
+        const res = await fetch(`${API_URL}/chamados/${selectedChamado.id}/observacoes`,{method:'POST',headers:h,
+            body:JSON.stringify({texto:novaObs,tipo:tipoObs,usuario_nome:user?.username||'Usuário'})});
+        if(res.ok){ setNovaObs(''); fetchObservacoes(selectedChamado.id); }
+        setSavingObs(false);
+    };
+
+    const handleDeleteObs = async (obsId) => {
+        if(!window.confirm('Excluir esta observação?')) return;
+        const h={}; if(user?.api_token) h['X-API-Token']=user.api_token;
+        await fetch(`${API_URL}/chamados/${selectedChamado.id}/observacoes/${obsId}`,{method:'DELETE',headers:h});
+        fetchObservacoes(selectedChamado.id);
+    };
+
+    const handleQuickStatus = async (chamado, newStatus) => {
+        const h={'Content-Type':'application/json'}; if(user?.api_token) h['X-API-Token']=user.api_token;
+        await fetch(`${API_URL}/chamados/${chamado.id}`,{method:'PUT',headers:h,body:JSON.stringify({...chamado,status:newStatus})});
+        fetchData();
+        if(selectedChamado?.id===chamado.id) setSelectedChamado({...selectedChamado,status:newStatus});
+    };
+
+    /* ── CRUD chamado ─�� */
     const handleAtivoChange = (ativoId) => {
-        if (!ativoId) {
-            setFormData({ ...formData, ativo_id: '' });
-            return;
-        }
-
-        const selectedAtivo = ativos.find(a => a.id.toString() === ativoId);
-        if (selectedAtivo) {
-            setFormData({
-                ...formData,
-                ativo_id: ativoId,
-                empresa_id: selectedAtivo.empresa_id?.toString() || formData.empresa_id,
-                localizacao_id: selectedAtivo.localizacao_id?.toString() || formData.localizacao_id,
-                fornecedor_id: selectedAtivo.fornecedor_id?.toString() || formData.fornecedor_id,
-                contrato_id: selectedAtivo.contrato_id?.toString() || formData.contrato_id,
-                orcamento_id: selectedAtivo.orcamento_id?.toString() || formData.orcamento_id
-            });
-        } else {
-            setFormData({ ...formData, ativo_id: ativoId });
-        }
+        if(!ativoId){ setFormData({...formData,ativo_id:''}); return; }
+        const a=ativos.find(a=>a.id.toString()===ativoId);
+        if(a) setFormData({...formData,ativo_id:ativoId,
+            empresa_id:a.empresa_id?.toString()||formData.empresa_id,
+            localizacao_id:a.localizacao_id?.toString()||formData.localizacao_id,
+            fornecedor_id:a.fornecedor_id?.toString()||formData.fornecedor_id,
+            contrato_id:a.contrato_id?.toString()||formData.contrato_id,
+            orcamento_id:a.orcamento_id?.toString()||formData.orcamento_id});
+        else setFormData({...formData,ativo_id:ativoId});
     };
 
-    const handleOpenAnexosModal = (anexos) => {
-        setSelectedAnexos(anexos || []);
-        setIsAnexosModalOpen(true);
-    };
-
-    const handleOpenModal = (chamado = null) => {
-        if (chamado) {
-            setIsEditing(true);
-            setCurrentChamado(chamado);
+    const handleOpenModal = (chamado=null) => {
+        if(chamado){
+            setIsEditing(true); setCurrentChamado(chamado);
             setFormData({
-                titulo: chamado.titulo || '',
-                descricao: chamado.descricao || '',
-                status: chamado.status || 'Aberto',
-                empresa_id: chamado.empresa_id?.toString() || '',
-                fornecedor_id: chamado.fornecedor_id?.toString() || '',
-                localizacao_id: chamado.localizacao_id?.toString() || '',
-                contrato_id: chamado.contrato_id?.toString() || '',
-                orcamento_id: chamado.orcamento_id?.toString() || '',
-                ativo_id: chamado.ativo_id?.toString() || '',
-                infraestrutura_id: chamado.infraestrutura_id?.toString() || '',
-                categoria_id: chamado.categoria_id?.toString() || '',
-                criticidade_informada: chamado.criticidade_informada || 'Média',
-                criticidade_real: chamado.criticidade_real || 'Média',
-                valor_total: chamado.valor_total || 0,
-                anexos: Array.isArray(chamado.anexos) ? chamado.anexos : (typeof chamado.anexos === 'string' ? JSON.parse(chamado.anexos) : []),
-                tipo: chamado.tipo || 'maquinario'
+                titulo:chamado.titulo||'', descricao:chamado.descricao||'',
+                status:chamado.status||'Aberto',
+                empresa_id:chamado.empresa_id?.toString()||'',
+                fornecedor_id:chamado.fornecedor_id?.toString()||'',
+                localizacao_id:chamado.localizacao_id?.toString()||'',
+                contrato_id:chamado.contrato_id?.toString()||'',
+                orcamento_id:chamado.orcamento_id?.toString()||'',
+                ativo_id:chamado.ativo_id?.toString()||'',
+                infraestrutura_id:chamado.infraestrutura_id?.toString()||'',
+                categoria_id:chamado.categoria_id?.toString()||'',
+                criticidade_informada:chamado.criticidade_informada||'Média',
+                criticidade_real:chamado.criticidade_real||'Média',
+                valor_total:chamado.valor_total||0,
+                anexos:Array.isArray(chamado.anexos)?chamado.anexos:(typeof chamado.anexos==='string'?JSON.parse(chamado.anexos):[]),
+                tipo:chamado.tipo||'maquinario'
             });
         } else {
-            setIsEditing(false);
-            setCurrentChamado(null);
-            setFormData({
-                titulo: '', descricao: '', status: 'Aberto',
-                empresa_id: '', fornecedor_id: '', localizacao_id: '', 
-                contrato_id: '', orcamento_id: '', ativo_id: '', 
-                infraestrutura_id: '',
-                categoria_id: '',
-                criticidade_informada: 'Média', criticidade_real: 'Média',
-                valor_total: 0, anexos: [], tipo: 'maquinario'
-            });
+            setIsEditing(false); setCurrentChamado(null);
+            setFormData({titulo:'',descricao:'',status:'Aberto',empresa_id:'',fornecedor_id:'',localizacao_id:'',contrato_id:'',orcamento_id:'',ativo_id:'',infraestrutura_id:'',categoria_id:'',criticidade_informada:'Média',criticidade_real:'Média',valor_total:0,anexos:[],tipo:'maquinario'});
         }
         setIsModalOpen(true);
     };
 
     const handleFileUpload = async (e) => {
-        const files = Array.from(e.target.files);
-        if (files.length === 0) return;
-        
+        const files=Array.from(e.target.files); if(!files.length) return;
         setUploading(true);
-        const newAnexos = [...formData.anexos];
-        
-        for (const file of files) {
-            const fData = new FormData();
-            fData.append('file', file);
-            
-            try {
-                const res = await fetch(`${API_BASE}/api/upload`, { 
-                    method: 'POST', 
-                    body: fData 
-                });
-                
-                if (res.ok) {
-                    const data = await res.json();
-                    newAnexos.push({
-                        name: file.name,
-                        filename: data.filename,
-                        path: data.path,
-                        url: data.url
-                    });
-                }
-            } catch (err) {
-                console.error('Upload error', err);
-            }
+        const newAnexos=[...formData.anexos];
+        for(const file of files){
+            const fd=new FormData(); fd.append('file',file);
+            try{ const r=await fetch(`${API_BASE}/api/upload`,{method:'POST',body:fd}); if(r.ok){ const d=await r.json(); newAnexos.push({name:file.name,filename:d.filename,path:d.path,url:d.url}); }}
+            catch(e){ console.error(e); }
         }
-        
-        setFormData({ ...formData, anexos: newAnexos });
-        setUploading(false);
-    };
-
-    const removeAnexo = (index) => {
-        const updated = formData.anexos.filter((_, i) => i !== index);
-        setFormData({ ...formData, anexos: updated });
+        setFormData({...formData,anexos:newAnexos}); setUploading(false);
     };
 
     const handleSubmit = async (e) => {
-        e.preventDefault();
-        setIsSaving(true);
-        const headers = { 'Content-Type': 'application/json' };
-        if (user?.api_token) headers['X-API-Token'] = user.api_token;
-        const url = isEditing ? `${API_URL}/chamados/${currentChamado.id}` : `${API_URL}/chamados`;
-        const method = isEditing ? 'PUT' : 'POST';
-        try {
-            const payload = {
-                ...formData,
-                empresa_id: formData.empresa_id ? parseInt(formData.empresa_id) : null,
-                fornecedor_id: formData.fornecedor_id ? parseInt(formData.fornecedor_id) : null,
-                localizacao_id: formData.localizacao_id ? parseInt(formData.localizacao_id) : null,
-                contrato_id: formData.contrato_id ? parseInt(formData.contrato_id) : null,
-                orcamento_id: formData.orcamento_id ? parseInt(formData.orcamento_id) : null,
-                ativo_id: formData.tipo === 'maquinario' && formData.ativo_id ? parseInt(formData.ativo_id) : null,
-                infraestrutura_id: formData.tipo === 'infraestrutura' && formData.infraestrutura_id ? parseInt(formData.infraestrutura_id) : null,
-                categoria_id: formData.categoria_id ? parseInt(formData.categoria_id) : null,
-                anexos: formData.anexos
-            };
-            const res = await fetch(url, {
-                method, headers,
-                body: JSON.stringify(payload)
-            });
-            if (res.ok) { setIsModalOpen(false); fetchData(); }
-        } catch (err) { console.error('Save error', err); } finally { setIsSaving(false); }
+        e.preventDefault(); setIsSaving(true);
+        const h={'Content-Type':'application/json'}; if(user?.api_token) h['X-API-Token']=user.api_token;
+        const url=isEditing?`${API_URL}/chamados/${currentChamado.id}`:`${API_URL}/chamados`;
+        const method=isEditing?'PUT':'POST';
+        const si=v=>v?parseInt(v):null;
+        const payload={...formData,
+            empresa_id:si(formData.empresa_id),fornecedor_id:si(formData.fornecedor_id),
+            localizacao_id:si(formData.localizacao_id),contrato_id:si(formData.contrato_id),
+            orcamento_id:si(formData.orcamento_id),
+            ativo_id:formData.tipo==='maquinario'&&formData.ativo_id?si(formData.ativo_id):null,
+            infraestrutura_id:formData.tipo==='infraestrutura'&&formData.infraestrutura_id?si(formData.infraestrutura_id):null,
+            categoria_id:si(formData.categoria_id),anexos:formData.anexos};
+        try{ const r=await fetch(url,{method,headers:h,body:JSON.stringify(payload)}); if(r.ok){setIsModalOpen(false);fetchData();} }
+        catch(e){ console.error(e); } finally{ setIsSaving(false); }
     };
 
     const handleDelete = async (id) => {
-        if (!window.confirm('Deseja realmente excluir este chamado?')) return;
-        const headers = {};
-        if (user?.api_token) headers['X-API-Token'] = user.api_token;
-        try {
-            const res = await fetch(`${API_URL}/chamados/${id}`, { method: 'DELETE', headers });
-            if (res.ok) fetchData();
-        } catch (err) { console.error('Delete error', err); }
+        if(!window.confirm('Deseja excluir este chamado?')) return;
+        const h={}; if(user?.api_token) h['X-API-Token']=user.api_token;
+        const r=await fetch(`${API_URL}/chamados/${id}`,{method:'DELETE',headers:h});
+        if(r.ok){ fetchData(); if(selectedChamado?.id===id) handleClosePanel(); }
     };
 
-    const filteredChamados = useMemo(() => {
-        return chamados.filter(c => {
-            const matchesSearch = c.titulo?.toLowerCase().includes(searchTerm.toLowerCase()) || 
-                                 c.id?.toString().includes(searchTerm);
-            const matchesStatus = statusFilter === 'Todos' || 
-                                 (statusFilter === 'Não Encerrados' ? ['Aberto', 'Em Atendimento'].includes(c.status) : c.status === statusFilter);
-            const matchesEmpresa = empresaFilter === 'Todas' || c.empresa_id?.toString() === empresaFilter;
-            const matchesTipo = tipoFilter === 'Todos' || c.tipo === tipoFilter;
-            return matchesSearch && matchesStatus && matchesEmpresa && matchesTipo;
-        });
-    }, [chamados, searchTerm, statusFilter, empresaFilter, tipoFilter]);
+    /* ── filtros ── */
+    const filteredChamados = useMemo(()=>chamados.filter(c=>{
+        const ms=c.titulo?.toLowerCase().includes(searchTerm.toLowerCase())||c.id?.toString().includes(searchTerm);
+        const mst=statusFilter==='Todos'||(statusFilter==='Não Encerrados'?['Aberto','Em Atendimento'].includes(c.status):c.status===statusFilter);
+        const me=empresaFilter==='Todas'||c.empresa_id?.toString()===empresaFilter;
+        const mt=tipoFilter==='Todos'||c.tipo===tipoFilter;
+        return ms&&mst&&me&&mt;
+    }),[chamados,searchTerm,statusFilter,empresaFilter,tipoFilter]);
 
-    const filteredAtivosForm = useMemo(() => {
-        if (!formData.empresa_id) return ativos;
-        return ativos.filter(a => a.empresa_id?.toString() === formData.empresa_id);
-    }, [ativos, formData.empresa_id]);
+    const filtAtivos  = useMemo(()=>!formData.empresa_id?ativos:ativos.filter(a=>a.empresa_id?.toString()===formData.empresa_id),[ativos,formData.empresa_id]);
+    const filtInfra   = useMemo(()=>!formData.empresa_id?infraestruturas:infraestruturas.filter(i=>i.empresa_id?.toString()===formData.empresa_id),[infraestruturas,formData.empresa_id]);
+    const filtLocs    = useMemo(()=>!formData.empresa_id?localizacoes:localizacoes.filter(l=>l.empresa_id?.toString()===formData.empresa_id),[localizacoes,formData.empresa_id]);
 
-    const filteredInfraForm = useMemo(() => {
-        if (!formData.empresa_id) return infraestruturas;
-        return infraestruturas.filter(i => i.empresa_id?.toString() === formData.empresa_id);
-    }, [infraestruturas, formData.empresa_id]);
+    const recAtivos   = useMemo(()=>!recForm.empresa_id?ativos:ativos.filter(a=>a.empresa_id?.toString()===recForm.empresa_id),[ativos,recForm.empresa_id]);
+    const recInfra    = useMemo(()=>!recForm.empresa_id?infraestruturas:infraestruturas.filter(i=>i.empresa_id?.toString()===recForm.empresa_id),[infraestruturas,recForm.empresa_id]);
 
-    const filteredLocalizacoesForm = useMemo(() => {
-        if (!formData.empresa_id) return localizacoes;
-        return localizacoes.filter(l => l.empresa_id?.toString() === formData.empresa_id);
-    }, [localizacoes, formData.empresa_id]);
+    const needsDiaSemana = ['semanal','quinzenal'].includes(recForm.frequencia);
+    const needsDiaMes    = ['mensal','bimestral','trimestral','semestral','anual'].includes(recForm.frequencia);
 
-    const formatDate = (dateStr) => {
-        if (!dateStr) return '-';
-        try {
-            const date = parseISO(dateStr);
-            return format(date, "dd/MM/yy HH:mm", { locale: ptBR });
-        } catch (e) { return '-'; }
-    };
-
-    const getAnexoHref = (path) => {
-        if (!path) return '#';
-        if (path.startsWith('http')) return path;
-        return `${API_BASE}/${path}`;
-    };
-
-    // Badge de tipo do chamado
-    const TipoBadge = ({ tipo }) => {
-        if (tipo === 'infraestrutura') {
-            return (
-                <span className="inline-flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded-full font-bold uppercase bg-indigo-50 text-indigo-600 border border-indigo-100">
-                    <FaLayerGroup size={8} /> Infra
-                </span>
-            );
-        }
-        return (
-            <span className="inline-flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded-full font-bold uppercase bg-blue-50 text-blue-600 border border-blue-100">
-                <FaIndustry size={8} /> Maq.
-            </span>
-        );
-    };
-
+    /* ───────────────────────────────────────────────────────── */
     return (
-        <div className="p-4 md:p-8 space-y-6 max-w-7xl mx-auto">
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-                <div>
-                    <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-3">
-                        <FaTools className="text-primary" /> Gestão de Chamados
-                    </h1>
-                    <p className="text-slate-500 text-sm">Controle e manutenção de ativos</p>
-                </div>
-                <button onClick={() => handleOpenModal()} className="flex items-center gap-2 bg-primary text-white px-6 py-3 rounded-xl font-bold shadow-lg shadow-primary/20 hover:bg-primary/90 transition-all active:scale-95">
-                    <FaPlus /> Novo Chamado
-                </button>
-            </div>
+        <div className="flex h-full" style={{minHeight:'calc(100vh - 64px)'}}>
 
-            {/* Filtros */}
-            <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 flex flex-wrap gap-4 items-center">
-                <div className="flex-1 min-w-[200px] relative">
-                    <FaSearch className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                    <input type="text" placeholder="Buscar por título ou ID..." className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary/20" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
-                </div>
-                <select className="px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary/20 text-sm font-medium" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
-                    <option value="Não Encerrados">Não Encerrados</option>
-                    <option value="Todos">Todos os Status</option>
-                    <option value="Aberto">Aberto</option>
-                    <option value="Em Atendimento">Em Atendimento</option>
-                    <option value="Concluído">Concluído</option>
-                    <option value="Cancelado">Cancelado</option>
-                </select>
-                <select className="px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary/20 text-sm font-medium" value={tipoFilter} onChange={(e) => setTipoFilter(e.target.value)}>
-                    <option value="Todos">Todos os Tipos</option>
-                    <option value="maquinario">Maquinário</option>
-                    <option value="infraestrutura">Infraestrutura</option>
-                </select>
-                <select className="px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary/20 text-sm font-medium" value={empresaFilter} onChange={(e) => setEmpresaFilter(e.target.value)}>
-                    <option value="Todas">Todas as Empresas</option>
-                    {empresas.map(e => <option key={e.id} value={e.id.toString()}>{e.nome}</option>)}
-                </select>
-            </div>
+            {/* ── COLUNA PRINCIPAL ── */}
+            <div className={`flex-1 p-4 md:p-6 space-y-5 transition-all duration-300 ${isPanelOpen?'mr-[480px]':''}`}>
 
-            {/* Tabela */}
-            <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
-                <div className="overflow-x-auto">
-                    <table className="w-full text-left border-collapse">
-                        <thead>
-                            <tr className="bg-slate-50/50 border-b border-slate-100 text-[11px] font-bold text-slate-500 uppercase tracking-wider">
-                                <th className="p-4">ID / Título</th>
-                                <th className="p-4">Tipo / Item</th>
-                                <th className="p-4">Status / Prioridade</th>
-                                <th className="p-4">Datas</th>
-                                <th className="p-4">Valor</th>
-                                <th className="p-4 text-right">Ações</th>
-                            </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-50">
-                            {filteredChamados.map((c) => (
-                                <tr key={c.id} className="hover:bg-slate-50/50 transition-colors">
-                                    <td className="p-4">
-                                        <div className="flex flex-col">
-                                            <span className="text-xs font-bold text-primary">#{c.id}</span>
-                                            <span className="text-sm font-bold text-slate-700">{c.titulo}</span>
-                                            <span className="text-[10px] text-slate-400 uppercase font-bold">{c.empresa_nome || 'Empresa não vinculada'}</span>
-                                        </div>
-                                    </td>
-                                    <td className="p-4">
-                                        <div className="flex flex-col gap-1">
-                                            <TipoBadge tipo={c.tipo} />
-                                            {c.tipo === 'infraestrutura' ? (
-                                                <span className="text-sm font-bold text-slate-700 flex items-center gap-1">
-                                                    <FaLayerGroup className="text-indigo-400" size={12} /> 
-                                                    {c.infraestrutura_nome || 'Sem Infraestrutura'}
-                                                </span>
-                                            ) : (
-                                                <span className="text-sm font-bold text-slate-700 flex items-center gap-1">
-                                                    <FaBox className="text-primary/60" size={12} /> 
-                                                    {c.ativo_nome || 'Sem Ativo'}
-                                                </span>
-                                            )}
-                                            <span className="text-[10px] text-slate-400 uppercase font-bold flex items-center gap-1">
-                                                <FaTruck className="text-slate-300" size={10} /> {c.fornecedor_nome || 'Sem Fornecedor'}
-                                            </span>
-                                        </div>
-                                    </td>
-                                    <td className="p-4">
-                                        <div className="flex flex-col gap-1">
-                                            <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase border w-fit ${c.status === 'Aberto' ? 'bg-blue-50 text-blue-600 border-blue-100' : c.status === 'Em Atendimento' ? 'bg-amber-50 text-amber-600 border-amber-100' : 'bg-green-50 text-green-600 border-green-100'}`}>{c.status}</span>
-                                            <div className="flex items-center gap-2">
-                                                <span className="text-[10px] font-bold text-slate-500 flex items-center gap-1"><FaBolt className="text-amber-400" /> {c.criticidade_real || 'Média'}</span>
-                                                <span className="text-[10px] font-bold text-slate-400 flex items-center gap-1"><FaQrcode className="text-slate-300" /> {c.criticidade_informada || 'Média'}</span>
-                                            </div>
-                                            {c.contrato_nome && <span className="text-[10px] font-bold text-slate-400 flex items-center gap-1"><FaFileContract className="text-primary/60" /> {c.contrato_nome}</span>}
-                                            {/* Opções selecionadas do formulário */}
-                                            {c.opcoes_selecionadas && c.opcoes_selecionadas.length > 0 && (
-                                                <div className="flex flex-wrap gap-1 mt-1">
-                                                    {c.opcoes_selecionadas.slice(0, 2).map((op, idx) => (
-                                                        <span key={idx} className="text-[9px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded font-medium">{op}</span>
-                                                    ))}
-                                                    {c.opcoes_selecionadas.length > 2 && (
-                                                        <span className="text-[9px] bg-slate-100 text-slate-400 px-1.5 py-0.5 rounded font-medium">+{c.opcoes_selecionadas.length - 2}</span>
-                                                    )}
-                                                </div>
-                                            )}
-                                        </div>
-                                    </td>
-                                    <td className="p-4">
-                                        <div className="flex flex-col text-[11px]">
-                                            <span className="text-slate-400 font-bold uppercase">Abertura</span>
-                                            <span className="text-slate-600 font-medium">{formatDate(c.created_at)}</span>
-                                            {c.data_solucao && (
-                                                <>
-                                                    <span className="text-green-500 font-bold uppercase mt-1">Solução</span>
-                                                    <span className="text-green-600 font-medium">{formatDate(c.data_solucao)}</span>
-                                                </>
-                                            )}
-                                        </div>
-                                    </td>
-                                    <td className="p-4 text-sm font-bold text-slate-700">{formatCurrency(c.valor_total)}</td>
-                                    <td className="p-4 text-right">
-                                        <div className="flex justify-end gap-2">
-                                            {c.anexos && c.anexos.length > 0 && (
-                                                <button onClick={() => handleOpenAnexosModal(c.anexos)} className="p-2 text-primary hover:bg-primary/5 rounded-lg transition-all" title="Ver Anexos"><FaPaperclip size={16} /></button>
-                                            )}
-                                            <button onClick={() => handleOpenModal(c)} className="p-2 text-slate-400 hover:text-primary hover:bg-primary/5 rounded-lg transition-all"><FaEdit size={16} /></button>
-                                            <button onClick={() => handleDelete(c.id)} className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all"><FaTrashAlt size={16} /></button>
-                                        </div>
-                                    </td>
-                                </tr>
-                            ))}
-                            {filteredChamados.length === 0 && (
-                                <tr>
-                                    <td colSpan={6} className="p-12 text-center text-slate-400">
-                                        <FaTools className="mx-auto mb-3 text-slate-200" size={32} />
-                                        <p className="font-medium">Nenhum chamado encontrado</p>
-                                        <p className="text-sm mt-1">Tente ajustar os filtros ou abrir um novo chamado</p>
-                                    </td>
-                                </tr>
-                            )}
-                        </tbody>
-                    </table>
-                </div>
-            </div>
+                {/* Header */}
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                    <div>
+                        <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-3">
+                            <FaTools className="text-primary"/> Gestão de Chamados
+                        </h1>
+                        <p className="text-slate-500 text-sm mt-0.5">{filteredChamados.length} chamado(s) encontrado(s)</p>
+                    </div>
 
-            {/* Modal de Anexos */}
-            {isAnexosModalOpen && (
-                <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[110] flex items-center justify-center p-4">
-                    <div className="bg-white rounded-3xl shadow-2xl w-full max-w-2xl overflow-hidden animate-in fade-in zoom-in duration-200">
-                        <div className="p-6 border-b border-slate-100 flex items-center justify-between">
-                            <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2"><FaPaperclip className="text-primary" /> Anexos do Chamado</h2>
-                            <button onClick={() => setIsAnexosModalOpen(false)} className="p-2 hover:bg-slate-100 rounded-full transition-colors"><FaTimes /></button>
-                        </div>
-                        <div className="p-6 grid grid-cols-1 sm:grid-cols-2 gap-4 max-h-[60vh] overflow-y-auto">
-                            {selectedAnexos.map((anexo, idx) => (
-                                <div key={idx} className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100 group hover:border-primary/30 transition-all">
-                                    <div className="flex items-center gap-3 truncate">
-                                        <div className="p-3 bg-white rounded-xl shadow-sm"><FaPaperclip className="text-primary" /></div>
-                                        <span className="text-sm font-bold text-slate-700 truncate">{anexo.name || anexo.filename}</span>
+                    {/* Botões do cabeçalho */}
+                    <div className="flex items-center gap-2">
+                        {/* ── Dropdown AÇÕES ── */}
+                        <div className="relative" ref={acDropRef}>
+                            <button onClick={()=>setAcDropOpen(o=>!o)}
+                                className="flex items-center gap-2 bg-slate-700 hover:bg-slate-800 text-white px-4 py-2.5 rounded-xl font-bold transition-all">
+                                <FaListAlt size={14}/> Ações <FaCaretDown size={12}/>
+                            </button>
+                            {acDropOpen && (
+                                <div className="absolute right-0 top-full mt-1 bg-white border border-slate-200 rounded-2xl shadow-2xl z-50 min-w-[230px] overflow-hidden">
+                                    <div className="px-4 py-2 bg-slate-50 border-b border-slate-100">
+                                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Ações Disponíveis</p>
                                     </div>
-                                    <button onClick={() => window.open(getAnexoHref(anexo.path || anexo.url), '_blank')} className="p-2 bg-white text-primary hover:bg-primary hover:text-white rounded-xl shadow-sm transition-all"><FaEye size={18} /></button>
+                                    <button onClick={handleOpenRecModal}
+                                        className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-slate-700 hover:bg-indigo-50 hover:text-indigo-700 transition-colors">
+                                        <div className="w-8 h-8 bg-indigo-100 rounded-xl flex items-center justify-center">
+                                            <FaSync size={13} className="text-indigo-600"/>
+                                        </div>
+                                        <div className="text-left">
+                                            <p className="font-bold text-sm">Chamados Recorrentes</p>
+                                            <p className="text-[10px] text-slate-400">Criar e gerenciar recorrências</p>
+                                        </div>
+                                    </button>
                                 </div>
-                            ))}
+                            )}
+                        </div>
+
+                        <button onClick={()=>handleOpenModal()}
+                            className="flex items-center gap-2 bg-primary text-white px-5 py-2.5 rounded-xl font-bold shadow-lg shadow-primary/20 hover:bg-primary/90 transition-all active:scale-95">
+                            <FaPlus/> Novo Chamado
+                        </button>
+                    </div>
+                </div>
+
+                {/* Filtros */}
+                <div className="bg-white p-3 rounded-2xl shadow-sm border border-slate-100 flex flex-wrap gap-3 items-center">
+                    <div className="flex-1 min-w-[180px] relative">
+                        <FaSearch className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={13}/>
+                        <input type="text" placeholder="Buscar por título ou ID..." className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary/20 text-sm" value={searchTerm} onChange={e=>setSearchTerm(e.target.value)}/>
+                    </div>
+                    <select className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none text-sm font-medium" value={statusFilter} onChange={e=>setStatusFilter(e.target.value)}>
+                        <option value="Não Encerrados">Não Encerrados</option>
+                        <option value="Todos">Todos os Status</option>
+                        <option value="Aberto">Aberto</option>
+                        <option value="Em Atendimento">Em Atendimento</option>
+                        <option value="Concluído">Concluído</option>
+                        <option value="Cancelado">Cancelado</option>
+                    </select>
+                    <select className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none text-sm font-medium" value={tipoFilter} onChange={e=>setTipoFilter(e.target.value)}>
+                        <option value="Todos">Todos os Tipos</option>
+                        <option value="maquinario">Maquinário</option>
+                        <option value="infraestrutura">Infraestrutura</option>
+                    </select>
+                    <select className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none text-sm font-medium" value={empresaFilter} onChange={e=>setEmpresaFilter(e.target.value)}>
+                        <option value="Todas">Todas as Empresas</option>
+                        {empresas.map(e=><option key={e.id} value={e.id.toString()}>{e.nome}</option>)}
+                    </select>
+                </div>
+
+                {/* Tabela */}
+                <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+                    <div className="overflow-x-auto">
+                        <table className="w-full text-left border-collapse">
+                            <thead>
+                                <tr className="bg-slate-50 border-b border-slate-200 text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                                    <th className="px-4 py-3 w-6"></th>
+                                    <th className="px-4 py-3">ID / Título</th>
+                                    <th className="px-4 py-3">Tipo / Item</th>
+                                    <th className="px-4 py-3">Status</th>
+                                    <th className="px-4 py-3">Prioridade</th>
+                                    <th className="px-4 py-3">Abertura</th>
+                                    <th className="px-4 py-3">Valor</th>
+                                    <th className="px-4 py-3 text-right">Ações</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-50">
+                                {filteredChamados.map(c=>{
+                                    const isActive=selectedChamado?.id===c.id&&isPanelOpen;
+                                    const sCfg=statusConfig[c.status]||statusConfig['Aberto'];
+                                    return (
+                                        <tr key={c.id} onClick={()=>handleOpenPanel(c)}
+                                            className={`cursor-pointer transition-colors ${isActive?'bg-primary/5 border-l-4 border-primary':'hover:bg-slate-50/70'}`}>
+                                            <td className="pl-4 pr-0"><div className={`w-2 h-2 rounded-full mx-auto ${sCfg.dot}`}/></td>
+                                            <td className="px-4 py-3">
+                                                <div className="flex flex-col">
+                                                    <span className="text-xs font-bold text-primary">#{c.id}</span>
+                                                    <span className="text-sm font-semibold text-slate-700 max-w-[220px] truncate">{c.titulo}</span>
+                                                    <span className="text-[10px] text-slate-400 font-medium">{c.empresa_nome||'—'}</span>
+                                                </div>
+                                            </td>
+                                            <td className="px-4 py-3">
+                                                <div className="flex flex-col gap-1">
+                                                    <TipoBadge tipo={c.tipo}/>
+                                                    <span className="text-xs font-semibold text-slate-600 max-w-[160px] truncate">
+                                                        {c.tipo==='infraestrutura'?(c.infraestrutura_nome||'—'):(c.ativo_nome||'—')}
+                                                    </span>
+                                                </div>
+                                            </td>
+                                            <td className="px-4 py-3"><StatusBadge status={c.status}/></td>
+                                            <td className="px-4 py-3"><span className={`text-xs font-bold ${critConfig[c.criticidade_real]||'text-slate-400'}`}>{c.criticidade_real||'—'}</span></td>
+                                            <td className="px-4 py-3"><span className="text-xs text-slate-500">{fmtDate(c.created_at)}</span></td>
+                                            <td className="px-4 py-3"><span className="text-xs font-bold text-slate-700">{fmtCurrency(c.valor_total)}</span></td>
+                                            <td className="px-4 py-3 text-right" onClick={e=>e.stopPropagation()}>
+                                                <div className="flex justify-end gap-1">
+                                                    <button onClick={()=>handleOpenPanel(c)} className="p-1.5 text-slate-400 hover:text-primary hover:bg-primary/5 rounded-lg" title="Detalhes"><FaEye size={14}/></button>
+                                                    <button onClick={()=>handleOpenModal(c)} className="p-1.5 text-slate-400 hover:text-blue-500 hover:bg-blue-50 rounded-lg" title="Editar"><FaEdit size={14}/></button>
+                                                    <button onClick={()=>handleDelete(c.id)} className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg" title="Excluir"><FaTrashAlt size={14}/></button>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    );
+                                })}
+                                {filteredChamados.length===0 && (
+                                    <tr><td colSpan={8} className="p-12 text-center text-slate-400">
+                                        <FaTools className="mx-auto mb-3 text-slate-200" size={32}/>
+                                        <p className="font-medium">Nenhum chamado encontrado</p>
+                                    </td></tr>
+                                )}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            {/* ── PAINEL LATERAL (GLPI style) ── */}
+            {isPanelOpen && selectedChamado && (
+                <div className="fixed top-0 right-0 h-full w-[480px] bg-white shadow-2xl border-l border-slate-200 flex flex-col z-40 overflow-hidden">
+                    <div className="bg-slate-800 text-white px-5 py-4 flex items-start justify-between gap-3 shrink-0">
+                        <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 mb-1">
+                                <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">#{selectedChamado.id}</span>
+                                <TipoBadge tipo={selectedChamado.tipo}/>
+                            </div>
+                            <h2 className="text-base font-bold text-white leading-snug line-clamp-2">{selectedChamado.titulo}</h2>
+                        </div>
+                        <button onClick={handleClosePanel} className="p-1.5 hover:bg-white/10 rounded-lg shrink-0"><FaTimes size={16}/></button>
+                    </div>
+                    <div className="bg-slate-700 px-5 py-2.5 flex items-center gap-2 shrink-0 flex-wrap">
+                        {['Aberto','Em Atendimento','Concluído','Cancelado'].map(st=>{
+                            const cfg=statusConfig[st]; const isA=selectedChamado.status===st;
+                            return <button key={st} onClick={()=>handleQuickStatus(selectedChamado,st)}
+                                className={`text-[10px] font-bold px-2.5 py-1 rounded-full border transition-all flex items-center gap-1 ${isA?`${cfg.bg} ${cfg.text} ${cfg.border}`:'bg-slate-600 text-slate-300 border-slate-500 hover:bg-slate-500'}`}>
+                                {cfg.icon} {st}
+                            </button>;
+                        })}
+                        <div className="ml-auto flex gap-1">
+                            <button onClick={()=>handleOpenModal(selectedChamado)} className="p-1.5 text-slate-300 hover:text-white hover:bg-slate-600 rounded-lg"><FaEdit size={13}/></button>
+                            <button onClick={()=>handleDelete(selectedChamado.id)} className="p-1.5 text-slate-300 hover:text-red-400 hover:bg-slate-600 rounded-lg"><FaTrashAlt size={13}/></button>
+                        </div>
+                    </div>
+                    <div className="flex border-b border-slate-200 shrink-0 bg-white">
+                        {[['detalhes','Detalhes',<FaInfoCircle size={12}/>],['observacoes',`Observações (${observacoes.length})`,<FaComment size={12}/>]].map(([tab,label,icon])=>(
+                            <button key={tab} onClick={()=>setActiveTab(tab)}
+                                className={`flex-1 flex items-center justify-center gap-1.5 py-3 text-xs font-bold border-b-2 transition-all ${activeTab===tab?'border-primary text-primary':'border-transparent text-slate-400 hover:text-slate-600'}`}>
+                                {icon} {label}
+                            </button>
+                        ))}
+                    </div>
+                    <div className="flex-1 overflow-y-auto">
+                        {activeTab==='detalhes' && (
+                            <div className="p-5 space-y-4">
+                                {selectedChamado.descricao && <div className="p-4 bg-slate-50 rounded-xl border border-slate-200"><p className="text-[10px] font-bold text-slate-400 uppercase mb-2">Descrição</p><p className="text-sm text-slate-700 leading-relaxed whitespace-pre-wrap">{selectedChamado.descricao}</p></div>}
+                                {selectedChamado.opcoes_selecionadas?.length>0 && <div><p className="text-[10px] font-bold text-slate-400 uppercase mb-2">Problemas Reportados</p><div className="flex flex-wrap gap-1.5">{selectedChamado.opcoes_selecionadas.map((op,i)=><span key={i} className="text-xs bg-amber-50 text-amber-700 border border-amber-200 px-2.5 py-1 rounded-full font-medium">{op}</span>)}</div></div>}
+                                <div className="grid grid-cols-2 gap-3">
+                                    {[
+                                        ['Status',<StatusBadge status={selectedChamado.status}/>],
+                                        ['Empresa',selectedChamado.empresa_nome||'—'],
+                                        ['Localização',selectedChamado.localizacao_nome||'—'],
+                                        ['Categoria',selectedChamado.categoria_nome||'—'],
+                                        ['Prior. Informada',<span className="text-xs text-slate-500">{selectedChamado.criticidade_informada||'—'}</span>],
+                                        ['Prior. Real',<span className={`text-xs font-bold ${critConfig[selectedChamado.criticidade_real]||'text-slate-400'}`}>{selectedChamado.criticidade_real||'—'}</span>],
+                                        ['Fornecedor',selectedChamado.fornecedor_nome||'—'],
+                                        ['Contrato',selectedChamado.contrato_nome||'—'],
+                                        ['Valor Total',<span className="text-xs font-bold text-emerald-600">{fmtCurrency(selectedChamado.valor_total)}</span>],
+                                        ['Abertura',<span className="text-xs">{fmtDateF(selectedChamado.created_at)}</span>],
+                                    ].map(([label,val],i)=>(
+                                        <div key={i} className="bg-slate-50 rounded-xl p-3 border border-slate-100">
+                                            <p className="text-[9px] font-bold text-slate-400 uppercase mb-1">{label}</p>
+                                            {typeof val==='string'?<p className="text-xs font-semibold text-slate-700 truncate">{val}</p>:val}
+                                        </div>
+                                    ))}
+                                </div>
+                                <div className="p-4 bg-blue-50 rounded-xl border border-blue-100">
+                                    <p className="text-[10px] font-bold text-blue-400 uppercase mb-1">{selectedChamado.tipo==='infraestrutura'?'🏗️ Infraestrutura':'🔧 Equipamento'}</p>
+                                    <p className="text-sm font-bold text-blue-800">{selectedChamado.tipo==='infraestrutura'?(selectedChamado.infraestrutura_nome||'—'):(selectedChamado.ativo_nome||'—')}</p>
+                                </div>
+                                {selectedChamado.anexos?.length>0 && <div><p className="text-[10px] font-bold text-slate-400 uppercase mb-2">Anexos</p><div className="space-y-2">{selectedChamado.anexos.map((a,i)=><button key={i} onClick={()=>window.open(getAnexoHref(a.path||a.url),'_blank')} className="w-full flex items-center gap-3 p-3 bg-slate-50 rounded-xl border border-slate-200 hover:border-primary/30 hover:bg-primary/5 transition-all"><FaPaperclip className="text-primary shrink-0" size={12}/><span className="text-xs font-medium text-slate-600 truncate">{a.name||a.filename}</span><FaEye className="text-slate-300 shrink-0 ml-auto" size={12}/></button>)}</div></div>}
+                            </div>
+                        )}
+                        {activeTab==='observacoes' && (
+                            <div className="flex flex-col h-full">
+                                <div className="flex-1 p-5 space-y-4 overflow-y-auto">
+                                    {loadingObs && <div className="text-center py-8 text-slate-400 text-sm">Carregando...</div>}
+                                    {!loadingObs&&observacoes.length===0 && <div className="text-center py-12"><FaComment className="mx-auto mb-3 text-slate-200" size={32}/><p className="text-sm font-medium text-slate-400">Nenhuma observação ainda</p></div>}
+                                    {observacoes.map(obs=>{
+                                        const cfg=obsTypeConfig[obs.tipo]||obsTypeConfig['observacao'];
+                                        const isOwn=obs.usuario_nome===user?.username;
+                                        return <div key={obs.id} className={`flex gap-3 ${isOwn?'flex-row-reverse':''}`}>
+                                            <Avatar nome={obs.usuario_nome} size="sm"/>
+                                            <div className={`flex-1 max-w-[85%] flex flex-col gap-1 ${isOwn?'items-end':'items-start'}`}>
+                                                <div className="flex items-center gap-2">
+                                                    <span className="text-[10px] font-bold text-slate-500">{obs.usuario_nome}</span>
+                                                    <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${cfg.badge}`}>{cfg.label}</span>
+                                                    <span className="text-[9px] text-slate-300">{fmtDate(obs.created_at)}</span>
+                                                </div>
+                                                <div className={`p-3 rounded-2xl border text-sm text-slate-700 leading-relaxed whitespace-pre-wrap w-full ${cfg.bg} ${cfg.border} ${isOwn?'rounded-tr-none':'rounded-tl-none'}`}>{obs.texto}</div>
+                                                {(isOwn||user?.role==='admin')&&<button onClick={()=>handleDeleteObs(obs.id)} className="text-[9px] text-slate-300 hover:text-red-400">excluir</button>}
+                                            </div>
+                                        </div>;
+                                    })}
+                                    <div ref={obsEndRef}/>
+                                </div>
+                                <div className="border-t border-slate-200 p-4 bg-white shrink-0">
+                                    <div className="flex gap-2 mb-2">
+                                        {[['observacao','💬 Observação'],['solucao','✅ Solução']].map(([val,label])=>(
+                                            <button key={val} onClick={()=>setTipoObs(val)}
+                                                className={`text-[10px] font-bold px-3 py-1 rounded-full border transition-all ${tipoObs===val?(val==='solucao'?'bg-green-100 text-green-700 border-green-300':'bg-slate-100 text-slate-700 border-slate-300'):'text-slate-400 border-slate-200 hover:border-slate-300'}`}>
+                                                {label}
+                                            </button>
+                                        ))}
+                                    </div>
+                                    <div className="flex items-end gap-2">
+                                        <Avatar nome={user?.username} size="sm"/>
+                                        <div className="flex-1">
+                                            <textarea rows={3} placeholder="Digite sua observação... (Ctrl+Enter para enviar)"
+                                                className="w-full p-3 text-sm bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary/20 resize-none"
+                                                value={novaObs} onChange={e=>setNovaObs(e.target.value)}
+                                                onKeyDown={e=>{if(e.key==='Enter'&&e.ctrlKey) handleSaveObs();}}/>
+                                        </div>
+                                        <button onClick={handleSaveObs} disabled={!novaObs.trim()||savingObs}
+                                            className="p-3 bg-primary text-white rounded-xl hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed shrink-0">
+                                            {savingObs?<FaClock size={16}/>:<FaReply size={16}/>}
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            )}
+
+            {/* ══════════════════════════════════════════════
+                MODAL DE RECORRÊNCIAS (estilo GLPI)
+            ══════════════════════════════════════════════ */}
+            {isRecModalOpen && (
+                <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-[110] flex items-center justify-center p-4">
+                    <div className="bg-white rounded-3xl shadow-2xl w-full max-w-5xl max-h-[92vh] overflow-hidden flex flex-col">
+
+                        {/* Header */}
+                        <div className="bg-indigo-700 text-white px-6 py-4 flex items-center justify-between shrink-0">
+                            <div className="flex items-center gap-3">
+                                <div className="w-10 h-10 bg-white/10 rounded-2xl flex items-center justify-center">
+                                    <FaSync size={18}/>
+                                </div>
+                                <div>
+                                    <h2 className="text-lg font-bold">Chamados Recorrentes</h2>
+                                    <p className="text-indigo-200 text-xs">Automatize a criação periódica de chamados de manutenção</p>
+                                </div>
+                            </div>
+                            <button onClick={()=>setIsRecModalOpen(false)} className="p-2 hover:bg-white/10 rounded-xl"><FaTimes size={18}/></button>
+                        </div>
+
+                        {/* Sub-tabs */}
+                        <div className="flex border-b border-slate-200 bg-slate-50 shrink-0">
+                            <button onClick={()=>{setRecTab('lista');setEditingRec(null);resetRecForm();}}
+                                className={`flex-1 flex items-center justify-center gap-2 py-3 text-sm font-bold border-b-2 transition-all ${recTab==='lista'?'border-indigo-600 text-indigo-700 bg-white':'border-transparent text-slate-500 hover:text-slate-700'}`}>
+                                <FaListAlt size={13}/> Lista de Recorrências
+                                {recorrencias.length>0 && <span className="bg-indigo-100 text-indigo-700 text-[10px] font-bold px-2 py-0.5 rounded-full">{recorrencias.length}</span>}
+                            </button>
+                            <button onClick={()=>setRecTab('novo')}
+                                className={`flex-1 flex items-center justify-center gap-2 py-3 text-sm font-bold border-b-2 transition-all ${recTab==='novo'?'border-indigo-600 text-indigo-700 bg-white':'border-transparent text-slate-500 hover:text-slate-700'}`}>
+                                <FaPlus size={13}/> {editingRec?'Editar Recorrência':'Nova Recorrência'}
+                            </button>
+                        </div>
+
+                        <div className="flex-1 overflow-y-auto">
+
+                            {/* ── ABA LISTA ── */}
+                            {recTab==='lista' && (
+                                <div className="p-6">
+                                    {recorrencias.length===0 ? (
+                                        <div className="text-center py-16">
+                                            <div className="w-16 h-16 bg-indigo-50 rounded-2xl flex items-center justify-center mx-auto mb-4">
+                                                <FaSync className="text-indigo-300" size={28}/>
+                                            </div>
+                                            <p className="font-bold text-slate-500">Nenhuma recorrência cadastrada</p>
+                                            <p className="text-sm text-slate-400 mt-1">Clique em "Nova Recorrência" para começar</p>
+                                            <button onClick={()=>setRecTab('novo')}
+                                                className="mt-4 px-6 py-2.5 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700 transition-all">
+                                                <FaPlus className="inline mr-2"/>Criar primeira recorrência
+                                            </button>
+                                        </div>
+                                    ) : (
+                                        <div className="space-y-3">
+                                            {recorrencias.map(rec=>{
+                                                const freqLabel = FREQ_OPTIONS.find(f=>f.value===rec.frequencia)?.label || rec.frequencia;
+                                                return (
+                                                    <div key={rec.id}
+                                                        className={`border-2 rounded-2xl overflow-hidden transition-all ${rec.ativo?'border-slate-200 hover:border-indigo-200':'border-slate-100 opacity-60'}`}>
+                                                        <div className={`px-5 py-4 flex items-start justify-between gap-4 ${rec.ativo?'bg-white':'bg-slate-50'}`}>
+                                                            <div className="flex items-start gap-4 flex-1 min-w-0">
+                                                                {/* ícone frequência */}
+                                                                <div className={`w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 ${rec.ativo?'bg-indigo-100':'bg-slate-100'}`}>
+                                                                    <FaSync className={rec.ativo?'text-indigo-600':'text-slate-400'} size={18}/>
+                                                                </div>
+                                                                <div className="flex-1 min-w-0">
+                                                                    <div className="flex items-center gap-2 flex-wrap mb-1">
+                                                                        <h3 className="font-bold text-slate-800 text-sm truncate">{rec.titulo}</h3>
+                                                                        <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full uppercase border ${rec.ativo?'bg-green-50 text-green-700 border-green-200':'bg-slate-100 text-slate-400 border-slate-200'}`}>
+                                                                            {rec.ativo?'Ativa':'Pausada'}
+                                                                        </span>
+                                                                        <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-100">
+                                                                            {freqLabel}
+                                                                        </span>
+                                                                        <TipoBadge tipo={rec.tipo}/>
+                                                                    </div>
+                                                                    <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-[11px] text-slate-500">
+                                                                        {rec.empresa_nome && <span>🏢 {rec.empresa_nome}</span>}
+                                                                        {rec.ativo_nome && <span>🔧 {rec.ativo_nome}</span>}
+                                                                        {rec.infraestrutura_nome && <span>🏗️ {rec.infraestrutura_nome}</span>}
+                                                                        {rec.fornecedor_nome && <span>🚚 {rec.fornecedor_nome}</span>}
+                                                                    </div>
+                                                                </div>
+                                                            </div>
+                                                            {/* ações */}
+                                                            <div className="flex items-center gap-1 shrink-0">
+                                                                <button onClick={()=>handleExecutarRec(rec)} title="Gerar chamado agora"
+                                                                    className="p-2 text-emerald-600 hover:bg-emerald-50 rounded-xl transition-all">
+                                                                    <FaPlay size={13}/>
+                                                                </button>
+                                                                <button onClick={()=>handleToggleRec(rec)} title={rec.ativo?'Pausar':'Ativar'}
+                                                                    className={`p-2 rounded-xl transition-all ${rec.ativo?'text-amber-500 hover:bg-amber-50':'text-green-600 hover:bg-green-50'}`}>
+                                                                    {rec.ativo?<FaPause size={13}/>:<FaPlay size={13}/>}
+                                                                </button>
+                                                                <button onClick={()=>handleEditRec(rec)}
+                                                                    className="p-2 text-blue-600 hover:bg-blue-50 rounded-xl transition-all">
+                                                                    <FaEdit size={13}/>
+                                                                </button>
+                                                                <button onClick={()=>handleDeleteRec(rec.id)}
+                                                                    className="p-2 text-red-500 hover:bg-red-50 rounded-xl transition-all">
+                                                                    <FaTrashAlt size={13}/>
+                                                                </button>
+                                                            </div>
+                                                        </div>
+                                                        {/* rodapé com próxima execução */}
+                                                        <div className="px-5 py-2 bg-slate-50 border-t border-slate-100 flex items-center justify-between flex-wrap gap-2">
+                                                            <div className="flex items-center gap-4 text-[11px] text-slate-400">
+                                                                <span className="flex items-center gap-1">
+                                                                    <FaCalendarAlt size={10}/> Próxima: <strong className="text-slate-600">{rec.proxima_execucao ? fmtDate(rec.proxima_execucao) : '—'}</strong>
+                                                                </span>
+                                                                {rec.ultima_execucao && <span>Última: <strong className="text-slate-600">{fmtDate(rec.ultima_execucao)}</strong></span>}
+                                                            </div>
+                                                            <span className="text-[11px] text-indigo-500 font-bold">{rec.total_gerado} chamado(s) gerado(s)</span>
+                                                        </div>
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+
+                            {/* ── ABA NOVO/EDITAR ── */}
+                            {recTab==='novo' && (
+                                <div className="p-6">
+                                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+
+                                        {/* Coluna esquerda */}
+                                        <div className="space-y-5">
+                                            <div>
+                                                <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest border-b border-slate-100 pb-2 mb-4">Identificação do Chamado</h3>
+                                                <div className="space-y-4">
+                                                    <div>
+                                                        <label className="block text-xs font-bold text-slate-600 uppercase mb-1">Título do Chamado *</label>
+                                                        <input type="text" placeholder="Ex: Manutenção Preventiva Mensal"
+                                                            className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-400"
+                                                            value={recForm.titulo} onChange={e=>setRecForm({...recForm,titulo:e.target.value})}/>
+                                                    </div>
+                                                    <div>
+                                                        <label className="block text-xs font-bold text-slate-600 uppercase mb-1">Descrição</label>
+                                                        <textarea rows={3} placeholder="Detalhes do chamado a ser gerado..."
+                                                            className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-400 resize-none text-sm"
+                                                            value={recForm.descricao} onChange={e=>setRecForm({...recForm,descricao:e.target.value})}/>
+                                                    </div>
+                                                    <div className="grid grid-cols-2 gap-4">
+                                                        <div>
+                                                            <label className="block text-xs font-bold text-slate-600 uppercase mb-1">Tipo</label>
+                                                            <select className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-400 text-sm"
+                                                                value={recForm.tipo} onChange={e=>setRecForm({...recForm,tipo:e.target.value,ativo_id:'',infraestrutura_id:''})}>
+                                                                <option value="maquinario">🔧 Maquinário</option>
+                                                                <option value="infraestrutura">🏗️ Infraestrutura</option>
+                                                            </select>
+                                                        </div>
+                                                        <div>
+                                                            <label className="block text-xs font-bold text-slate-600 uppercase mb-1">Prioridade</label>
+                                                            <select className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-400 text-sm"
+                                                                value={recForm.criticidade_real} onChange={e=>setRecForm({...recForm,criticidade_real:e.target.value})}>
+                                                                {CRITICIDADES.map(c=><option key={c}>{c}</option>)}
+                                                            </select>
+                                                        </div>
+                                                    </div>
+                                                    <div>
+                                                        <label className="block text-xs font-bold text-slate-600 uppercase mb-1">Empresa *</label>
+                                                        <select className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-400 text-sm"
+                                                            value={recForm.empresa_id} onChange={e=>setRecForm({...recForm,empresa_id:e.target.value,ativo_id:'',infraestrutura_id:''})}>
+                                                            <option value="">Selecione...</option>
+                                                            {empresas.map(e=><option key={e.id} value={e.id.toString()}>{e.nome}</option>)}
+                                                        </select>
+                                                    </div>
+                                                    {recForm.tipo==='maquinario' ? (
+                                                        <div>
+                                                            <label className="block text-xs font-bold text-slate-600 uppercase mb-1">Ativo / Equipamento</label>
+                                                            <select className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-400 text-sm"
+                                                                value={recForm.ativo_id} onChange={e=>setRecForm({...recForm,ativo_id:e.target.value})}>
+                                                                <option value="">Selecione...</option>
+                                                                {recAtivos.map(a=><option key={a.id} value={a.id.toString()}>{a.nome}</option>)}
+                                                            </select>
+                                                        </div>
+                                                    ) : (
+                                                        <div>
+                                                            <label className="block text-xs font-bold text-slate-600 uppercase mb-1">Infraestrutura</label>
+                                                            <select className="w-full px-4 py-2.5 bg-indigo-50 border border-indigo-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-400 text-sm"
+                                                                value={recForm.infraestrutura_id} onChange={e=>setRecForm({...recForm,infraestrutura_id:e.target.value})}>
+                                                                <option value="">Selecione...</option>
+                                                                {recInfra.map(i=><option key={i.id} value={i.id.toString()}>{i.nome}</option>)}
+                                                            </select>
+                                                        </div>
+                                                    )}
+                                                    <div>
+                                                        <label className="block text-xs font-bold text-slate-600 uppercase mb-1">Fornecedor</label>
+                                                        <select className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-400 text-sm"
+                                                            value={recForm.fornecedor_id} onChange={e=>setRecForm({...recForm,fornecedor_id:e.target.value})}>
+                                                            <option value="">Selecione...</option>
+                                                            {fornecedores.map(f=><option key={f.id} value={f.id.toString()}>{f.nome}</option>)}
+                                                        </select>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        {/* Coluna direita — configuração de recorrência */}
+                                        <div className="space-y-5">
+                                            <div>
+                                                <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest border-b border-slate-100 pb-2 mb-4">Configuração de Recorrência</h3>
+                                                <div className="space-y-4">
+
+                                                    {/* Frequência */}
+                                                    <div>
+                                                        <label className="block text-xs font-bold text-slate-600 uppercase mb-2">Frequência *</label>
+                                                        <div className="grid grid-cols-4 gap-2">
+                                                            {FREQ_OPTIONS.map(f=>(
+                                                                <button key={f.value} type="button"
+                                                                    onClick={()=>setRecForm({...recForm,frequencia:f.value})}
+                                                                    className={`py-2 px-2 rounded-xl text-xs font-bold border-2 transition-all ${recForm.frequencia===f.value?'border-indigo-500 bg-indigo-50 text-indigo-700':'border-slate-200 bg-white text-slate-500 hover:border-indigo-200'}`}>
+                                                                    {f.label}
+                                                                </button>
+                                                            ))}
+                                                        </div>
+                                                    </div>
+
+                                                    {/* Dia da semana (semanal/quinzenal) */}
+                                                    {needsDiaSemana && (
+                                                        <div>
+                                                            <label className="block text-xs font-bold text-slate-600 uppercase mb-2">Dia da Semana</label>
+                                                            <div className="grid grid-cols-7 gap-1">
+                                                                {DIAS_SEMANA.map((d,i)=>(
+                                                                    <button key={i} type="button"
+                                                                        onClick={()=>setRecForm({...recForm,dia_semana:i})}
+                                                                        className={`py-2 rounded-xl text-[10px] font-bold border-2 transition-all ${recForm.dia_semana===i?'border-indigo-500 bg-indigo-50 text-indigo-700':'border-slate-200 bg-white text-slate-500 hover:border-indigo-200'}`}>
+                                                                        {d.slice(0,3)}
+                                                                    </button>
+                                                                ))}
+                                                            </div>
+                                                        </div>
+                                                    )}
+
+                                                    {/* Dia do mês */}
+                                                    {needsDiaMes && (
+                                                        <div>
+                                                            <label className="block text-xs font-bold text-slate-600 uppercase mb-2">Dia do Mês</label>
+                                                            <div className="flex items-center gap-3">
+                                                                <input type="range" min={1} max={28} value={recForm.dia_mes}
+                                                                    onChange={e=>setRecForm({...recForm,dia_mes:parseInt(e.target.value)})}
+                                                                    className="flex-1 accent-indigo-600"/>
+                                                                <span className="w-10 h-10 bg-indigo-100 text-indigo-700 font-black rounded-xl flex items-center justify-center text-sm shrink-0">{recForm.dia_mes}</span>
+                                                            </div>
+                                                        </div>
+                                                    )}
+
+                                                    {/* Hora */}
+                                                    <div className="grid grid-cols-2 gap-4">
+                                                        <div>
+                                                            <label className="block text-xs font-bold text-slate-600 uppercase mb-1">Hora de Geração</label>
+                                                            <select className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-400 text-sm"
+                                                                value={recForm.hora} onChange={e=>setRecForm({...recForm,hora:parseInt(e.target.value)})}>
+                                                                {Array.from({length:24},(_,i)=><option key={i} value={i}>{String(i).padStart(2,'0')}:00</option>)}
+                                                            </select>
+                                                        </div>
+                                                        <div>
+                                                            <label className="block text-xs font-bold text-slate-600 uppercase mb-1">Minuto</label>
+                                                            <select className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-400 text-sm"
+                                                                value={recForm.minuto} onChange={e=>setRecForm({...recForm,minuto:parseInt(e.target.value)})}>
+                                                                {[0,15,30,45].map(m=><option key={m} value={m}>{String(m).padStart(2,'0')}</option>)}
+                                                            </select>
+                                                        </div>
+                                                    </div>
+
+                                                    {/* Período */}
+                                                    <div className="grid grid-cols-2 gap-4">
+                                                        <div>
+                                                            <label className="block text-xs font-bold text-slate-600 uppercase mb-1">Data Início *</label>
+                                                            <input type="date" className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-400 text-sm"
+                                                                value={recForm.data_inicio} onChange={e=>setRecForm({...recForm,data_inicio:e.target.value})}/>
+                                                        </div>
+                                                        <div>
+                                                            <label className="block text-xs font-bold text-slate-600 uppercase mb-1">Data Fim <span className="text-slate-300 font-normal">(opcional)</span></label>
+                                                            <input type="date" className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-400 text-sm"
+                                                                value={recForm.data_fim} onChange={e=>setRecForm({...recForm,data_fim:e.target.value})}/>
+                                                        </div>
+                                                    </div>
+
+                                                    {/* Preview */}
+                                                    <div className="p-4 bg-indigo-50 rounded-2xl border border-indigo-100">
+                                                        <p className="text-[10px] font-bold text-indigo-400 uppercase mb-2">📋 Resumo da Recorrência</p>
+                                                        <p className="text-sm text-indigo-800 font-medium">
+                                                            Chamado <strong>"{recForm.titulo||'sem título'}"</strong> será gerado{' '}
+                                                            <strong>{FREQ_OPTIONS.find(f=>f.value===recForm.frequencia)?.label?.toLowerCase()}</strong>
+                                                            {needsDiaSemana && <> toda <strong>{DIAS_SEMANA[recForm.dia_semana]}</strong></>}
+                                                            {needsDiaMes && <> no dia <strong>{recForm.dia_mes}</strong> de cada {recForm.frequencia==='mensal'?'mês':recForm.frequencia==='bimestral'?'2 meses':recForm.frequencia==='trimestral'?'trimestre':recForm.frequencia==='semestral'?'semestre':'ano'}</>}
+                                                            {' '}às <strong>{String(recForm.hora).padStart(2,'0')}:{String(recForm.minuto).padStart(2,'0')}</strong>.
+                                                        </p>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    {/* Botões */}
+                                    <div className="flex justify-end gap-3 mt-8 pt-6 border-t border-slate-100">
+                                        <button type="button" onClick={()=>{setRecTab('lista');setEditingRec(null);resetRecForm();}}
+                                            className="px-6 py-2.5 bg-slate-100 text-slate-600 rounded-xl font-bold hover:bg-slate-200">Cancelar</button>
+                                        <button type="button" onClick={handleSaveRec} disabled={savingRec||!recForm.titulo.trim()}
+                                            className="px-10 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold shadow-lg disabled:opacity-40 flex items-center gap-2">
+                                            <FaSync size={14}/> {savingRec?'Salvando...':(editingRec?'Salvar Alterações':'Criar Recorrência')}
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
                         </div>
                     </div>
                 </div>
             )}
 
-            {/* Modal Cadastro/Edição */}
+            {/* ── Modal Chamado (cadastro/edição) ── */}
             {isModalOpen && (
                 <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
-                    <div className="bg-white rounded-3xl shadow-2xl w-full max-w-5xl max-h-[90vh] overflow-hidden flex flex-col animate-in fade-in zoom-in duration-200">
+                    <div className="bg-white rounded-3xl shadow-2xl w-full max-w-5xl max-h-[90vh] overflow-hidden flex flex-col">
                         <div className="p-6 border-b border-slate-100 flex items-center justify-between">
-                            <h2 className="text-xl font-bold text-slate-800">{isEditing ? `Editar Chamado #${currentChamado.id}` : 'Abrir Novo Chamado'}</h2>
-                            <button onClick={() => setIsModalOpen(false)} className="p-2 hover:bg-slate-100 rounded-full transition-colors"><FaTimes /></button>
+                            <h2 className="text-xl font-bold text-slate-800">{isEditing?`Editar Chamado #${currentChamado.id}`:'Abrir Novo Chamado'}</h2>
+                            <button onClick={()=>setIsModalOpen(false)} className="p-2 hover:bg-slate-100 rounded-full"><FaTimes/></button>
                         </div>
                         <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-8">
-                            {/* TIPO DE CHAMADO */}
                             <div className="mb-8 border-2 border-blue-400 rounded-xl p-4 bg-blue-50">
                                 <label className="block text-sm font-bold text-gray-700 mb-3">TIPO DE CHAMADO *</label>
                                 <div className="grid grid-cols-2 gap-4">
-                                    <label className={`p-4 border-2 rounded-lg cursor-pointer transition-all ${formData.tipo === 'maquinario' ? 'border-blue-600 bg-blue-100' : 'border-gray-300 bg-white hover:border-blue-300'}`}>
-                                        <input 
-                                            type="radio" 
-                                            value="maquinario" 
-                                            checked={formData.tipo === 'maquinario'}
-                                            onChange={(e) => setFormData({...formData, tipo: e.target.value, ativo_id: '', infraestrutura_id: ''})}
-                                            className="mr-2"
-                                        />
-                                        <span className="font-bold"><FaIndustry className="inline mr-1 text-blue-600" /> Maquinário</span>
+                                    <label className={`p-4 border-2 rounded-lg cursor-pointer transition-all ${formData.tipo==='maquinario'?'border-blue-600 bg-blue-100':'border-gray-300 bg-white hover:border-blue-300'}`}>
+                                        <input type="radio" value="maquinario" checked={formData.tipo==='maquinario'} onChange={e=>setFormData({...formData,tipo:e.target.value,ativo_id:'',infraestrutura_id:''})} className="mr-2"/>
+                                        <span className="font-bold"><FaIndustry className="inline mr-1 text-blue-600"/> Maquinário</span>
                                     </label>
-                                    <label className={`p-4 border-2 rounded-lg cursor-pointer transition-all ${formData.tipo === 'infraestrutura' ? 'border-indigo-600 bg-indigo-100' : 'border-gray-300 bg-white hover:border-indigo-300'}`}>
-                                        <input 
-                                            type="radio" 
-                                            value="infraestrutura" 
-                                            checked={formData.tipo === 'infraestrutura'}
-                                            onChange={(e) => setFormData({...formData, tipo: e.target.value, ativo_id: '', infraestrutura_id: ''})}
-                                            className="mr-2"
-                                        />
-                                        <span className="font-bold"><FaLayerGroup className="inline mr-1 text-indigo-600" /> Infraestrutura</span>
+                                    <label className={`p-4 border-2 rounded-lg cursor-pointer transition-all ${formData.tipo==='infraestrutura'?'border-indigo-600 bg-indigo-100':'border-gray-300 bg-white hover:border-indigo-300'}`}>
+                                        <input type="radio" value="infraestrutura" checked={formData.tipo==='infraestrutura'} onChange={e=>setFormData({...formData,tipo:e.target.value,ativo_id:'',infraestrutura_id:''})} className="mr-2"/>
+                                        <span className="font-bold"><FaLayerGroup className="inline mr-1 text-indigo-600"/> Infraestrutura</span>
                                     </label>
                                 </div>
                             </div>
-
                             <div className="grid grid-cols-1 lg:grid-cols-2 gap-12">
                                 <div className="space-y-6">
                                     <div className="space-y-4">
                                         <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest border-b border-slate-100 pb-2">Informações do Problema</h3>
-                                        <div className="space-y-1">
-                                            <label className="text-xs font-bold text-slate-600 uppercase ml-1">Título do Chamado *</label>
-                                            <input type="text" required className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary/20 transition-all" placeholder="Ex: Ar condicionado não liga" value={formData.titulo} onChange={(e) => setFormData({...formData, titulo: e.target.value})} />
-                                        </div>
-                                        <div className="space-y-1">
-                                            <label className="text-xs font-bold text-slate-600 uppercase ml-1">Descrição Detalhada</label>
-                                            <textarea rows="4" className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary/20 transition-all resize-none" placeholder="Descreva o problema..." value={formData.descricao} onChange={(e) => setFormData({...formData, descricao: e.target.value})}></textarea>
-                                        </div>
+                                        <div className="space-y-1"><label className="text-xs font-bold text-slate-600 uppercase ml-1">Título *</label><input type="text" required className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary/20" value={formData.titulo} onChange={e=>setFormData({...formData,titulo:e.target.value})}/></div>
+                                        <div className="space-y-1"><label className="text-xs font-bold text-slate-600 uppercase ml-1">Descrição</label><textarea rows="4" className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary/20 resize-none" value={formData.descricao} onChange={e=>setFormData({...formData,descricao:e.target.value})}/></div>
                                         <div className="grid grid-cols-2 gap-4">
-                                            <div className="space-y-1">
-                                                <label className="text-xs font-bold text-slate-600 uppercase ml-1">Status</label>
-                                                <select className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary/20 transition-all" value={formData.status} onChange={(e) => setFormData({...formData, status: e.target.value})}>
-                                                    <option value="Aberto">Aberto</option>
-                                                    <option value="Em Atendimento">Em Atendimento</option>
-                                                    <option value="Concluído">Concluído</option>
-                                                    <option value="Cancelado">Cancelado</option>
-                                                </select>
-                                            </div>
-                                            <div className="space-y-1">
-                                                <label className="text-xs font-bold text-slate-600 uppercase ml-1">Criticidade Real</label>
-                                                <select className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary/20 transition-all" value={formData.criticidade_real} onChange={(e) => setFormData({...formData, criticidade_real: e.target.value})}>
-                                                    {criticidades.map(c => <option key={c} value={c}>{c}</option>)}
-                                                </select>
-                                            </div>
+                                            <div className="space-y-1"><label className="text-xs font-bold text-slate-600 uppercase ml-1">Status</label><select className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary/20" value={formData.status} onChange={e=>setFormData({...formData,status:e.target.value})}><option>Aberto</option><option>Em Atendimento</option><option>Concluído</option><option>Cancelado</option></select></div>
+                                            <div className="space-y-1"><label className="text-xs font-bold text-slate-600 uppercase ml-1">Criticidade Real</label><select className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary/20" value={formData.criticidade_real} onChange={e=>setFormData({...formData,criticidade_real:e.target.value})}>{CRITICIDADES.map(c=><option key={c}>{c}</option>)}</select></div>
                                         </div>
-                                        <div className="space-y-1">
-                                            <label className="text-xs font-bold text-slate-600 uppercase ml-1">Criticidade Informada (QR)</label>
-                                            <input type="text" disabled className="w-full px-4 py-2.5 bg-slate-100 border border-slate-200 rounded-xl outline-none text-slate-500 cursor-not-allowed" value={formData.criticidade_informada} />
-                                        </div>
+                                        <div className="space-y-1"><label className="text-xs font-bold text-slate-600 uppercase ml-1">Criticidade Informada (QR)</label><input disabled className="w-full px-4 py-2.5 bg-slate-100 border border-slate-200 rounded-xl text-slate-500 cursor-not-allowed" value={formData.criticidade_informada}/></div>
                                     </div>
                                     <div className="space-y-4">
                                         <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest border-b border-slate-100 pb-2">Vínculos e Ativos</h3>
-                                        
-                                        {/* Campo condicional: Ativo ou Infraestrutura */}
-                                        {formData.tipo === 'maquinario' ? (
-                                            <div className="space-y-1">
-                                                <label className="text-xs font-bold text-slate-600 uppercase ml-1 flex items-center gap-1">
-                                                    <FaIndustry className="text-blue-500" /> Equipamento / Ativo
-                                                </label>
-                                                <select className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary/20 transition-all" value={formData.ativo_id} onChange={(e) => handleAtivoChange(e.target.value)}>
-                                                    <option value="">Selecione um Ativo (Opcional)</option>
-                                                    {filteredAtivosForm.map(a => <option key={a.id} value={a.id.toString()}>{a.nome} {a.numero_serie ? `(S/N: ${a.numero_serie})` : ''}</option>)}
-                                                </select>
-                                            </div>
-                                        ) : (
-                                            <div className="space-y-1">
-                                                <label className="text-xs font-bold text-slate-600 uppercase ml-1 flex items-center gap-1">
-                                                    <FaLayerGroup className="text-indigo-500" /> Item de Infraestrutura
-                                                </label>
-                                                <select className="w-full px-4 py-2.5 bg-indigo-50 border border-indigo-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-300 transition-all" value={formData.infraestrutura_id} onChange={(e) => setFormData({...formData, infraestrutura_id: e.target.value})}>
-                                                    <option value="">Selecione uma Infraestrutura (Opcional)</option>
-                                                    {filteredInfraForm.map(i => <option key={i.id} value={i.id.toString()}>{i.nome}</option>)}
-                                                </select>
-                                            </div>
+                                        {formData.tipo==='maquinario'?(
+                                            <div className="space-y-1"><label className="text-xs font-bold text-slate-600 uppercase ml-1"><FaIndustry className="inline text-blue-500 mr-1"/>Equipamento</label><select className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary/20" value={formData.ativo_id} onChange={e=>handleAtivoChange(e.target.value)}><option value="">Selecione (Opcional)</option>{filtAtivos.map(a=><option key={a.id} value={a.id.toString()}>{a.nome} {a.numero_serie?`(S/N: ${a.numero_serie})`:''}</option>)}</select></div>
+                                        ):(
+                                            <div className="space-y-1"><label className="text-xs font-bold text-slate-600 uppercase ml-1"><FaLayerGroup className="inline text-indigo-500 mr-1"/>Infraestrutura</label><select className="w-full px-4 py-2.5 bg-indigo-50 border border-indigo-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-300" value={formData.infraestrutura_id} onChange={e=>setFormData({...formData,infraestrutura_id:e.target.value})}><option value="">Selecione (Opcional)</option>{filtInfra.map(i=><option key={i.id} value={i.id.toString()}>{i.nome}</option>)}</select></div>
                                         )}
-
-                                        <div className="space-y-1">
-                                            <label className="text-xs font-bold text-slate-600 uppercase ml-1">Empresa / Clínica *</label>
-                                            <select required className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary/20 transition-all" value={formData.empresa_id} onChange={(e) => setFormData({...formData, empresa_id: e.target.value})}>
-                                                <option value="">Selecione uma Empresa</option>
-                                                {empresas.map(e => <option key={e.id} value={e.id.toString()}>{e.nome}</option>)}
-                                            </select>
-                                        </div>
-                                        <div className="space-y-1">
-                                            <label className="text-xs font-bold text-slate-600 uppercase ml-1">Localização Interna</label>
-                                            <select className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary/20 transition-all" value={formData.localizacao_id} onChange={(e) => setFormData({...formData, localizacao_id: e.target.value})}>
-                                                <option value="">Selecione um Local (Opcional)</option>
-                                                {filteredLocalizacoesForm.map(l => <option key={l.id} value={l.id.toString()}>{l.nome}</option>)}
-                                            </select>
-                                        </div>
-                                        <div className="space-y-1">
-                                            <label className="text-xs font-bold text-slate-600 uppercase ml-1">Categoria do Chamado</label>
-                                            <select className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary/20 transition-all" value={formData.categoria_id} onChange={(e) => setFormData({...formData, categoria_id: e.target.value})}>
-                                                <option value="">Selecione uma Categoria</option>
-                                                {categorias.map(c => <option key={c.id} value={c.id.toString()}>{c.nome}</option>)}
-                                            </select>
-                                        </div>
+                                        <div className="space-y-1"><label className="text-xs font-bold text-slate-600 uppercase ml-1">Empresa *</label><select required className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary/20" value={formData.empresa_id} onChange={e=>setFormData({...formData,empresa_id:e.target.value})}><option value="">Selecione</option>{empresas.map(e=><option key={e.id} value={e.id.toString()}>{e.nome}</option>)}</select></div>
+                                        <div className="space-y-1"><label className="text-xs font-bold text-slate-600 uppercase ml-1">Localização</label><select className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary/20" value={formData.localizacao_id} onChange={e=>setFormData({...formData,localizacao_id:e.target.value})}><option value="">Selecione (Opcional)</option>{filtLocs.map(l=><option key={l.id} value={l.id.toString()}>{l.nome}</option>)}</select></div>
+                                        <div className="space-y-1"><label className="text-xs font-bold text-slate-600 uppercase ml-1">Categoria</label><select className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary/20" value={formData.categoria_id} onChange={e=>setFormData({...formData,categoria_id:e.target.value})}><option value="">Selecione (Opcional)</option>{categorias.map(c=><option key={c.id} value={c.id.toString()}>{c.nome}</option>)}</select></div>
                                     </div>
                                 </div>
                                 <div className="space-y-6">
                                     <div className="space-y-4">
                                         <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest border-b border-slate-100 pb-2">Custos e Fornecedores</h3>
-                                        <div className="space-y-1">
-                                            <label className="text-xs font-bold text-slate-600 uppercase ml-1">Valor Total do Serviço (R$)</label>
-                                            <input type="number" step="0.01" className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary/20 transition-all" value={formData.valor_total} onChange={(e) => setFormData({...formData, valor_total: parseFloat(e.target.value) || 0})} />
-                                        </div>
-                                        <div className="space-y-1">
-                                            <label className="text-xs font-bold text-slate-600 uppercase ml-1">Fornecedor Responsável</label>
-                                            <select className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary/20 transition-all" value={formData.fornecedor_id} onChange={(e) => setFormData({...formData, fornecedor_id: e.target.value})}>
-                                                <option value="">Selecione um Fornecedor</option>
-                                                {fornecedores.map(f => <option key={f.id} value={f.id.toString()}>{f.nome}</option>)}
-                                            </select>
-                                        </div>
-                                        <div className="space-y-1">
-                                            <label className="text-xs font-bold text-slate-600 uppercase ml-1">Contrato Vinculado</label>
-                                            <select className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary/20 transition-all" value={formData.contrato_id} onChange={(e) => setFormData({...formData, contrato_id: e.target.value})}>
-                                                <option value="">Selecione um Contrato</option>
-                                                {contratos.map(c => <option key={c.id} value={c.id.toString()}>{c.numero || c.nome}</option>)}
-                                            </select>
-                                        </div>
-                                        <div className="space-y-1">
-                                            <label className="text-xs font-bold text-slate-600 uppercase ml-1">Orçamento Vinculado</label>
-                                            <select className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary/20 transition-all" value={formData.orcamento_id} onChange={(e) => setFormData({...formData, orcamento_id: e.target.value})}>
-                                                <option value="">Selecione um Orçamento</option>
-                                                {orcamentos.map(o => <option key={o.id} value={o.id.toString()}>{o.numero || o.titulo}</option>)}
-                                            </select>
-                                        </div>
+                                        <div className="space-y-1"><label className="text-xs font-bold text-slate-600 uppercase ml-1">Valor Total (R$)</label><input type="number" step="0.01" className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary/20" value={formData.valor_total} onChange={e=>setFormData({...formData,valor_total:parseFloat(e.target.value)||0})}/></div>
+                                        <div className="space-y-1"><label className="text-xs font-bold text-slate-600 uppercase ml-1">Fornecedor</label><select className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary/20" value={formData.fornecedor_id} onChange={e=>setFormData({...formData,fornecedor_id:e.target.value})}><option value="">Selecione</option>{fornecedores.map(f=><option key={f.id} value={f.id.toString()}>{f.nome}</option>)}</select></div>
+                                        <div className="space-y-1"><label className="text-xs font-bold text-slate-600 uppercase ml-1">Contrato</label><select className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary/20" value={formData.contrato_id} onChange={e=>setFormData({...formData,contrato_id:e.target.value})}><option value="">Selecione</option>{contratos.map(c=><option key={c.id} value={c.id.toString()}>{c.numero||c.nome}</option>)}</select></div>
+                                        <div className="space-y-1"><label className="text-xs font-bold text-slate-600 uppercase ml-1">Orçamento</label><select className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary/20" value={formData.orcamento_id} onChange={e=>setFormData({...formData,orcamento_id:e.target.value})}><option value="">Selecione</option>{orcamentos.map(o=><option key={o.id} value={o.id.toString()}>{o.numero||o.titulo}</option>)}</select></div>
                                     </div>
                                     <div className="space-y-4">
-                                        <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest border-b border-slate-100 pb-2">Anexos e Documentos</h3>
-                                        <div className="grid grid-cols-1 gap-4">
-                                            <div className="relative group">
-                                                <input type="file" multiple className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" onChange={handleFileUpload} disabled={uploading} />
-                                                <div className="h-32 border-2 border-dashed border-slate-200 rounded-2xl flex flex-col items-center justify-center gap-2 bg-slate-50 group-hover:bg-primary/5 group-hover:border-primary/30 transition-all">
-                                                    <div className="p-3 bg-white rounded-xl shadow-sm text-slate-400 group-hover:text-primary transition-colors"><FaPaperclip size={20} /></div>
-                                                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">{uploading ? 'Enviando...' : 'Clique ou arraste arquivos'}</span>
+                                        <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest border-b border-slate-100 pb-2">Anexos</h3>
+                                        <div className="relative group">
+                                            <input type="file" multiple className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" onChange={handleFileUpload} disabled={uploading}/>
+                                            <div className="h-28 border-2 border-dashed border-slate-200 rounded-2xl flex flex-col items-center justify-center gap-2 bg-slate-50 group-hover:bg-primary/5 group-hover:border-primary/30 transition-all">
+                                                <FaPaperclip className="text-slate-300 group-hover:text-primary" size={20}/>
+                                                <span className="text-[10px] font-bold text-slate-400 uppercase">{uploading?'Enviando...':'Clique ou arraste arquivos'}</span>
+                                            </div>
+                                        </div>
+                                        <div className="space-y-2 max-h-40 overflow-y-auto">
+                                            {formData.anexos.map((file,idx)=>(
+                                                <div key={idx} className="flex items-center justify-between bg-slate-50 p-3 rounded-xl border border-slate-100">
+                                                    <div className="flex items-center gap-3 truncate"><FaPaperclip className="text-primary shrink-0" size={12}/><span className="text-xs font-bold text-slate-600 truncate">{file.name}</span></div>
+                                                    <button type="button" onClick={()=>setFormData({...formData,anexos:formData.anexos.filter((_,i)=>i!==idx)})} className="p-1.5 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-lg"><FaTimes size={12}/></button>
                                                 </div>
-                                            </div>
-                                            <div className="space-y-2 max-h-48 overflow-y-auto pr-2">
-                                                {formData.anexos.map((file, idx) => (
-                                                    <div key={idx} className="flex items-center justify-between bg-slate-50 p-3 rounded-xl border border-slate-100 group animate-in zoom-in duration-200">
-                                                        <div className="flex items-center gap-3 truncate">
-                                                            <FaPaperclip className="text-primary shrink-0" size={12} />
-                                                            <span className="text-xs font-bold text-slate-600 truncate">{file.name}</span>
-                                                        </div>
-                                                        <button type="button" onClick={() => removeAnexo(idx)} className="p-1.5 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all"><FaTimes size={12} /></button>
-                                                    </div>
-                                                ))}
-                                            </div>
+                                            ))}
                                         </div>
                                     </div>
                                 </div>
                             </div>
                             <div className="mt-8 flex justify-end gap-4">
-                                <button type="button" onClick={() => setIsModalOpen(false)} className="px-6 py-2.5 bg-slate-100 text-slate-600 rounded-xl font-bold hover:bg-slate-200 transition-all">Cancelar</button>
-                                <button type="submit" disabled={isSaving} className="px-8 py-2.5 bg-primary text-white rounded-xl font-bold shadow-lg shadow-primary/20 hover:bg-primary/90 transition-all disabled:opacity-50">{isSaving ? 'Salvando...' : 'Salvar Chamado'}</button>
+                                <button type="button" onClick={()=>setIsModalOpen(false)} className="px-6 py-2.5 bg-slate-100 text-slate-600 rounded-xl font-bold hover:bg-slate-200">Cancelar</button>
+                                <button type="submit" disabled={isSaving} className="px-8 py-2.5 bg-primary text-white rounded-xl font-bold shadow-lg hover:bg-primary/90 disabled:opacity-50">{isSaving?'Salvando...':'Salvar Chamado'}</button>
                             </div>
                         </form>
                     </div>

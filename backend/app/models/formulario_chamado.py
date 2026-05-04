@@ -9,6 +9,7 @@ class FormularioChamado(db.Model):
     nome = db.Column(db.String(255), nullable=False)
     tipo = db.Column(db.String(50), nullable=False)  # 'maquinario' ou 'infraestrutura'
     empresa_id = db.Column(db.Integer, db.ForeignKey('empresas.id'), nullable=False)
+    localizacao_id = db.Column(db.Integer, db.ForeignKey('localizacoes.id'), nullable=True)
     
     # ✅ NOVO: Vincular a um Ativo ou Infraestrutura específica
     ativo_id = db.Column(db.Integer, db.ForeignKey('ativos.id'), nullable=True)
@@ -25,6 +26,7 @@ class FormularioChamado(db.Model):
     
     def to_dict(self):
         return {
+        'localizacao_id': self.localizacao_id,
             'id': self.id,
             'nome': self.nome,
             'tipo': self.tipo,

@@ -19,8 +19,32 @@ def safe_float(val):
     try: return float(val)
     except: return 0.0
 
+def get_current_user():
+    api_token = request.headers.get('X-API-Token')
+    if api_token:
+        return Usuario.query.filter_by(api_token=api_token).first()
+    return None
+
 @chamado_bp.route('', methods=['GET'])
 def list_chamados():
+    user = get_current_user()
+
+    # self_service: só vê chamados da própria empresa
+    if user and user.role == 'self_service':
+        if not user.empresa_id:
+            return jsonify({'total': 0, 'page': 1, 'per_page': 100, 'chamados': []}), 200
+        query = Chamado.query.filter(
+            Chamado.ativo == True,
+            Chamado.empresa_id == user.empresa_id
+        )
+        total = query.count()
+        itens = query.order_by(desc(Chamado.created_at)).all()
+        return jsonify({'total': total, 'page': 1, 'per_page': total, 'chamados': [c.to_dict() for c in itens]}), 200
+
+    # publico: sem acesso à listagem
+    if user and user.role == 'publico':
+        return jsonify({'error': 'Acesso negado'}), 403
+
     include_inactive = request.args.get('include_inactive', '0') in ('1', 'true', 'True')
     empresa_id = request.args.get('empresa_id')
     tipo_filter = request.args.get('tipo')
@@ -58,13 +82,18 @@ def list_chamados():
 @chamado_bp.route('', methods=['POST'])
 def create_chamado():
     data = request.get_json() or {}
-    api_token = request.headers.get('X-API-Token')
-    user = Usuario.query.filter_by(api_token=api_token).first() if api_token else None
+    user = get_current_user()
+
+    # self_service pode criar chamado apenas para a própria empresa
+    if user and user.role == 'self_service':
+        data['empresa_id'] = user.empresa_id
+
+    # publico: bloqueado na rota normal (usa /portal ou /abrir-chamado)
+    if user and user.role == 'publico':
+        return jsonify({'error': 'Acesso negado'}), 403
 
     try:
         criticidade = data.get('criticidade_informada')
-        
-        # Processar opcoes_selecionadas
         opcoes = data.get('opcoes_selecionadas')
         opcoes_json = json.dumps(opcoes) if opcoes is not None else None
         
@@ -93,7 +122,6 @@ def create_chamado():
             deleted_at = None
         )
         
-        # Lógica automática de data de solução na criação
         status_resolvidos = ['resolvido', 'concluído', 'fechado']
         if novo.status.lower() in status_resolvidos:
             novo.data_solucao = datetime.utcnow()
@@ -115,13 +143,23 @@ def create_chamado():
 
 @chamado_bp.route('/<int:id>', methods=['GET'])
 def get_chamado(id):
+    user = get_current_user()
     c = Chamado.query.get_or_404(id)
+
+    # self_service só vê chamados da própria empresa
+    if user and user.role == 'self_service':
+        if c.empresa_id != user.empresa_id:
+            return jsonify({'error': 'Acesso negado'}), 403
+
     return jsonify(c.to_dict()), 200
 
 @chamado_bp.route('/<int:id>', methods=['PUT', 'PATCH'])
 def update_chamado(id):
-    api_token = request.headers.get('X-API-Token')
-    user = Usuario.query.filter_by(api_token=api_token).first() if api_token else None
+    user = get_current_user()
+
+    # self_service NÃO pode editar chamados
+    if user and user.role in ('self_service', 'publico'):
+        return jsonify({'error': 'Acesso negado'}), 403
 
     c = Chamado.query.get_or_404(id)
     data = request.get_json() or {}
@@ -137,7 +175,6 @@ def update_chamado(id):
         if 'tipo' in data: c.tipo = data.get('tipo')
         if 'valor_total' in data: c.valor_total = safe_float(data.get('valor_total'))
         if 'criticidade_real' in data: c.criticidade_real = data.get('criticidade_real')
-        
         if 'empresa_id' in data: c.empresa_id = safe_int(data.get('empresa_id'))
         if 'localizacao_id' in data: c.localizacao_id = safe_int(data.get('localizacao_id'))
         if 'usuario_responsavel_id' in data: c.usuario_responsavel_id = safe_int(data.get('usuario_responsavel_id'))
@@ -147,18 +184,14 @@ def update_chamado(id):
         if 'fornecedor_id' in data: c.fornecedor_id = safe_int(data.get('fornecedor_id'))
         if 'contrato_id' in data: c.contrato_id = safe_int(data.get('contrato_id'))
         if 'orcamento_id' in data: c.orcamento_id = safe_int(data.get('orcamento_id'))
-        
         if 'opcoes_selecionadas' in data:
             opcoes = data.get('opcoes_selecionadas')
             c.opcoes_selecionadas = json.dumps(opcoes) if opcoes is not None else None
-        
         if 'anexos' in data:
             c.anexos = json.dumps(data.get('anexos')) if data.get('anexos') is not None else None
-        
-        # Lógica AUTOMÁTICA de data de solução
+
         new_status = (c.status or '').lower()
         status_resolvidos = ['resolvido', 'concluído', 'fechado']
-        
         if new_status in status_resolvidos and old_status not in status_resolvidos:
             c.data_solucao = datetime.utcnow()
         elif new_status not in status_resolvidos:
@@ -180,8 +213,12 @@ def update_chamado(id):
 
 @chamado_bp.route('/<int:id>', methods=['DELETE'])
 def soft_delete_chamado(id):
-    api_token = request.headers.get('X-API-Token')
-    user = Usuario.query.filter_by(api_token=api_token).first() if api_token else None
+    user = get_current_user()
+
+    # self_service e publico NÃO podem excluir
+    if user and user.role in ('self_service', 'publico'):
+        return jsonify({'error': 'Acesso negado'}), 403
+
     c = Chamado.query.get_or_404(id)
     if not c.ativo:
         return jsonify({'ok': True, 'message': 'already_inactive'}), 200
@@ -200,3 +237,42 @@ def soft_delete_chamado(id):
         try: db.session.rollback()
         except: pass
         return jsonify({'ok': False, 'error': 'db_error', 'detail': str(e)}), 500
+
+
+# ─────────────────────────────────────────────
+# OBSERVAÇÕES / ACOMPANHAMENTOS DO CHAMADO
+# ─────────────────────────────────────────────
+from ..models.chamado_observacao import ChamadoObservacao
+
+@chamado_bp.route('/<int:chamado_id>/observacoes', methods=['GET'])
+def list_observacoes(chamado_id):
+    obs = ChamadoObservacao.query.filter_by(chamado_id=chamado_id)\
+        .order_by(ChamadoObservacao.created_at.asc()).all()
+    return jsonify([o.to_dict() for o in obs]), 200
+
+@chamado_bp.route('/<int:chamado_id>/observacoes', methods=['POST'])
+def create_observacao(chamado_id):
+    data = request.get_json() or {}
+    user = get_current_user()
+
+    texto = (data.get('texto') or '').strip()
+    if not texto:
+        return jsonify({'error': 'Texto é obrigatório'}), 400
+
+    obs = ChamadoObservacao(
+        chamado_id=chamado_id,
+        usuario_id=user.id if user else None,
+        usuario_nome=data.get('usuario_nome') or (user.username if user else 'Anônimo'),
+        texto=texto,
+        tipo=data.get('tipo', 'observacao')
+    )
+    db.session.add(obs)
+    db.session.commit()
+    return jsonify(obs.to_dict()), 201
+
+@chamado_bp.route('/<int:chamado_id>/observacoes/<int:obs_id>', methods=['DELETE'])
+def delete_observacao(chamado_id, obs_id):
+    obs = ChamadoObservacao.query.filter_by(id=obs_id, chamado_id=chamado_id).first_or_404()
+    db.session.delete(obs)
+    db.session.commit()
+    return jsonify({'ok': True}), 200

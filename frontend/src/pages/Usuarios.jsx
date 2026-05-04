@@ -1,37 +1,60 @@
 import React, { useState, useEffect } from 'react'
-import { UserPlus, Key, Building2, ShieldCheck, Mail, User, Lock, Trash2, Edit2, X, Check } from 'lucide-react'
+import { UserPlus, Edit2, X, Trash2 } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
+
+const ROLE_LABELS = {
+  super_admin: { label: 'Super Admin',      color: 'bg-purple-100 text-purple-700' },
+  admin:       { label: 'Admin',             color: 'bg-blue-100 text-blue-700' },
+  self_service:{ label: 'Self Service',      color: 'bg-green-100 text-green-700' },
+  relatorios:  { label: 'Relatórios',        color: 'bg-yellow-100 text-yellow-700' },
+  publico:     { label: 'Público',           color: 'bg-indigo-100 text-indigo-600' },
+  marketing:   { label: 'Email Marketing',   color: 'bg-pink-100 text-pink-700' },
+}
+
+const ROLE_DESCRICOES = {
+  super_admin:  'Acesso total ao sistema',
+  admin:        'Ve tudo exceto config de e-mail do sistema',
+  self_service: 'Ve e cria chamados da empresa',
+  relatorios:   'Somente leitura de relatorios',
+  publico:      'Apenas abrir chamado via QR/portal',
+  marketing:    'Acesso apenas ao Email Marketing da empresa',
+}
 
 export default function Usuarios() {
   const { user: currentUser } = useAuth()
-  const [usuarios, setUsuarios] = useState([])
-  const [empresas, setEmpresas] = useState([])
-  const [loading, setLoading] = useState(false)
+  const [usuarios,  setUsuarios]  = useState([])
+  const [empresas,  setEmpresas]  = useState([])
+  const [loading,   setLoading]   = useState(false)
   const [editingId, setEditingId] = useState(null)
-  const [formData, setFormData] = useState({ username: '', email: '', password: '', empresa_id: '', role: 'admin' })
+  const [formData,  setFormData]  = useState({
+    username: '', email: '', password: '', empresa_id: '', role: 'admin'
+  })
 
-  useEffect(() => { fetchUsuarios(); fetchEmpresas(); }, [])
+  useEffect(() => { fetchUsuarios(); fetchEmpresas() }, [])
+
+  const headers = (extra = {}) => ({
+    ...extra,
+    ...(currentUser?.api_token ? { 'X-API-Token': currentUser.api_token } : {})
+  })
 
   const fetchUsuarios = async () => {
-    const headers = currentUser?.api_token ? { 'X-API-Token': currentUser.api_token } : {}
-    const res = await fetch('/api/usuarios/', { headers })
+    const res = await fetch('/api/usuarios/', { headers: headers() })
     if (res.ok) setUsuarios(await res.json())
   }
 
   const fetchEmpresas = async () => {
-    const headers = currentUser?.api_token ? { 'X-API-Token': currentUser.api_token } : {}
-    const res = await fetch('/api/empresas/', { headers })
+    const res = await fetch('/api/empresas/', { headers: headers() })
     if (res.ok) setEmpresas(await res.json())
   }
 
   const handleEdit = (u) => {
     setEditingId(u.id)
     setFormData({
-      username: u.username,
-      email: u.email,
-      password: '',
+      username:   u.username,
+      email:      u.email,
+      password:   '',
       empresa_id: u.empresa_id ? u.empresa_id.toString() : 'none',
-      role: u.role
+      role:       u.role
     })
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
@@ -42,113 +65,174 @@ export default function Usuarios() {
   }
 
   const handleDelete = async (id) => {
-    if (!window.confirm('Tem certeza que deseja excluir este usuário?')) return
-    const headers = currentUser?.api_token ? { 'X-API-Token': currentUser.api_token } : {}
-    const res = await fetch(`/api/usuarios/${id}`, { method: 'DELETE', headers })
+    if (!window.confirm('Tem certeza que deseja excluir este usuario?')) return
+    const res = await fetch(`/api/usuarios/${id}`, { method: 'DELETE', headers: headers() })
     if (res.ok) fetchUsuarios()
   }
 
   const handleSubmit = async (e) => {
     e.preventDefault()
     setLoading(true)
-    const headers = { 'Content-Type': 'application/json' }
-    if (currentUser?.api_token) headers['X-API-Token'] = currentUser.api_token
-    const url = editingId ? `/api/usuarios/${editingId}` : '/api/usuarios/'
+    const url    = editingId ? `/api/usuarios/${editingId}` : '/api/usuarios/'
     const method = editingId ? 'PUT' : 'POST'
     const res = await fetch(url, {
       method,
-      headers,
+      headers: headers({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({
         ...formData,
-        empresa_id: formData.empresa_id === 'none' || formData.empresa_id === '' ? null : parseInt(formData.empresa_id)
+        empresa_id: formData.empresa_id === 'none' || formData.empresa_id === ''
+          ? null
+          : parseInt(formData.empresa_id)
       })
     })
-    if (res.ok) { cancelEdit(); fetchUsuarios(); }
+    if (res.ok) { cancelEdit(); fetchUsuarios() }
     setLoading(false)
   }
 
+  const set = (k, v) => setFormData(f => ({ ...f, [k]: v }))
+
   return (
-    <div className="space-y-8 max-w-6xl mx-auto p-4">
-      <h1 className="text-3xl font-bold text-slate-800">Gestão de Usuários</h1>
-      <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
-        <div className={`p-4 border-b border-slate-100 ${editingId ? 'bg-amber-50' : 'bg-slate-50'}`}>
-          <h2 className="text-lg font-bold text-slate-700 flex items-center gap-2">
+    <div className="space-y-8 max-w-6xl mx-auto">
+      <h1 className="text-3xl font-bold text-foreground">Gestao de Usuarios</h1>
+
+      {/* Formulario */}
+      <div className="bg-card rounded-2xl shadow-sm border border-border overflow-hidden">
+        <div className={`p-4 border-b border-border ${editingId ? 'bg-amber-50' : 'bg-muted/30'}`}>
+          <h2 className="text-lg font-bold text-foreground flex items-center gap-2">
             {editingId ? <Edit2 className="w-5 h-5 text-amber-500" /> : <UserPlus className="w-5 h-5 text-primary" />}
-            {editingId ? `Editando Usuário: ${formData.username}` : 'Novo Usuário'}
+            {editingId ? `Editando: ${formData.username}` : 'Novo Usuario'}
           </h2>
         </div>
         <div className="p-6">
           <form onSubmit={handleSubmit} className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div className="space-y-1">
-              <label className="text-xs font-bold text-slate-500 uppercase ml-1">Username</label>
-              <input className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary" placeholder="Username" value={formData.username} onChange={e => setFormData({...formData, username: e.target.value})} required />
+              <label className="text-xs font-bold text-muted-foreground uppercase">Username</label>
+              <input className="w-full px-4 py-2.5 bg-muted/30 border border-border rounded-xl outline-none focus:ring-2 focus:ring-primary text-sm"
+                placeholder="Username" value={formData.username} onChange={e => set('username', e.target.value)} required />
             </div>
             <div className="space-y-1">
-              <label className="text-xs font-bold text-slate-500 uppercase ml-1">Email</label>
-              <input className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary" placeholder="Email" type="email" value={formData.email} onChange={e => setFormData({...formData, email: e.target.value})} required />
+              <label className="text-xs font-bold text-muted-foreground uppercase">Email</label>
+              <input className="w-full px-4 py-2.5 bg-muted/30 border border-border rounded-xl outline-none focus:ring-2 focus:ring-primary text-sm"
+                placeholder="Email" type="email" value={formData.email} onChange={e => set('email', e.target.value)} required />
             </div>
             <div className="space-y-1">
-              <label className="text-xs font-bold text-slate-500 uppercase ml-1">Senha</label>
-              <input className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary" placeholder="Senha" type="password" value={formData.password} onChange={e => setFormData({...formData, password: e.target.value})} required={!editingId} />
+              <label className="text-xs font-bold text-muted-foreground uppercase">Senha {editingId && <span className="normal-case font-normal">(deixe em branco para manter)</span>}</label>
+              <input className="w-full px-4 py-2.5 bg-muted/30 border border-border rounded-xl outline-none focus:ring-2 focus:ring-primary text-sm"
+                placeholder="Senha" type="password" value={formData.password} onChange={e => set('password', e.target.value)} required={!editingId} />
             </div>
-            <div className="space-y-1">
-              <label className="text-xs font-bold text-slate-500 uppercase ml-1">Perfil / Role</label>
-              <select className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary" value={formData.role} onChange={e => setFormData({...formData, role: e.target.value})}>
-                <option value="super_admin">Super Admin</option>
-                <option value="admin">Admin</option>
-                <option value="relatorios">Relatórios</option>
-                <option value="publico">Público (Apenas Abrir Chamado)</option>
+
+            {/* Perfil */}
+            <div className="space-y-1 md:col-span-2">
+              <label className="text-xs font-bold text-muted-foreground uppercase">Perfil de Acesso</label>
+              <select className="w-full px-4 py-2.5 bg-muted/30 border border-border rounded-xl outline-none focus:ring-2 focus:ring-primary text-sm"
+                value={formData.role} onChange={e => set('role', e.target.value)}>
+                {currentUser?.role === 'super_admin' && <option value="super_admin">Super Admin — {ROLE_DESCRICOES.super_admin}</option>}
+                <option value="admin">Admin — {ROLE_DESCRICOES.admin}</option>
+                <option value="marketing">Email Marketing — {ROLE_DESCRICOES.marketing}</option>
+                <option value="self_service">Self Service — {ROLE_DESCRICOES.self_service}</option>
+                <option value="relatorios">Relatorios — {ROLE_DESCRICOES.relatorios}</option>
+                <option value="publico">Publico — {ROLE_DESCRICOES.publico}</option>
               </select>
+
+              {/* Card descricao do perfil selecionado */}
+              {formData.role && (
+                <div className={`mt-2 px-4 py-2.5 rounded-xl text-xs font-medium border ${
+                  formData.role === 'super_admin' ? 'bg-purple-50 border-purple-200 text-purple-700' :
+                  formData.role === 'admin'       ? 'bg-blue-50 border-blue-200 text-blue-700' :
+                  formData.role === 'marketing'   ? 'bg-pink-50 border-pink-200 text-pink-700' :
+                  formData.role === 'self_service'? 'bg-green-50 border-green-200 text-green-700' :
+                  formData.role === 'relatorios'  ? 'bg-yellow-50 border-yellow-200 text-yellow-700' :
+                  'bg-indigo-50 border-indigo-200 text-indigo-700'
+                }`}>
+                  {ROLE_DESCRICOES[formData.role]}
+                  {formData.role === 'marketing' && (
+                    <span className="block mt-1 font-bold">Acessa: Contatos, Grupos, Config. SMTP, Modelos e Campanhas</span>
+                  )}
+                </div>
+              )}
             </div>
+
+            {/* Empresa */}
             <div className="space-y-1">
-              <label className="text-xs font-bold text-slate-500 uppercase ml-1">Empresa</label>
-              <select className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary" value={formData.empresa_id} onChange={e => setFormData({...formData, empresa_id: e.target.value})}>
+              <label className="text-xs font-bold text-muted-foreground uppercase">
+                Empresa
+                {formData.role === 'marketing' && <span className="ml-1 text-pink-500 normal-case font-normal">(obrigatorio para marketing)</span>}
+              </label>
+              <select className="w-full px-4 py-2.5 bg-muted/30 border border-border rounded-xl outline-none focus:ring-2 focus:ring-primary text-sm"
+                value={formData.empresa_id} onChange={e => set('empresa_id', e.target.value)}>
                 <option value="none">Acesso Global</option>
                 {empresas.map(e => <option key={e.id} value={e.id.toString()}>{e.nome}</option>)}
               </select>
             </div>
-            <div className="flex items-end">
-              <div className="flex gap-2 w-full">
-                <button type="submit" disabled={loading} className={`flex-1 py-2 rounded-xl font-bold text-white ${editingId ? 'bg-amber-500' : 'bg-primary'}`}>
-                  {loading ? '...' : editingId ? 'Salvar' : 'Criar'}
+
+            <div className="flex items-end md:col-span-3">
+              <div className="flex gap-2">
+                <button type="submit" disabled={loading}
+                  className={`px-8 py-2.5 rounded-xl font-bold text-white text-sm ${editingId ? 'bg-amber-500 hover:bg-amber-600' : 'bg-primary hover:opacity-90'} disabled:opacity-50`}>
+                  {loading ? 'Salvando...' : editingId ? 'Salvar Alteracoes' : 'Criar Usuario'}
                 </button>
-                {editingId && <button type="button" onClick={cancelEdit} className="p-2 bg-slate-100 rounded-xl"><X className="w-5 h-5" /></button>}
+                {editingId && (
+                  <button type="button" onClick={cancelEdit} className="px-4 py-2.5 bg-slate-100 rounded-xl font-bold text-sm text-slate-600 hover:bg-slate-200 flex items-center gap-1">
+                    <X className="w-4 h-4" /> Cancelar
+                  </button>
+                )}
               </div>
             </div>
           </form>
         </div>
       </div>
-      <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
-        <table className="w-full text-left">
-          <thead>
-            <tr className="bg-slate-50 border-b border-slate-100 text-xs font-bold text-slate-500 uppercase">
-              <th className="p-4">Usuário</th>
-              <th className="p-4">Perfil</th>
-              <th className="p-4">Empresa</th>
-              <th className="p-4 text-right">Ações</th>
-            </tr>
-          </thead>
-          <tbody>
-            {usuarios.map(u => (
-              <tr key={u.id} className="border-b border-slate-50 hover:bg-slate-50/50">
-                <td className="p-4">
-                  <div className="font-bold text-slate-700">{u.username}</div>
-                  <div className="text-xs text-slate-400">{u.email}</div>
-                </td>
-                <td className="p-4">
-                  <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase ${u.role === 'publico' ? 'bg-indigo-100 text-indigo-600' : 'bg-slate-100'}`}>
-                    {u.role === 'publico' ? 'Público' : u.role}
-                  </span>
-                </td>
-                <td className="p-4 text-sm text-slate-600">{u.empresa_nome || 'Global'}</td>
-                <td className="p-4 text-right flex justify-end gap-2">
-                  <button onClick={() => handleEdit(u)} className="p-2 text-slate-400 hover:text-amber-500"><Edit2 className="w-4 h-4" /></button>
-                  <button onClick={() => handleDelete(u.id)} className="p-2 text-slate-400 hover:text-red-500"><Trash2 className="w-4 h-4" /></button>
-                </td>
+
+      {/* Tabela */}
+      <div className="bg-card rounded-2xl shadow-sm border border-border overflow-hidden">
+        <div className="p-4 border-b border-border bg-muted/30">
+          <h2 className="text-sm font-bold text-muted-foreground uppercase">Usuarios Cadastrados ({usuarios.length})</h2>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-left">
+            <thead>
+              <tr className="bg-muted/20 border-b border-border text-xs font-bold text-muted-foreground uppercase">
+                <th className="p-4">Usuario</th>
+                <th className="p-4">Perfil</th>
+                <th className="p-4">Empresa</th>
+                <th className="p-4 text-right">Acoes</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {usuarios.map(u => {
+                const roleInfo = ROLE_LABELS[u.role] || { label: u.role, color: 'bg-slate-100 text-slate-600' }
+                return (
+                  <tr key={u.id} className="border-b border-border hover:bg-muted/20 transition-colors">
+                    <td className="p-4">
+                      <div className="font-bold text-foreground">{u.username}</div>
+                      <div className="text-xs text-muted-foreground">{u.email}</div>
+                    </td>
+                    <td className="p-4">
+                      <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase ${roleInfo.color}`}>
+                        {roleInfo.label}
+                      </span>
+                    </td>
+                    <td className="p-4 text-sm text-muted-foreground">{u.empresa_nome || 'Global'}</td>
+                    <td className="p-4 text-right">
+                      <div className="flex justify-end gap-2">
+                        <button onClick={() => handleEdit(u)} className="p-2 text-muted-foreground hover:text-amber-500 hover:bg-amber-50 rounded-lg transition-all">
+                          <Edit2 className="w-4 h-4" />
+                        </button>
+                        <button onClick={() => handleDelete(u.id)} className="p-2 text-muted-foreground hover:text-red-500 hover:bg-red-50 rounded-lg transition-all">
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                )
+              })}
+              {usuarios.length === 0 && (
+                <tr>
+                  <td colSpan={4} className="p-8 text-center text-muted-foreground text-sm">Nenhum usuario cadastrado.</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   )

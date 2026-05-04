@@ -1,4 +1,6 @@
 from flask import Blueprint, request, jsonify, current_app
+from ..utils.logging import create_log
+from ..utils.auth import get_current_user_from_request
 import os
 from werkzeug.utils import secure_filename
 from datetime import datetime
@@ -36,6 +38,31 @@ def upload_file():
         # Retorna o caminho relativo completo para salvar no banco de dados
         db_path = f"/{relative_dir}/{filename}".replace('\\', '/')
         
+
+        try:
+            user = get_current_user_from_request(request)
+            size = None
+            try:
+                size = request.content_length
+            except Exception:
+                size = None
+
+            create_log(
+                user=user,
+                action='upload_file',
+                entity='upload',
+                entity_id=None,
+                details={
+                    'empresa_nome': empresa_nome,
+                    'filename': filename,
+                    'path': db_path,
+                    'size': size
+                },
+                req=request
+            )
+        except Exception:
+            pass
+
         return jsonify({
             'filename': filename, 
             'path': db_path

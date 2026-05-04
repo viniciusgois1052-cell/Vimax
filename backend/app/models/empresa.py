@@ -10,12 +10,10 @@ class Empresa(db.Model):
     email = db.Column(db.String(100), nullable=True)
     telefone = db.Column(db.String(20), nullable=True)
     parent_id = db.Column(db.Integer, db.ForeignKey('empresas.id'), nullable=True)
-    # Armazenar caminhos dos anexos como uma string JSON
     anexos_json = db.Column(db.Text, nullable=True, default='[]')
-    
-    # Relacionamento para estrutura hierárquica
+
     sub_empresas = db.relationship('Empresa', backref=db.backref('parent', remote_side=[id]))
-    
+
     def get_anexos(self):
         try:
             return json.loads(self.anexos_json) if self.anexos_json else []

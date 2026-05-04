@@ -9,6 +9,7 @@ class FormularioChamado(db.Model):
     nome = db.Column(db.String(255), nullable=False)
     tipo = db.Column(db.String(50), nullable=False)  # 'maquinario' ou 'infraestrutura'
     empresa_id = db.Column(db.Integer, db.ForeignKey('empresas.id'), nullable=False)
+    localizacao_id = db.Column(db.Integer, db.ForeignKey('localizacoes.id'), nullable=True)
     opcoes = db.Column(db.LongText)  # JSON com as opções
     ativo = db.Column(db.Boolean, default=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
@@ -18,6 +19,7 @@ class FormularioChamado(db.Model):
     
     def to_dict(self):
         return {
+        'localizacao_id': self.localizacao_id,
             'id': self.id,
             'nome': self.nome,
             'tipo': self.tipo,

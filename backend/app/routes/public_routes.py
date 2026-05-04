@@ -6,6 +6,7 @@ from ..models.chamado import Chamado
 from ..models.empresa import Empresa
 from ..models.formulario_chamado import FormularioChamado
 from .. import db
+from ..utils.logging import create_log
 import json
 import os
 import base64
@@ -23,7 +24,7 @@ def portal_login():
     """Login para o portal de chamados"""
     from .. import bcrypt
  
-    data = request.get_json()
+    data = request.get_json() or {}
     username = data.get('username')
     password = data.get('password')
  
@@ -35,8 +36,21 @@ def portal_login():
     if user and bcrypt.check_password_hash(user.password_hash, password):
         user_data = user.to_dict()
         user_data['token'] = user.api_token
+
+        try:
+            create_log(user=user, action='portal_login_success', entity='usuario', entity_id=user.id,
+                       details={'username': username}, req=request)
+        except Exception:
+            pass
+
         return jsonify({'user': user_data, 'token': user.api_token}), 200
  
+    try:
+        create_log(user=None, action='portal_login_failed', entity='usuario', entity_id=None,
+                   details={'username': username}, req=request)
+    except Exception:
+        pass
+
     return jsonify({'error': 'Usuário ou senha inválidos'}), 401
  
  
@@ -90,7 +104,7 @@ def get_ativo_public(id):
  
 @public_bp.route('/chamado/abrir', methods=['POST'])
 def abrir_chamado_publico():
-    data = request.get_json()
+    data = request.get_json() or {}
  
     if not data.get('titulo') or not data.get('descricao'):
         return jsonify({'error': 'Título e descrição são obrigatórios'}), 400
@@ -335,3 +349,11 @@ def abrir_chamado_portal():
         try: db.session.rollback()
         except: pass
         return jsonify({'error': 'db_error', 'detail': str(e)}), 500
+
+
+@public_bp.route('/empresa/<int:empresa_id>/localizacoes', methods=['GET'])
+def get_localizacoes_empresa(empresa_id):
+    """Retorna as localizações de uma empresa para o portal externo."""
+    from ..models.localizacao import Localizacao
+    locs = Localizacao.query.filter_by(empresa_id=empresa_id).order_by(Localizacao.nome).all()
+    return jsonify([{'id': l.id, 'nome': l.nome} for l in locs]), 200

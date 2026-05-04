@@ -7,6 +7,7 @@ from ..utils.logging import create_log
 from sqlalchemy import desc
 from datetime import datetime
 import json
+from ..utils.auth import get_current_user_from_request
 
 infraestrutura_bp = Blueprint('infraestrutura_bp', __name__)
 

@@ -13,7 +13,6 @@ def safe_int(val):
     except: return None
 
 def model_columns(obj):
-    """Retorna lista de nomes de colunas do modelo SQLAlchemy (seguro)."""
     try:
         return [c.name for c in obj.__table__.columns]
     except Exception:
@@ -21,10 +20,6 @@ def model_columns(obj):
 
 @empresa_bp.route('', methods=['GET'])
 def list_empresas():
-    """
-    GET /api/empresas
-    Retorna todas empresas (simples).
-    """
     try:
         empresas = Empresa.query.order_by(Empresa.id.desc()).all()
         return jsonify([e.to_dict() for e in empresas]), 200
@@ -33,10 +28,6 @@ def list_empresas():
 
 @empresa_bp.route('', methods=['POST'])
 def create_empresa():
-    """
-    POST /api/empresas
-    Cria uma nova empresa. Aceita JSON com campos correspondentes ao modelo.
-    """
     data = request.get_json() or {}
     api_token = request.headers.get('X-API-Token')
     user = Usuario.query.filter_by(api_token=api_token).first() if api_token else None
@@ -45,8 +36,9 @@ def create_empresa():
         cols = model_columns(Empresa)
         novo = Empresa()
         for k, v in data.items():
-            if k in cols:
-                # tenta conversão básica para inteiros em chaves *_id
+            if k == 'anexos':
+                novo.set_anexos(v if isinstance(v, list) else [])
+            elif k in cols:
                 if k.endswith('_id'):
                     setattr(novo, k, safe_int(v))
                 else:
@@ -68,18 +60,11 @@ def create_empresa():
 
 @empresa_bp.route('/<int:id>', methods=['GET'])
 def get_empresa(id):
-    """
-    GET /api/empresas/<id>
-    """
     emp = Empresa.query.get_or_404(id)
     return jsonify(emp.to_dict()), 200
 
 @empresa_bp.route('/<int:id>', methods=['PUT', 'PATCH'])
 def update_empresa(id):
-    """
-    PUT/PATCH /api/empresas/<id>
-    Atualiza campos presentes no payload.
-    """
     api_token = request.headers.get('X-API-Token')
     user = Usuario.query.filter_by(api_token=api_token).first() if api_token else None
 
@@ -95,7 +80,9 @@ def update_empresa(id):
 
         cols = model_columns(Empresa)
         for k, v in data.items():
-            if k in cols and k != 'id':
+            if k == 'anexos':
+                emp.set_anexos(v if isinstance(v, list) else [])
+            elif k in cols and k != 'id':
                 if k.endswith('_id'):
                     setattr(emp, k, safe_int(v))
                 else:
@@ -117,18 +104,10 @@ def update_empresa(id):
 
 @empresa_bp.route('/<int:id>', methods=['DELETE'])
 def delete_empresa(id):
-    """
-    DELETE /api/empresas/<id>
-    Remove empresa (commit) e cria log da exclusão.
-    """
     api_token = request.headers.get('X-API-Token')
     user = Usuario.query.filter_by(api_token=api_token).first() if api_token else None
 
     emp = Empresa.query.get_or_404(id)
-
-    # Exemplo de checagem de permissão (ajuste conforme sua política)
-    # if user is None or user.role not in ('super_admin', 'admin'):
-    #     return jsonify({'error': 'forbidden'}), 403
 
     try:
         snapshot = None

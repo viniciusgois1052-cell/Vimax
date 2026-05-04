@@ -3,26 +3,41 @@ import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import path from 'path'
 
-// https://vite.dev/config/
 export default defineConfig({
   server: {
-    host: true, // equivalente ao --host
+    host: '0.0.0.0', // aceita conexões externas
+    port: 5173,
+    strictPort: true,
+
+    // IMPORTANTE: permite acesso pelo domínio
+    allowedHosts: [
+      'vimax.ad.digimaxdiagnostico.com.br'
+    ],
+
+    // necessário quando usa domínio (evita erro de websocket/HMR)
+    hmr: {
+      host: 'vimax.ad.digimaxdiagnostico.com.br',
+      protocol: 'ws', // ou 'wss' se tiver https
+      port: 5173
+    },
+
     proxy: {
       '/api': {
-        target: 'http://192.168.2.70:5002',
+        target: 'http://192.168.2.71:5002',
         changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/api/, '/api'),
       },
       '/uploads': {
-        target: 'http://192.168.2.70:5002',
+        target: 'http://192.168.2.71:5002',
         changeOrigin: true,
       },
     },
   },
+
   plugins: [
     react(),
     tailwindcss(),
   ],
+
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),

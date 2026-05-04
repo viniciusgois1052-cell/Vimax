@@ -1,24 +1,22 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { Plus, Trash2, Edit2, FileText, X } from 'lucide-react';
-import { Card, CardContent } from '../components/ui/card';
-import { useAuth } from '../context/AuthContext';
+import React, { useState, useEffect } from 'react';
+import { X, Camera, AlertCircle, ChevronRight } from 'lucide-react';
+import { useParams } from 'react-router-dom';
 
-export default function FormularioChamadoAdmin() {
-    const { user } = useAuth();
-    const [formularios, setFormularios] = useState([]);
-    const [empresas, setEmpresas] = useState([]);
-    const [isModalOpen, setIsModalOpen] = useState(false);
-    const [isEditing, setIsEditing] = useState(false);
-    const [currentFormId, setCurrentFormId] = useState(null);
-    
+export default function FormularioChamadoPublico() {
+    const { id } = useParams();
+    const [formulario, setFormulario] = useState(null);
+    const [empresa, setEmpresa] = useState(null);
+    const [ativos, setAtivos] = useState([]);
+    const [infraestruturas, setInfraestruturas] = useState([]);
+    const [loading, setLoading] = useState(true);
+
     const [formData, setFormData] = useState({
-        nome: '',
-        tipo: 'maquinario',
-        empresa_id: '',
-        opcoes: []
+        problema: '',
+        descricao: '',
+        item_id: '',
+        fotos: [],
+        opcoes_selecionadas: []
     });
-    
-    const [novaOpcao, setNovaOpcao] = useState('');
 
     const API_BASE = window.location.origin.includes('5173') 
         ? `${window.location.protocol}//${window.location.hostname}:5002`
@@ -26,251 +24,240 @@ export default function FormularioChamadoAdmin() {
 
     const API_PREFIX = `${API_BASE}/api`;
 
-    const fetchData = useCallback(async () => {
-        try {
-            const headers = {};
-            if (user?.api_token) {
-                headers['X-API-Token'] = user.api_token;
+    useEffect(() => {
+        const fetchData = async () => {
+            try {
+                const resForm = await fetch(`${API_PREFIX}/formularios-chamado/${id}`);
+                if (resForm.ok) {
+                    const form = await resForm.json();
+                    setFormulario(form);
+
+                    const resEmp = await fetch(`${API_PREFIX}/empresas/${form.empresa_id}`);
+                    if (resEmp.ok) {
+                        const emp = await resEmp.json();
+                        setEmpresa(emp);
+
+                        if (form.tipo === 'maquinario') {
+                            const resAtivos = await fetch(`${API_PREFIX}/ativos?empresa_id=${emp.id}`);
+                            if (resAtivos.ok) {
+                                const data = await resAtivos.json();
+                                setAtivos(data.length ? data : data.ativos || []);
+                            }
+                        } else {
+                            const resInfra = await fetch(`${API_PREFIX}/infraestruturas?empresa_id=${emp.id}`);
+                            if (resInfra.ok) {
+                                const data = await resInfra.json();
+                                setInfraestruturas(data.length ? data : data.infraestruturas || []);
+                            }
+                        }
+                    }
+                }
+            } catch (error) {
+                console.error("Erro ao carregar dados:", error);
+            } finally {
+                setLoading(false);
             }
+        };
 
-            const [resForm, resEmp] = await Promise.all([
-                fetch(`${API_PREFIX}/formularios-chamado/`, { headers }),
-                fetch(`${API_PREFIX}/empresas/`, { headers })
-            ]);
-            
-            if (resForm.ok) setFormularios(await resForm.json());
-            if (resEmp.ok) setEmpresas(await resEmp.json());
-        } catch (error) {
-            console.error("Erro ao carregar dados:", error);
-        }
-    }, [user, API_PREFIX]);
+        if (id) fetchData();
+    }, [id, API_PREFIX]);
 
-    useEffect(() => { fetchData(); }, [fetchData]);
-
-    const handleOpenModal = (form = null) => {
-        if (form) {
-            setIsEditing(true);
-            setCurrentFormId(form.id);
-            setFormData({
-                nome: form.nome,
-                tipo: form.tipo,
-                empresa_id: form.empresa_id.toString(),
-                opcoes: form.opcoes || []
-            });
-        } else {
-            setIsEditing(false);
-            setCurrentFormId(null);
-            setFormData({
-                nome: '',
-                tipo: 'maquinario',
-                empresa_id: '',
-                opcoes: []
-            });
-        }
-        setNovaOpcao('');
-        setIsModalOpen(true);
-    };
-
-    const handleAddOpcao = () => {
-        if (novaOpcao.trim()) {
-            setFormData({
-                ...formData,
-                opcoes: [...formData.opcoes, novaOpcao.trim()]
-            });
-            setNovaOpcao('');
-        }
-    };
-
-    const handleRemoveOpcao = (idx) => {
-        setFormData({
-            ...formData,
-            opcoes: formData.opcoes.filter((_, i) => i !== idx)
+    const handleAddFoto = (e) => {
+        const files = Array.from(e.target.files);
+        files.forEach(file => {
+            const reader = new FileReader();
+            reader.onload = (event) => {
+                setFormData(prev => ({
+                    ...prev,
+                    fotos: [...prev.fotos, event.target.result]
+                }));
+            };
+            reader.readAsDataURL(file);
         });
+    };
+
+    const handleRemoveFoto = (idx) => {
+        setFormData(prev => ({
+            ...prev,
+            fotos: prev.fotos.filter((_, i) => i !== idx)
+        }));
+    };
+
+    const handleToggleOpcao = (opcao) => {
+        setFormData(prev => ({
+            ...prev,
+            opcoes_selecionadas: prev.opcoes_selecionadas.includes(opcao)
+                ? prev.opcoes_selecionadas.filter(o => o !== opcao)
+                : [...prev.opcoes_selecionadas, opcao]
+        }));
     };
 
     const handleSubmit = async (e) => {
         e.preventDefault();
+
         const payload = {
-            ...formData,
-            empresa_id: parseInt(formData.empresa_id)
+            titulo: formData.problema,
+            descricao: formData.descricao,
+            status: 'aberto',
+            empresa_id: empresa.id,
+            ativo_id: formulario.tipo === 'maquinario' ? parseInt(formData.item_id) : null,
+            categoria_id: null,
+            prioridade: 'normal',
+            opcoes_selecionadas: formData.opcoes_selecionadas,
+            fotos: formData.fotos
         };
 
-        const headers = { 'Content-Type': 'application/json' };
-        if (user?.api_token) headers['X-API-Token'] = user.api_token;
-
-        const url = isEditing 
-            ? `${API_PREFIX}/formularios-chamado/${currentFormId}`
-            : `${API_PREFIX}/formularios-chamado`;
-        const method = isEditing ? 'PUT' : 'POST';
-
         try {
-            const res = await fetch(url, { method, headers, body: JSON.stringify(payload) });
+            const res = await fetch(`${API_PREFIX}/chamados`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+
             if (res.ok) {
-                setIsModalOpen(false);
-                fetchData();
+                alert('Chamado aberto com sucesso!');
+                setFormData({
+                    problema: '',
+                    descricao: '',
+                    item_id: '',
+                    fotos: [],
+                    opcoes_selecionadas: []
+                });
             }
         } catch (error) {
-            console.error("Erro ao salvar:", error);
+            console.error("Erro ao abrir chamado:", error);
         }
     };
 
-    const handleDelete = async (id) => {
-        if (!window.confirm('Excluir este formulário?')) return;
-        const headers = {};
-        if (user?.api_token) headers['X-API-Token'] = user.api_token;
-        
-        try {
-            const res = await fetch(`${API_PREFIX}/formularios-chamado/${id}`, { method: 'DELETE', headers });
-            if (res.ok) {
-                fetchData();
-            }
-        } catch (error) { console.error("Erro ao excluir:", error); }
-    };
+    if (loading) return (
+        <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center">
+            <div className="text-center">
+                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
+                <p className="text-gray-600">Carregando...</p>
+            </div>
+        </div>
+    );
 
-    const renderHierarchicalOptions = (items, parentId = null, level = 0) => {
-        return items
-            .filter(item => item.parent_id === parentId)
-            .map(item => (
-                <React.Fragment key={item.id}>
-                    <option value={item.id.toString()}>
-                        {'\u00A0'.repeat(level * 4)}{level > 0 ? '↳ ' : ''}{item.nome}
-                    </option>
-                    {renderHierarchicalOptions(items, item.id, level + 1)}
-                </React.Fragment>
-            ));
-    };
+    if (!formulario || !empresa) return (
+        <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center p-6">
+            <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-md w-full text-center">
+                <AlertCircle className="mx-auto text-red-600 mb-4" size={48} />
+                <h2 className="text-2xl font-bold text-gray-800 mb-2">Acesso Inválido</h2>
+                <p className="text-gray-600">Este formulário não foi encontrado ou expirou.</p>
+            </div>
+        </div>
+    );
+
+    const items = formulario.tipo === 'maquinario' ? ativos : infraestruturas;
+    const itemLabel = formulario.tipo === 'maquinario' ? 'Maquinário' : 'Infraestrutura';
 
     return (
-        <div className="p-6 bg-gray-50 min-h-screen">
-            <div className="flex justify-between items-center mb-6">
-                <h1 className="text-2xl font-bold text-gray-800 flex items-center gap-2">
-                    <FileText className="text-blue-600" /> Formulários de Chamado
-                </h1>
-                <button 
-                    onClick={() => handleOpenModal()}
-                    className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg flex items-center gap-2 transition-all shadow-lg"
-                >
-                    <Plus size={20} /> Novo Formulário
-                </button>
-            </div>
+        <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-6">
+            <div className="max-w-2xl mx-auto">
+                <div className="bg-white rounded-2xl shadow-2xl overflow-hidden">
+                    <div className="p-6 bg-gradient-to-r from-blue-600 to-indigo-600 text-white">
+                        <h1 className="text-3xl font-bold mb-2">{formulario.nome}</h1>
+                        <p className="text-blue-100">{empresa?.nome}</p>
+                    </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {formularios.map(form => (
-                    <Card key={form.id} className="hover:shadow-md transition-shadow border-gray-200">
-                        <CardContent className="p-5">
-                            <div className="flex justify-between items-start mb-3">
-                                <div>
-                                    <h3 className="font-bold text-gray-800 text-lg">{form.nome}</h3>
-                                    <p className="text-xs text-gray-500 uppercase font-bold mt-1">
-                                        {form.tipo === 'maquinario' ? '🔧 Maquinário' : '🏗️ Infraestrutura'}
-                                    </p>
-                                </div>
-                                <div className="flex gap-1">
-                                    <button onClick={() => handleOpenModal(form)} className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-md transition-colors">
-                                        <Edit2 size={16} />
-                                    </button>
-                                    <button onClick={() => handleDelete(form.id)} className="p-1.5 text-red-600 hover:bg-red-50 rounded-md transition-colors">
-                                        <Trash2 size={16} />
-                                    </button>
-                                </div>
-                            </div>
-                            <p className="text-sm text-gray-600 mb-3">{form.empresa_nome}</p>
-                            <div className="space-y-1">
-                                <p className="text-xs font-bold text-gray-500">Opções:</p>
-                                <div className="flex flex-wrap gap-2">
-                                    {form.opcoes.map((op, idx) => (
-                                        <span key={idx} className="text-xs bg-gray-100 text-gray-700 px-2 py-1 rounded">
-                                            {op}
-                                        </span>
+                    <form onSubmit={handleSubmit} className="p-8 space-y-6">
+                        {/* Problema */}
+                        <div>
+                            <label className="block text-sm font-bold text-gray-700 mb-2">Qual é o problema? *</label>
+                            <input 
+                                type="text" required 
+                                placeholder="Descreva o problema resumidamente" 
+                                className="w-full p-3 border rounded-lg outline-none focus:ring-2 focus:ring-blue-500" 
+                                value={formData.problema} onChange={e => setFormData({...formData, problema: e.target.value})} 
+                            />
+                        </div>
+
+                        {/* Item */}
+                        <div>
+                            <label className="block text-sm font-bold text-gray-700 mb-2">{itemLabel} *</label>
+                            <select 
+                                required 
+                                className="w-full p-3 border rounded-lg outline-none focus:ring-2 focus:ring-blue-500" 
+                                value={formData.item_id} onChange={e => setFormData({...formData, item_id: e.target.value})}
+                            >
+                                <option value="">Selecione...</option>
+                                {items.map(item => (
+                                    <option key={item.id} value={item.id.toString()}>
+                                        {item.nome}
+                                    </option>
+                                ))}
+                            </select>
+                        </div>
+
+                        {/* Opções do Formulário */}
+                        {formulario.opcoes.length > 0 && (
+                            <div>
+                                <label className="block text-sm font-bold text-gray-700 mb-3">Selecione o(s) problema(s):</label>
+                                <div className="grid grid-cols-2 gap-3">
+                                    {formulario.opcoes.map((opcao, idx) => (
+                                        <label key={idx} className="flex items-center p-3 border rounded-lg cursor-pointer hover:bg-blue-50 transition-colors">
+                                            <input 
+                                                type="checkbox" 
+                                                checked={formData.opcoes_selecionadas.includes(opcao)}
+                                                onChange={() => handleToggleOpcao(opcao)}
+                                                className="w-4 h-4 text-blue-600 rounded"
+                                            />
+                                            <span className="ml-2 text-sm text-gray-700">{opcao}</span>
+                                        </label>
                                     ))}
                                 </div>
                             </div>
-                        </CardContent>
-                    </Card>
-                ))}
-            </div>
+                        )}
 
-            {isModalOpen && (
-                <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col">
-                        <div className="p-6 border-b border-gray-100 flex justify-between items-center bg-blue-600 text-white">
-                            <h2 className="text-xl font-bold flex items-center gap-2">
-                                <FileText size={24} /> {isEditing ? 'Editar Formulário' : 'Novo Formulário'}
-                            </h2>
-                            <button onClick={() => setIsModalOpen(false)} className="p-1 hover:bg-white/10 rounded-full"><X size={28} /></button>
+                        {/* Descrição */}
+                        <div>
+                            <label className="block text-sm font-bold text-gray-700 mb-2">Descrição adicional</label>
+                            <textarea 
+                                placeholder="Forneça mais detalhes sobre o problema..." 
+                                rows="4"
+                                className="w-full p-3 border rounded-lg outline-none focus:ring-2 focus:ring-blue-500" 
+                                value={formData.descricao} onChange={e => setFormData({...formData, descricao: e.target.value})} 
+                            />
                         </div>
-                        
-                        <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-8 space-y-6">
-                            <div>
-                                <label className="block text-xs font-bold text-gray-700 mb-2 uppercase">Nome do Formulário *</label>
+
+                        {/* Fotos */}
+                        <div>
+                            <label className="block text-sm font-bold text-gray-700 mb-3">Fotos do problema</label>
+                            <div className="border-2 border-dashed border-blue-300 rounded-lg p-6 text-center hover:border-blue-500 transition-colors relative group">
                                 <input 
-                                    type="text" required 
-                                    className="w-full p-2.5 border rounded-lg outline-none focus:ring-2 focus:ring-blue-500" 
-                                    value={formData.nome} onChange={e => setFormData({...formData, nome: e.target.value})} 
+                                    type="file" multiple accept="image/*" 
+                                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" 
+                                    onChange={handleAddFoto}
                                 />
+                                <Camera className="mx-auto text-blue-400 mb-2" size={32} />
+                                <p className="text-sm text-gray-600">Clique ou arraste fotos aqui</p>
                             </div>
 
-                            <div>
-                                <label className="block text-xs font-bold text-gray-700 mb-2 uppercase">Tipo *</label>
-                                <select 
-                                    required 
-                                    className="w-full p-2.5 border rounded-lg outline-none focus:ring-2 focus:ring-blue-500" 
-                                    value={formData.tipo} onChange={e => setFormData({...formData, tipo: e.target.value})}
-                                >
-                                    <option value="maquinario">🔧 Maquinário</option>
-                                    <option value="infraestrutura">🏗️ Infraestrutura</option>
-                                </select>
-                            </div>
-
-                            <div>
-                                <label className="block text-xs font-bold text-gray-700 mb-2 uppercase">Empresa *</label>
-                                <select 
-                                    required 
-                                    className="w-full p-2.5 border rounded-lg outline-none focus:ring-2 focus:ring-blue-500" 
-                                    value={formData.empresa_id} onChange={e => setFormData({...formData, empresa_id: e.target.value})}
-                                >
-                                    <option value="">Selecione...</option>
-                                    {renderHierarchicalOptions(empresas)}
-                                </select>
-                            </div>
-
-                            <div>
-                                <label className="block text-xs font-bold text-gray-700 mb-2 uppercase">Opções</label>
-                                <div className="flex gap-2 mb-3">
-                                    <input 
-                                        type="text" 
-                                        placeholder="Digite uma opção..." 
-                                        className="flex-1 p-2.5 border rounded-lg outline-none focus:ring-2 focus:ring-blue-500" 
-                                        value={novaOpcao} onChange={e => setNovaOpcao(e.target.value)}
-                                        onKeyPress={(e) => e.key === 'Enter' && handleAddOpcao()}
-                                    />
-                                    <button type="button" onClick={handleAddOpcao} className="px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-bold transition-all">
-                                        Adicionar
-                                    </button>
-                                </div>
-
-                                <div className="space-y-2">
-                                    {formData.opcoes.map((op, idx) => (
-                                        <div key={idx} className="flex items-center justify-between bg-gray-50 p-3 rounded-lg border border-gray-100">
-                                            <span className="text-sm font-medium text-gray-700">{op}</span>
-                                            <button type="button" onClick={() => handleRemoveOpcao(idx)} className="text-red-500 hover:bg-red-50 p-1.5 rounded-md transition-colors">
+                            {formData.fotos.length > 0 && (
+                                <div className="grid grid-cols-3 gap-4 mt-4">
+                                    {formData.fotos.map((foto, idx) => (
+                                        <div key={idx} className="relative group">
+                                            <img src={foto} alt={`Foto ${idx + 1}`} className="w-full h-24 object-cover rounded-lg" />
+                                            <button 
+                                                type="button" 
+                                                onClick={() => handleRemoveFoto(idx)}
+                                                className="absolute top-1 right-1 bg-red-500 hover:bg-red-600 text-white p-1 rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
+                                            >
                                                 <X size={16} />
                                             </button>
                                         </div>
                                     ))}
                                 </div>
-                            </div>
+                            )}
+                        </div>
 
-                            <div className="pt-6 border-t border-gray-100 flex justify-end gap-4">
-                                <button type="button" onClick={() => setIsModalOpen(false)} className="px-6 py-2.5 text-gray-500 font-bold hover:bg-gray-100 rounded-xl transition-all">Cancelar</button>
-                                <button type="submit" className="px-12 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold shadow-lg transition-all active:scale-95">
-                                    {isEditing ? 'Salvar Alterações' : 'Criar Formulário'}
-                                </button>
-                            </div>
-                        </form>
-                    </div>
+                        {/* Submit */}
+                        <button type="submit" className="w-full py-3 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white rounded-lg font-bold shadow-lg transition-all active:scale-95">
+                            Abrir Chamado
+                        </button>
+                    </form>
                 </div>
-            )}
+            </div>
         </div>
     );
 }

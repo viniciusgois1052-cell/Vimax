@@ -1,9 +1,11 @@
 from flask import Blueprint, request, jsonify
 from .. import db
+from ..utils.logging import create_log
 from ..models.ativo import Ativo
 from ..models.usuario import Usuario
 from ..utils.filters import apply_entity_filter
 from datetime import datetime
+from ..utils.auth import get_current_user_from_request
 
 ativo_bp = Blueprint('ativo_bp', __name__)
 
@@ -29,7 +31,7 @@ def get_ativo(id):
 
 @ativo_bp.route('/', methods=['POST'])
 def create_ativo():
-    data = request.get_json()
+    data = request.get_json() or {}
 
     data_aquisicao = datetime.strptime(data['data_aquisicao'], '%Y-%m-%d').date() if data.get('data_aquisicao') else None
     data_inativacao = datetime.strptime(data['data_inativacao'], '%Y-%m-%d').date() if data.get('data_inativacao') else None
@@ -56,8 +58,15 @@ def create_ativo():
 # ✅ SEU FRONTEND JÁ USA PUT — ESTA ROTA NÃO EXISTIA
 @ativo_bp.route('/<int:id>', methods=['PUT'])
 def update_ativo(id):
+    user = get_current_user_from_request(request)
     ativo = Ativo.query.get_or_404(id)
-    data = request.get_json()
+
+    before = None
+    try:
+        before = ativo.to_dict()
+    except Exception:
+        before = None
+    data = request.get_json() or {}
 
     ativo.nome = data.get('nome')
     ativo.numero_serie = data.get('numero_serie')
@@ -75,4 +84,41 @@ def update_ativo(id):
     ativo.anexos = data.get('anexos', [])
 
     db.session.commit()
+
+    try:
+        create_log(user=user, action='update_ativo', entity='ativo', entity_id=id,
+                   details={'before': before, 'after_payload': data}, req=request)
+    except Exception:
+        pass
     return jsonify(ativo.to_dict())
+
+
+@ativo_bp.route('/<int:id>', methods=['DELETE'])
+def delete_ativo(id):
+    user = get_current_user_from_request(request)
+    ativo = Ativo.query.get_or_404(id)
+
+    snapshot = None
+    try:
+        snapshot = ativo.to_dict()
+    except Exception:
+        snapshot = None
+
+    try:
+        # Desvincular chamados antes de excluir
+        from ..models.chamado import Chamado
+        Chamado.query.filter_by(ativo_id=id).update({'ativo_id': None})
+
+        db.session.delete(ativo)
+        db.session.commit()
+
+        try:
+            create_log(user=user, action='delete_ativo', entity='ativo', entity_id=id,
+                       details={'deleted': snapshot}, req=request)
+        except Exception:
+            pass
+
+        return jsonify({'ok': True}), 200
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500

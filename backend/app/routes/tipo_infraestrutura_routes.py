@@ -1,6 +1,8 @@
 from flask import Blueprint, request, jsonify
 from ..models.tipo_infraestrutura import TipoInfraestrutura
 from .. import db
+from ..utils.logging import create_log
+from ..utils.auth import get_current_user_from_request
 
 tipo_infraestrutura_bp = Blueprint('tipo_infraestrutura_bp', __name__)
 
@@ -27,7 +29,7 @@ def get_tipo_infraestrutura(id):
 # POST - Criar novo tipo de infraestrutura
 @tipo_infraestrutura_bp.route('', methods=['POST'])
 def create_tipo_infraestrutura():
-    data = request.get_json()
+    data = request.get_json() or {}
     
     if not data.get('nome'):
         return jsonify({'erro': 'Nome é obrigatório'}), 400
@@ -54,7 +56,7 @@ def update_tipo_infraestrutura(id):
     if not tipo:
         return jsonify({'erro': 'Tipo de infraestrutura não encontrado'}), 404
     
-    data = request.get_json()
+    data = request.get_json() or {}
     
     if data.get('nome'):
         # Verificar se outro já tem este nome
@@ -70,6 +72,12 @@ def update_tipo_infraestrutura(id):
         tipo.ativo = data.get('ativo')
     
     db.session.commit()
+
+    try:
+        create_log(user=user, action='update_tipo_infraestrutura', entity='tipo_infraestrutura', entity_id=id,
+                   details={'before': before, 'after_payload': data}, req=request)
+    except Exception:
+        pass
     return jsonify(tipo.to_dict())
 
 # DELETE - Deletar tipo de infraestrutura
@@ -81,4 +89,10 @@ def delete_tipo_infraestrutura(id):
     
     db.session.delete(tipo)
     db.session.commit()
+
+    try:
+        create_log(user=user, action='delete_tipo_infraestrutura', entity='tipo_infraestrutura', entity_id=id,
+                   details={'deleted': snapshot}, req=request)
+    except Exception:
+        pass
     return jsonify({'mensagem': 'Tipo de infraestrutura deletado com sucesso'})

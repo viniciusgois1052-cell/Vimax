@@ -4,6 +4,7 @@ from ..models.usuario import Usuario
 from .. import db
 from ..utils.logging import create_log
 import json
+from ..utils.auth import get_current_user_from_request
 
 fornecedor_bp = Blueprint('fornecedor_bp', __name__)
 

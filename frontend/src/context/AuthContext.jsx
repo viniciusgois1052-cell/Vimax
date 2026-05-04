@@ -20,6 +20,8 @@ export const AuthProvider = ({ children }) => {
         const userData = await response.json();
         setUser(userData);
         localStorage.setItem('user', JSON.stringify(userData));
+        // Limpar flag de alertas vistos ao fazer novo login
+        sessionStorage.removeItem('alertas_vistos');
         return { success: true };
       } else {
         const errorData = await response.json();
@@ -34,6 +36,7 @@ export const AuthProvider = ({ children }) => {
     setUser(null);
     localStorage.removeItem('user');
     localStorage.removeItem('selectedEntity');
+    sessionStorage.removeItem('alertas_vistos');
   };
 
   return (

@@ -1,6 +1,8 @@
 from flask import Blueprint, request, jsonify
 from ..models.categoria_chamado import CategoriaChamado
 from .. import db
+from ..utils.logging import create_log
+from ..utils.auth import get_current_user_from_request
 
 categoria_chamado_bp = Blueprint('categoria_chamado_bp', __name__)
 
@@ -27,7 +29,7 @@ def get_categoria(id):
 # POST - Criar nova categoria
 @categoria_chamado_bp.route('', methods=['POST'])
 def create_categoria():
-    data = request.get_json()
+    data = request.get_json() or {}
     
     if not data.get('nome'):
         return jsonify({'erro': 'Nome é obrigatório'}), 400
@@ -54,7 +56,7 @@ def update_categoria(id):
     if not categoria:
         return jsonify({'erro': 'Categoria não encontrada'}), 404
     
-    data = request.get_json()
+    data = request.get_json() or {}
     
     if data.get('nome'):
         # Verificar se outro já tem este nome
@@ -70,6 +72,12 @@ def update_categoria(id):
         categoria.ativo = data.get('ativo')
     
     db.session.commit()
+
+    try:
+        create_log(user=user, action='update_categoria_chamado', entity='categoria_chamado', entity_id=id,
+                   details={'before': before, 'after_payload': data}, req=request)
+    except Exception:
+        pass
     return jsonify(categoria.to_dict())
 
 # DELETE - Deletar categoria
@@ -81,4 +89,10 @@ def delete_categoria(id):
     
     db.session.delete(categoria)
     db.session.commit()
+
+    try:
+        create_log(user=user, action='delete_categoria_chamado', entity='categoria_chamado', entity_id=id,
+                   details={'deleted': snapshot}, req=request)
+    except Exception:
+        pass
     return jsonify({'mensagem': 'Categoria deletada com sucesso'})

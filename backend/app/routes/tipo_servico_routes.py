@@ -1,6 +1,8 @@
 from flask import Blueprint, request, jsonify
 from ..models.tipo_servico import TipoServico
 from .. import db
+from ..utils.logging import create_log
+from ..utils.auth import get_current_user_from_request
 
 tipo_servico_bp = Blueprint('tipo_servico_bp', __name__)
 
@@ -27,7 +29,7 @@ def get_tipo_servico(id):
 # POST - Criar novo tipo de serviço
 @tipo_servico_bp.route('', methods=['POST'])
 def create_tipo_servico():
-    data = request.get_json()
+    data = request.get_json() or {}
     
     if not data.get('nome'):
         return jsonify({'erro': 'Nome é obrigatório'}), 400
@@ -54,7 +56,7 @@ def update_tipo_servico(id):
     if not tipo:
         return jsonify({'erro': 'Tipo de serviço não encontrado'}), 404
     
-    data = request.get_json()
+    data = request.get_json() or {}
     
     if data.get('nome'):
         # Verificar se outro já tem este nome
@@ -70,6 +72,12 @@ def update_tipo_servico(id):
         tipo.ativo = data.get('ativo')
     
     db.session.commit()
+
+    try:
+        create_log(user=user, action='update_tipo_servico', entity='tipo_servico', entity_id=id,
+                   details={'before': before, 'after_payload': data}, req=request)
+    except Exception:
+        pass
     return jsonify(tipo.to_dict())
 
 # DELETE - Deletar tipo de serviço
@@ -81,4 +89,10 @@ def delete_tipo_servico(id):
     
     db.session.delete(tipo)
     db.session.commit()
+
+    try:
+        create_log(user=user, action='delete_tipo_servico', entity='tipo_servico', entity_id=id,
+                   details={'deleted': snapshot}, req=request)
+    except Exception:
+        pass
     return jsonify({'mensagem': 'Tipo de serviço deletado com sucesso'})
