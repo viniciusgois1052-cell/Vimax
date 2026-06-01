@@ -90,7 +90,9 @@ def create_app(config_class=None):
         from .routes.marketing_nota_routes          import marketing_nota_bp
         from .routes.mobilemed_routes               import mobilemed_bp
         from .routes.log_routes                     import log_bp
-        from .routes.contador_impressora_routes     import contador_impressora_bp  # ← NOVO
+        from .routes.contador_impressora_routes     import contador_impressora_bp
+        from .routes.twenty_crm_routes              import twenty_crm_bp
+        from .routes.crm_routes                     import crm_bp  # ← TWENTY CRM
 
         app.register_blueprint(upload_bp,                url_prefix='/api')
         app.register_blueprint(empresa_bp,               url_prefix='/api/empresas')
@@ -119,7 +121,9 @@ def create_app(config_class=None):
         app.register_blueprint(marketing_campanha_bp,    url_prefix='/api/marketing/campanhas')
         app.register_blueprint(mobilemed_bp,             url_prefix='/api/mobilemed')
         app.register_blueprint(log_bp,                   url_prefix='/api/logs')
-        app.register_blueprint(contador_impressora_bp,   url_prefix='/api/contadores-impressora')  # ← NOVO
+        app.register_blueprint(contador_impressora_bp,   url_prefix='/api/contadores-impressora')
+        app.register_blueprint(twenty_crm_bp,            url_prefix='/api/twenty-crm')
+        app.register_blueprint(crm_bp,                   url_prefix='/api/crm')  # ← TWENTY CRM
 
         print("Todos os blueprints registrados com sucesso")
     except Exception as e:

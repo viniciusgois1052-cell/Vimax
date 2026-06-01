@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { BrowserRouter as Router, Routes, Route, Link, useLocation, Navigate } from 'react-router-dom'
 import { EntityProvider, useEntity } from './context/EntityContext'
 import { AuthProvider, useAuth } from './context/AuthContext'
-import { MapPin, Users, FileText, DollarSign, Wrench, User, Mail, BarChart, Building2, Menu, X, Box, LogOut, Lock, Tag, Hammer, AlertTriangle, Bell, Send, Wifi, Database, Printer } from 'lucide-react' // ← NOVO: Printer
+import { MapPin, Users, FileText, DollarSign, Wrench, User, Mail, BarChart, Building2, Menu, X, Box, LogOut, Lock, Tag, Hammer, AlertTriangle, Bell, Send, Wifi, Database, Printer, TrendingUp } from 'lucide-react'
 import './App.css'
 
 import Localizacoes from './pages/Localizacoes'
@@ -30,6 +30,8 @@ import MarketingSmtp from './pages/MarketingSmtp'
 import MarketingModelos from './pages/MarketingModelos'
 import MarketingCampanhas from './pages/MarketingCampanhas'
 import Logs from './pages/Logs'
+import CRM from './pages/CRM/CRM'
+import Mobilemed from './pages/Mobilemed'
 
 const ADMIN_ROLES     = ['super_admin', 'admin']
 const MARKETING_ROLES = ['super_admin', 'admin', 'marketing']
@@ -59,10 +61,10 @@ function Navigation({ isCollapsed, toggleCollapse }) {
     {
       title: 'Helpdesk',
       items: [
-        { path: '/chamados',            icon: Wrench,   label: 'Chamados',            roles: ALL_INTERNAL },
-        { path: '/categorias-chamado',  icon: Tag,      label: 'Tipo Chamado',        roles: ADMIN_ROLES },
-        { path: '/tipos-servico',       icon: Hammer,   label: 'Tipo Servico',        roles: ADMIN_ROLES },
-        { path: '/formularios-chamado', icon: FileText, label: 'Formularios Chamado', roles: ADMIN_ROLES },
+        { path: '/chamados',            icon: Wrench,    label: 'Chamados',            roles: ALL_INTERNAL },
+        { path: '/categorias-chamado',  icon: Tag,       label: 'Tipo Chamado',        roles: ADMIN_ROLES },
+        { path: '/tipos-servico',       icon: Hammer,    label: 'Tipo Servico',        roles: ADMIN_ROLES },
+        { path: '/formularios-chamado', icon: FileText,  label: 'Formularios Chamado', roles: ADMIN_ROLES },
       ]
     },
     {
@@ -76,19 +78,25 @@ function Navigation({ isCollapsed, toggleCollapse }) {
     {
       title: 'Gestão de Ativos',
       items: [
-        { path: '/empresas',                icon: Building2, label: 'Empresa',               roles: ADMIN_ROLES },
-        { path: '/localizacoes',            icon: MapPin,    label: 'Localizacao',           roles: ADMIN_ROLES },
-        { path: '/ativos',                  icon: Box,       label: 'Ativos',                roles: ADMIN_ROLES },
-        { path: '/fornecedores',            icon: Users,     label: 'Fornecedores',          roles: ADMIN_ROLES },
-        { path: '/tipos-infraestrutura',    icon: Hammer,    label: 'Tipo Infraestrutura',   roles: ADMIN_ROLES },
-        { path: '/infraestruturas',         icon: Wrench,    label: 'Infraestrutura',        roles: ADMIN_ROLES },
-        { path: '/contadores-impressora',   icon: Printer,   label: 'Contadores Impressora', roles: ADMIN_ROLES }, // ← NOVO
+        { path: '/empresas',              icon: Building2, label: 'Empresa',               roles: ADMIN_ROLES },
+        { path: '/localizacoes',          icon: MapPin,    label: 'Localizacao',           roles: ADMIN_ROLES },
+        { path: '/ativos',                icon: Box,       label: 'Ativos',                roles: ADMIN_ROLES },
+        { path: '/fornecedores',          icon: Users,     label: 'Fornecedores',          roles: ADMIN_ROLES },
+        { path: '/tipos-infraestrutura',  icon: Hammer,    label: 'Tipo Infraestrutura',   roles: ADMIN_ROLES },
+        { path: '/infraestruturas',       icon: Wrench,    label: 'Infraestrutura',        roles: ADMIN_ROLES },
+        { path: '/contadores-impressora', icon: Printer,   label: 'Contadores Impressora', roles: ADMIN_ROLES },
       ]
     },
     {
       title: 'BI',
       items: [
         { path: '/relatorios', icon: BarChart, label: 'Relatorios', roles: ['super_admin', 'admin', 'relatorios'] },
+      ]
+    },
+    {
+      title: 'CRM',
+      items: [
+        { path: '/crm', icon: TrendingUp, label: 'CRM', roles: MARKETING_ROLES },
       ]
     },
     {
@@ -104,10 +112,10 @@ function Navigation({ isCollapsed, toggleCollapse }) {
     {
       title: 'Configurações',
       items: [
-        { path: '/mobilemed',    icon: Database, label: 'Mobilemed API',  roles: ['super_admin'] },
-        { path: '/usuarios',     icon: User,     label: 'Usuarios',       roles: ['super_admin'] },
-        { path: '/config-email', icon: Mail,     label: 'Config. Email',  roles: ['super_admin'] },
-        { path: '/logs',         icon: FileText, label: 'Logs',           roles: ['super_admin'] },
+        { path: '/mobilemed',    icon: Database, label: 'Mobilemed API', roles: ['super_admin'] },
+        { path: '/usuarios',     icon: User,     label: 'Usuarios',      roles: ['super_admin'] },
+        { path: '/config-email', icon: Mail,     label: 'Config. Email', roles: ['super_admin'] },
+        { path: '/logs',         icon: FileText, label: 'Logs',          roles: ['super_admin'] },
       ]
     }
   ]
@@ -189,8 +197,8 @@ function Navigation({ isCollapsed, toggleCollapse }) {
                 )}
                 <ul className="space-y-1">
                   {filteredItems.map((item) => {
-                    const Icon     = item.icon
-                    const isActive = location.pathname === item.path
+                    const Icon = item.icon
+                    const isActive = location.pathname.startsWith(item.path)
                     return (
                       <li key={item.path}>
                         <Link
@@ -279,6 +287,7 @@ function LoginPage() {
 
 function AppContent() {
   const { user, logout } = useAuth()
+  const location = useLocation()
   const [isCollapsed, setIsCollapsed] = useState(false)
 
   const [alertasContrato, setAlertasContrato] = useState([])
@@ -339,8 +348,9 @@ function AppContent() {
   const isSuperAdmin  = role === 'super_admin'
   const isRelatorios  = role === 'relatorios'
   const isMarketing   = role === 'marketing'
-  const mainMargin    = isPublicUser ? 'ml-0' : (isCollapsed ? 'ml-20' : 'ml-64')
-  const hoje          = new Date().toISOString().split('T')[0]
+  const isCRMRoute    = location.pathname.startsWith("/crm")
+  const mainMargin    = isPublicUser ? "ml-0" : isCRMRoute ? (isCollapsed ? "ml-20" : "ml-64") : (isCollapsed ? "ml-20" : "ml-64")
+  const mainPadding   = isCRMRoute ? 'p-0' : 'p-8'
 
   const renderRoutes = () => {
     if (isPublicUser) {
@@ -374,6 +384,7 @@ function AppContent() {
           <Route path="/marketing/smtp"      element={<MarketingSmtp />} />
           <Route path="/marketing/modelos"   element={<MarketingModelos />} />
           <Route path="/marketing/campanhas" element={<MarketingCampanhas />} />
+          <Route path="/crm/*"               element={<CRM />} />
           <Route path="*"                    element={<Navigate to="/marketing/campanhas" replace />} />
         </Routes>
       )
@@ -415,6 +426,8 @@ function AppContent() {
           <Route path="/marketing/smtp"            element={<MarketingSmtp />} />
           <Route path="/marketing/modelos"         element={<MarketingModelos />} />
           <Route path="/marketing/campanhas"       element={<MarketingCampanhas />} />
+          <Route path="/crm/*"                     element={<CRM />} />
+          <Route path="/mobilemed"                 element={isSuperAdmin ? <Mobilemed /> : <AcessoRestrito mensagem="Apenas Super Admin pode acessar o Mobilemed API." />} />
           <Route path="/usuarios"                  element={isSuperAdmin ? <Usuarios /> : <AcessoRestrito mensagem="Apenas Super Admin pode gerenciar usuarios." />} />
           <Route path="/config-email"              element={isSuperAdmin ? <ConfigEmail /> : <AcessoRestrito mensagem="Apenas Super Admin pode configurar o e-mail." />} />
           <Route path="/logs"                      element={isSuperAdmin ? <Logs /> : <AcessoRestrito mensagem="Apenas Super Admin pode acessar os logs." />} />
@@ -433,7 +446,7 @@ function AppContent() {
   return (
     <div className="flex min-h-screen bg-background">
       <Navigation isCollapsed={isCollapsed} toggleCollapse={() => setIsCollapsed(!isCollapsed)} />
-      <main className={`flex-1 p-8 transition-all duration-300 ${mainMargin}`}>
+      <main className={`flex-1 transition-all duration-300 ${mainMargin} ${mainPadding} ${isCRMRoute ? "p-0 flex flex-col overflow-hidden" : ""}`} style={isCRMRoute ? {height: "calc(100vh - 64px)"} : {}}>
         {user && isPublicUser && (
           <div className="fixed top-4 right-4 z-[60]">
             <button onClick={logout} className="flex items-center gap-2 px-4 py-2 bg-white border border-red-200 text-red-500 rounded-xl font-bold shadow-sm hover:bg-red-50 transition-all">
@@ -444,7 +457,6 @@ function AppContent() {
         {renderRoutes()}
       </main>
 
-      {/* Modal Alertas */}
       {showModal && (alertasContrato.length > 0 || alertasLembrete.length > 0) && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[100] p-4">
           <div className="bg-white rounded-3xl shadow-2xl max-w-2xl w-full overflow-hidden">
@@ -495,6 +507,7 @@ function AppContent() {
               })}
 
               {abaModal === 'lembretes' && alertasLembrete.map((l, idx) => {
+                const hoje = new Date().toISOString().split('T')[0]
                 const vencido = l.data_lembrete < hoje
                 return (
                   <div key={idx} className={`p-4 rounded-2xl border-l-4 ${vencido ? 'bg-red-50 border-red-400' : 'bg-amber-50 border-amber-400'}`}>

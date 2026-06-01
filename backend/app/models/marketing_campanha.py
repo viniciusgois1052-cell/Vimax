@@ -3,6 +3,7 @@ from .. import db
 from datetime import datetime
 import json
 
+
 class MarketingCampanha(db.Model):
     __tablename__ = 'marketing_campanhas'
 
@@ -11,18 +12,19 @@ class MarketingCampanha(db.Model):
     assunto          = db.Column(db.String(300), nullable=False)
     corpo_html       = db.Column(db.Text, nullable=False)
     smtp_id          = db.Column(db.Integer, db.ForeignKey('marketing_smtp.id'), nullable=False)
-    grupos_ids       = db.Column(db.Text, default='[]')       # JSON list de ids
-    contatos_ids     = db.Column(db.Text, default='[]')       # JSON list de ids
-    contatos_extras  = db.Column(db.Text, default='[]')       # JSON list de {nome, email}
-    status           = db.Column(db.String(20), default='rascunho')  # rascunho, agendada, enviando, enviada, erro
+    grupos_ids       = db.Column(db.Text, default='[]')
+    contatos_ids     = db.Column(db.Text, default='[]')
+    contatos_extras  = db.Column(db.Text, default='[]')
+    status           = db.Column(db.String(20), default='rascunho')
     data_agendamento = db.Column(db.DateTime, nullable=True)
     total_enviados   = db.Column(db.Integer, default=0)
     total_erros      = db.Column(db.Integer, default=0)
     log_erros        = db.Column(db.Text, default='')
+    criado_por       = db.Column(db.Integer, db.ForeignKey('usuarios.id'), nullable=True)
     criado_em        = db.Column(db.DateTime, default=datetime.utcnow)
     enviado_em       = db.Column(db.DateTime, nullable=True)
 
-    smtp             = db.relationship('MarketingSmtp', backref='campanhas')
+    smtp = db.relationship('MarketingSmtp', backref='campanhas')
 
     def to_dict(self):
         return {
@@ -40,6 +42,7 @@ class MarketingCampanha(db.Model):
             'total_enviados':   self.total_enviados,
             'total_erros':      self.total_erros,
             'log_erros':        self.log_erros,
+            'criado_por':       self.criado_por,
             'criado_em':        self.criado_em.isoformat() if self.criado_em else None,
             'enviado_em':       self.enviado_em.isoformat() if self.enviado_em else None,
         }

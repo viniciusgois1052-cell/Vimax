@@ -5,11 +5,13 @@ from ..utils.logging import create_log
 
 usuario_bp = Blueprint('usuario_bp', __name__)
 
+
 def get_current_user():
     api_token = request.headers.get('X-API-Token')
     if api_token:
         return Usuario.query.filter_by(api_token=api_token).first()
     return None
+
 
 def require_roles(*roles):
     user = get_current_user()
@@ -18,6 +20,35 @@ def require_roles(*roles):
     if user.role not in roles:
         return None, (jsonify({'error': 'Acesso negado'}), 403)
     return user, None
+
+
+def _parse_empresa_id(value):
+    if value in (None, 'none', ''):
+        return None
+    try:
+        return int(value)
+    except Exception:
+        return None
+
+
+def _parse_empresas_ids(value):
+    """Aceita lista de ids, string CSV, None."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        value = [v.strip() for v in value.split(',') if v.strip()]
+    if not isinstance(value, (list, tuple)):
+        return []
+    cleaned = []
+    for v in value:
+        try:
+            if v in (None, '', 'none'):
+                continue
+            cleaned.append(int(v))
+        except Exception:
+            continue
+    return list(sorted(set(cleaned)))
+
 
 @usuario_bp.route('/login', methods=['POST'])
 def login():
@@ -38,17 +69,16 @@ def login():
         try:
             create_log(user=user, action='login_success', entity='usuario', entity_id=user.id,
                        details={'username': username}, req=request)
-        except Exception:
-            pass
+        except Exception: pass
         user_data['api_token'] = user.api_token
         return jsonify(user_data), 200
 
     try:
         create_log(user=None, action='login_failed', entity='usuario', entity_id=None,
                    details={'username': username}, req=request)
-    except Exception:
-        pass
+    except Exception: pass
     return jsonify({'error': 'Usuario ou senha invalidos'}), 401
+
 
 @usuario_bp.route('', methods=['GET'])
 def get_usuarios():
@@ -56,7 +86,12 @@ def get_usuarios():
     if err: return err
 
     if user.role == 'admin':
-        if user.empresa_id:
+        empresas_admin = user.get_empresas_ids()
+        if empresas_admin:
+            usuarios = Usuario.query.filter(
+                (Usuario.empresa_id.in_(empresas_admin))
+            ).all()
+        elif user.empresa_id:
             usuarios = Usuario.query.filter_by(empresa_id=user.empresa_id).all()
         else:
             usuarios = []
@@ -64,6 +99,7 @@ def get_usuarios():
         usuarios = Usuario.query.all()
 
     return jsonify([u.to_dict() for u in usuarios])
+
 
 @usuario_bp.route('', methods=['POST'])
 def create_usuario():
@@ -82,13 +118,23 @@ def create_usuario():
 
     hashed_password = bcrypt.generate_password_hash(data.get('password')).decode('utf-8')
 
+    empresa_id    = _parse_empresa_id(data.get('empresa_id'))
+    empresas_ids  = _parse_empresas_ids(data.get('empresas_ids'))
+
+    # Se nao foi passado empresa_id principal mas vieram empresas_ids,
+    # usa a primeira como principal.
+    if empresa_id is None and empresas_ids:
+        empresa_id = empresas_ids[0]
+
     novo_usuario = Usuario(
-        username   = data.get('username'),
-        email      = data.get('email'),
+        username      = data.get('username'),
+        email         = data.get('email'),
         password_hash = hashed_password,
-        empresa_id = data.get('empresa_id') if data.get('empresa_id') not in (None, 'none', '') else None,
-        role       = role_solicitado
+        empresa_id    = empresa_id,
+        role          = role_solicitado,
     )
+    if empresas_ids is not None:
+        novo_usuario.set_empresas_ids(empresas_ids)
 
     novo_usuario.generate_api_token()
     db.session.add(novo_usuario)
@@ -97,10 +143,10 @@ def create_usuario():
     try:
         create_log(user=user, action='create_usuario', entity='usuario', entity_id=novo_usuario.id,
                    details={'payload': {k: v for k, v in (data or {}).items() if k != 'password'}}, req=request)
-    except Exception:
-        pass
+    except Exception: pass
 
     return jsonify(novo_usuario.to_dict()), 201
+
 
 @usuario_bp.route('/<int:id>', methods=['PUT'])
 def update_usuario(id):
@@ -111,10 +157,8 @@ def update_usuario(id):
     data    = request.get_json()
 
     before = None
-    try:
-        before = usuario.to_dict()
-    except Exception:
-        before = None
+    try: before = usuario.to_dict()
+    except Exception: before = None
 
     if current_user.role == 'admin':
         if usuario.role == 'super_admin':
@@ -122,12 +166,18 @@ def update_usuario(id):
         if data.get('role') == 'super_admin':
             return jsonify({'error': 'Acesso negado: admin nao pode promover para super_admin'}), 403
 
-    usuario.username   = data.get('username', usuario.username)
-    usuario.email      = data.get('email', usuario.email)
-    usuario.role       = data.get('role', usuario.role)
+    usuario.username = data.get('username', usuario.username)
+    usuario.email    = data.get('email',    usuario.email)
+    usuario.role     = data.get('role',     usuario.role)
 
-    empresa_id = data.get('empresa_id')
-    usuario.empresa_id = empresa_id if empresa_id not in (None, 'none', '') else None
+    if 'empresa_id' in data:
+        usuario.empresa_id = _parse_empresa_id(data.get('empresa_id'))
+
+    if 'empresas_ids' in data:
+        empresas_ids = _parse_empresas_ids(data.get('empresas_ids'))
+        usuario.set_empresas_ids(empresas_ids or [])
+        if usuario.empresa_id is None and empresas_ids:
+            usuario.empresa_id = empresas_ids[0]
 
     if data.get('password'):
         usuario.password_hash = bcrypt.generate_password_hash(data.get('password')).decode('utf-8')
@@ -140,10 +190,10 @@ def update_usuario(id):
             payload['password'] = '***'
         create_log(user=current_user, action='update_usuario', entity='usuario', entity_id=id,
                    details={'before': before, 'after_payload': payload}, req=request)
-    except Exception:
-        pass
+    except Exception: pass
 
     return jsonify(usuario.to_dict()), 200
+
 
 @usuario_bp.route('/<int:id>', methods=['DELETE'])
 def delete_usuario(id):
@@ -156,10 +206,8 @@ def delete_usuario(id):
         return jsonify({'error': 'Acesso negado'}), 403
 
     snapshot = None
-    try:
-        snapshot = usuario.to_dict()
-    except Exception:
-        snapshot = None
+    try: snapshot = usuario.to_dict()
+    except Exception: snapshot = None
 
     db.session.delete(usuario)
     db.session.commit()
@@ -167,10 +215,10 @@ def delete_usuario(id):
     try:
         create_log(user=current_user, action='delete_usuario', entity='usuario', entity_id=id,
                    details={'deleted': snapshot}, req=request)
-    except Exception:
-        pass
+    except Exception: pass
 
     return '', 204
+
 
 @usuario_bp.route('/<int:id>/token', methods=['POST'])
 def generate_token(id):
@@ -184,7 +232,6 @@ def generate_token(id):
     try:
         create_log(user=current_user, action='generate_token', entity='usuario', entity_id=id,
                    details={'target_user': usuario.username}, req=request)
-    except Exception:
-        pass
+    except Exception: pass
 
     return jsonify({'token': token})

@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 from flask import Blueprint, request, jsonify, current_app
 from ..utils.auth import get_current_user_from_request
+from ..utils.marketing_acl import filter_owned, can_access, forbidden
 from .. import db
 from ..utils.logging import create_log
 from ..models.marketing_campanha import MarketingCampanha
@@ -17,8 +18,6 @@ marketing_campanha_bp = Blueprint('marketing_campanha', __name__)
 
 def _coletar_destinatarios(campanha):
     destinatarios = {}
-
-    # Contatos dos grupos
     for gid in json.loads(campanha.grupos_ids or '[]'):
         grupo = MarketingGrupo.query.get(gid)
         if grupo:
@@ -26,18 +25,13 @@ def _coletar_destinatarios(campanha):
                 contato = cg.contato
                 if contato and contato.email:
                     destinatarios[contato.email] = contato.nome
-
-    # Contatos individuais
     for cid in json.loads(campanha.contatos_ids or '[]'):
         contato = MarketingContato.query.get(cid)
         if contato and contato.email:
             destinatarios[contato.email] = contato.nome
-
-    # Contatos extras (digitados na hora)
     for extra in json.loads(campanha.contatos_extras or '[]'):
         if extra.get('email'):
             destinatarios[extra['email']] = extra.get('nome', extra['email'])
-
     return destinatarios
 
 
@@ -46,25 +40,18 @@ def _disparar(campanha_id, app):
         campanha = MarketingCampanha.query.get(campanha_id)
         if not campanha:
             return
-
         smtp = MarketingSmtp.query.get(campanha.smtp_id)
         if not smtp:
-            campanha.status   = 'erro'
+            campanha.status = 'erro'
             campanha.log_erros = 'SMTP nao encontrado.'
             db.session.commit()
             return
-
         campanha.status = 'enviando'
         db.session.commit()
-
         destinatarios = _coletar_destinatarios(campanha)
-        enviados = 0
-        erros    = 0
-        log      = []
-
+        enviados = 0; erros = 0; log = []
         total_dest = len(destinatarios)
         print('[CAMPANHA {}] Iniciando disparo para {} destinatarios'.format(campanha_id, total_dest), flush=True)
-
         try:
             if smtp.use_ssl:
                 server = smtplib.SMTP_SSL(smtp.host, smtp.port, timeout=5)
@@ -74,7 +61,6 @@ def _disparar(campanha_id, app):
                     server.starttls()
             server.login(smtp.username, smtp.password)
             print('[CAMPANHA {}] SMTP conectado OK'.format(campanha_id), flush=True)
-
             for email, nome in destinatarios.items():
                 try:
                     msg = MIMEMultipart('alternative')
@@ -94,15 +80,12 @@ def _disparar(campanha_id, app):
                     print('[CAMPANHA {}] ERRO em {}: {}'.format(campanha_id, email, str(e)), flush=True)
                     campanha.total_erros = erros
                     db.session.commit()
-
             server.quit()
-
         except Exception as e:
-            campanha.status    = 'erro'
+            campanha.status = 'erro'
             campanha.log_erros = str(e)
             db.session.commit()
             return
-
         campanha.status         = 'enviada'
         campanha.total_enviados = enviados
         campanha.total_erros    = erros
@@ -113,13 +96,19 @@ def _disparar(campanha_id, app):
 
 @marketing_campanha_bp.route('/', methods=['GET'])
 def listar():
-    itens = MarketingCampanha.query.order_by(MarketingCampanha.criado_em.desc()).all()
+    user = get_current_user_from_request(request)
+    q = MarketingCampanha.query
+    q = filter_owned(q, MarketingCampanha, user)
+    itens = q.order_by(MarketingCampanha.criado_em.desc()).all()
     return jsonify([i.to_dict() for i in itens])
 
 
 @marketing_campanha_bp.route('/<int:id>', methods=['GET'])
 def obter(id):
+    user = get_current_user_from_request(request)
     item = MarketingCampanha.query.get_or_404(id)
+    if not can_access(user, item):
+        return forbidden()
     return jsonify(item.to_dict())
 
 
@@ -137,16 +126,14 @@ def criar():
         contatos_extras  = json.dumps(data.get('contatos_extras', [])),
         status           = 'rascunho',
         data_agendamento = datetime.fromisoformat(data['data_agendamento']) if data.get('data_agendamento') else None,
+        criado_por       = user.id if user else None,
     )
     db.session.add(item)
     db.session.commit()
-
     try:
-        create_log(user=user, action='create_marketing_campanha', entity='marketing_campanha', entity_id=item.id,
-                   details={'payload': data}, req=request)
-    except Exception:
-        pass
-
+        create_log(user=user, action='create_marketing_campanha', entity='marketing_campanha',
+                   entity_id=item.id, details={'payload': data}, req=request)
+    except Exception: pass
     return jsonify(item.to_dict()), 201
 
 
@@ -154,13 +141,12 @@ def criar():
 def atualizar(id):
     user = get_current_user_from_request(request)
     item = MarketingCampanha.query.get_or_404(id)
+    if not can_access(user, item):
+        return forbidden()
     data = request.get_json() or {}
-
     before = None
-    try:
-        before = item.to_dict()
-    except Exception:
-        before = None
+    try: before = item.to_dict()
+    except Exception: before = None
     item.nome             = data.get('nome', item.nome)
     item.assunto          = data.get('assunto', item.assunto)
     item.corpo_html       = data.get('corpo_html', item.corpo_html)
@@ -170,13 +156,10 @@ def atualizar(id):
     item.contatos_extras  = json.dumps(data.get('contatos_extras', json.loads(item.contatos_extras)))
     item.data_agendamento = datetime.fromisoformat(data['data_agendamento']) if data.get('data_agendamento') else None
     db.session.commit()
-
     try:
-        create_log(user=user, action='update_marketing_campanha', entity='marketing_campanha', entity_id=id,
-                   details={'before': before, 'after_payload': data}, req=request)
-    except Exception:
-        pass
-
+        create_log(user=user, action='update_marketing_campanha', entity='marketing_campanha',
+                   entity_id=id, details={'before': before, 'after_payload': data}, req=request)
+    except Exception: pass
     return jsonify(item.to_dict())
 
 
@@ -184,22 +167,17 @@ def atualizar(id):
 def deletar(id):
     user = get_current_user_from_request(request)
     item = MarketingCampanha.query.get_or_404(id)
-
+    if not can_access(user, item):
+        return forbidden()
     snapshot = None
-    try:
-        snapshot = item.to_dict()
-    except Exception:
-        snapshot = None
-
+    try: snapshot = item.to_dict()
+    except Exception: snapshot = None
     db.session.delete(item)
     db.session.commit()
-
     try:
-        create_log(user=user, action='delete_marketing_campanha', entity='marketing_campanha', entity_id=id,
-                   details={'deleted': snapshot}, req=request)
-    except Exception:
-        pass
-
+        create_log(user=user, action='delete_marketing_campanha', entity='marketing_campanha',
+                   entity_id=id, details={'deleted': snapshot}, req=request)
+    except Exception: pass
     return jsonify({'success': True})
 
 
@@ -207,6 +185,8 @@ def deletar(id):
 def enviar(id):
     user = get_current_user_from_request(request)
     campanha = MarketingCampanha.query.get_or_404(id)
+    if not can_access(user, campanha):
+        return forbidden()
     if campanha.status == 'enviando':
         return jsonify({'success': False, 'error': 'Campanha ja esta sendo enviada.'}), 400
     campanha.status           = 'enviando'
@@ -216,13 +196,10 @@ def enviar(id):
     t = threading.Thread(target=_disparar, args=(id, app))
     t.daemon = True
     t.start()
-
     try:
-        create_log(user=user, action='send_marketing_campanha', entity='marketing_campanha', entity_id=id,
-                   details={'status': campanha.status}, req=request)
-    except Exception:
-        pass
-
+        create_log(user=user, action='send_marketing_campanha', entity='marketing_campanha',
+                   entity_id=id, details={'status': campanha.status}, req=request)
+    except Exception: pass
     return jsonify({'success': True, 'message': 'Disparo iniciado!'})
 
 
@@ -230,20 +207,19 @@ def enviar(id):
 def agendar(id):
     user = get_current_user_from_request(request)
     campanha = MarketingCampanha.query.get_or_404(id)
-    data     = request.get_json()
-    dt_str   = data.get('data_agendamento')
+    if not can_access(user, campanha):
+        return forbidden()
+    data   = request.get_json()
+    dt_str = data.get('data_agendamento')
     if not dt_str:
         return jsonify({'success': False, 'error': 'Informe a data/hora do agendamento.'}), 400
     campanha.data_agendamento = datetime.fromisoformat(dt_str)
     campanha.status           = 'agendada'
     db.session.commit()
-
     try:
-        create_log(user=user, action='schedule_marketing_campanha', entity='marketing_campanha', entity_id=id,
-                   details={'data_agendamento': dt_str}, req=request)
-    except Exception:
-        pass
-
+        create_log(user=user, action='schedule_marketing_campanha', entity='marketing_campanha',
+                   entity_id=id, details={'data_agendamento': dt_str}, req=request)
+    except Exception: pass
     return jsonify({'success': True, 'message': 'Campanha agendada com sucesso!'})
 
 
@@ -262,9 +238,8 @@ def processar_agendamentos():
         t.daemon = True
         t.start()
     try:
-        create_log(user=user, action='process_scheduled_marketing_campanhas', entity='marketing_campanha', entity_id=None,
+        create_log(user=user, action='process_scheduled_marketing_campanhas',
+                   entity='marketing_campanha', entity_id=None,
                    details={'processadas': len(pendentes), 'ids': ids}, req=request)
-    except Exception:
-        pass
-
+    except Exception: pass
     return jsonify({'success': True, 'processadas': len(pendentes)})

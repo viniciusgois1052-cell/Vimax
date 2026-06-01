@@ -2,14 +2,16 @@
 from .. import db
 from datetime import datetime
 
+
 class MarketingNota(db.Model):
     __tablename__ = 'marketing_notas'
 
     id             = db.Column(db.Integer, primary_key=True)
     titulo         = db.Column(db.String(300), nullable=False)
-    destinatarios  = db.Column(db.Text, nullable=True)   # e-mails separados por vírgula
+    destinatarios  = db.Column(db.Text, nullable=True)
     corpo          = db.Column(db.Text, nullable=True)
     status         = db.Column(db.String(50), default='rascunho')  # rascunho | arquivado
+    criado_por     = db.Column(db.Integer, db.ForeignKey('usuarios.id'), nullable=True)
     criado_em      = db.Column(db.DateTime, default=datetime.utcnow)
     atualizado_em  = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -22,6 +24,7 @@ class MarketingNota(db.Model):
             'destinatarios': self.destinatarios,
             'corpo':         self.corpo,
             'status':        self.status,
+            'criado_por':    self.criado_por,
             'criado_em':     self.criado_em.isoformat() if self.criado_em else None,
             'atualizado_em': self.atualizado_em.isoformat() if self.atualizado_em else None,
             'anexos':        [a.to_dict() for a in self.anexos],
@@ -33,9 +36,9 @@ class MarketingNotaAnexo(db.Model):
 
     id         = db.Column(db.Integer, primary_key=True)
     nota_id    = db.Column(db.Integer, db.ForeignKey('marketing_notas.id'), nullable=False)
-    nome       = db.Column(db.String(300), nullable=False)   # nome original do arquivo
-    caminho    = db.Column(db.String(500), nullable=False)   # caminho no servidor
-    tamanho    = db.Column(db.Integer, nullable=True)        # bytes
+    nome       = db.Column(db.String(300), nullable=False)
+    caminho    = db.Column(db.String(500), nullable=False)
+    tamanho    = db.Column(db.Integer, nullable=True)
     mime_type  = db.Column(db.String(100), nullable=True)
     criado_em  = db.Column(db.DateTime, default=datetime.utcnow)
 
