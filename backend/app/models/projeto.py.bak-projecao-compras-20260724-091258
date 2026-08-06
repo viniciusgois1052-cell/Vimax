@@ -1,0 +1,988 @@
+from datetime import datetime
+from decimal import Decimal
+import json
+
+from .. import db
+
+
+def _json_load(valor, padrao):
+    if not valor:
+        return padrao
+
+    try:
+        return json.loads(valor)
+    except (TypeError, ValueError):
+        return padrao
+
+
+def _json_dump(valor):
+    return json.dumps(valor, ensure_ascii=False)
+
+
+def _iso(valor):
+    return valor.isoformat() if valor else None
+
+
+def _decimal(valor):
+    if valor is None:
+        return 0.0
+
+    if isinstance(valor, Decimal):
+        return float(valor)
+
+    return float(valor)
+
+
+# Um projeto pode envolver várias empresas.
+projeto_empresas = db.Table(
+    'projeto_empresas',
+    db.Column(
+        'projeto_id',
+        db.Integer,
+        db.ForeignKey('projetos.id', ondelete='CASCADE'),
+        primary_key=True
+    ),
+    db.Column(
+        'empresa_id',
+        db.Integer,
+        db.ForeignKey('empresas.id', ondelete='CASCADE'),
+        primary_key=True
+    )
+)
+
+
+class ProjetoGrupo(db.Model):
+    """
+    Grupo/portfólio de projetos.
+
+    Exemplos:
+    - Implantação de sistemas
+    - Infraestrutura
+    - Expansão de clínicas
+    - Projetos corporativos
+    """
+
+    __tablename__ = 'projeto_grupos'
+
+    id = db.Column(db.Integer, primary_key=True)
+    nome = db.Column(db.String(150), nullable=False)
+    descricao = db.Column(db.Text, nullable=True)
+    cor = db.Column(db.String(20), default='#2563eb')
+    ativo = db.Column(db.Boolean, default=True, nullable=False)
+
+    empresa_id = db.Column(
+        db.Integer,
+        db.ForeignKey('empresas.id'),
+        nullable=True
+    )
+
+    parent_id = db.Column(
+        db.Integer,
+        db.ForeignKey('projeto_grupos.id'),
+        nullable=True
+    )
+
+    criado_em = db.Column(
+        db.DateTime,
+        default=datetime.utcnow,
+        nullable=False
+    )
+
+    atualizado_em = db.Column(
+        db.DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False
+    )
+
+    empresa = db.relationship(
+        'Empresa',
+        foreign_keys=[empresa_id],
+        lazy='select'
+    )
+
+    subgrupos = db.relationship(
+        'ProjetoGrupo',
+        backref=db.backref('grupo_pai', remote_side=[id]),
+        lazy='select'
+    )
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'nome': self.nome,
+            'descricao': self.descricao,
+            'cor': self.cor,
+            'ativo': self.ativo,
+            'empresa_id': self.empresa_id,
+            'empresa_nome': self.empresa.nome if self.empresa else None,
+            'parent_id': self.parent_id,
+            'criado_em': _iso(self.criado_em),
+            'atualizado_em': _iso(self.atualizado_em)
+        }
+
+
+class Projeto(db.Model):
+    __tablename__ = 'projetos'
+
+    id = db.Column(db.Integer, primary_key=True)
+    codigo = db.Column(db.String(50), unique=True, nullable=False)
+    nome = db.Column(db.String(200), nullable=False)
+    descricao = db.Column(db.Text, nullable=True)
+
+    # planejamento, ativo, pausado, concluido, cancelado, arquivado
+    status = db.Column(
+        db.String(30),
+        default='planejamento',
+        nullable=False
+    )
+
+    # baixa, normal, alta, urgente
+    prioridade = db.Column(
+        db.String(20),
+        default='normal',
+        nullable=False
+    )
+
+    # automatico ou manual
+    modo_agendamento = db.Column(
+        db.String(20),
+        default='automatico',
+        nullable=False
+    )
+
+    grupo_id = db.Column(
+        db.Integer,
+        db.ForeignKey('projeto_grupos.id'),
+        nullable=True
+    )
+
+    empresa_principal_id = db.Column(
+        db.Integer,
+        db.ForeignKey('empresas.id'),
+        nullable=True
+    )
+
+    gerente_id = db.Column(
+        db.Integer,
+        db.ForeignKey('usuarios.id'),
+        nullable=True
+    )
+
+    criado_por_id = db.Column(
+        db.Integer,
+        db.ForeignKey('usuarios.id'),
+        nullable=True
+    )
+
+    data_inicio = db.Column(db.DateTime, nullable=True)
+    data_fim_prevista = db.Column(db.DateTime, nullable=True)
+    data_fim_real = db.Column(db.DateTime, nullable=True)
+    data_limite = db.Column(db.DateTime, nullable=True)
+
+    percentual_concluido = db.Column(
+        db.Float,
+        default=0,
+        nullable=False
+    )
+
+    orcamento = db.Column(
+        db.Numeric(14, 2),
+        default=0,
+        nullable=False
+    )
+
+    custo_planejado = db.Column(
+        db.Numeric(14, 2),
+        default=0,
+        nullable=False
+    )
+
+    custo_real = db.Column(
+        db.Numeric(14, 2),
+        default=0,
+        nullable=False
+    )
+
+    publico = db.Column(db.Boolean, default=False, nullable=False)
+    ativo = db.Column(db.Boolean, default=True, nullable=False)
+
+    criado_em = db.Column(
+        db.DateTime,
+        default=datetime.utcnow,
+        nullable=False
+    )
+
+    atualizado_em = db.Column(
+        db.DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False
+    )
+
+    grupo = db.relationship(
+        'ProjetoGrupo',
+        backref=db.backref('projetos', lazy=True)
+    )
+
+    empresa_principal = db.relationship(
+        'Empresa',
+        foreign_keys=[empresa_principal_id]
+    )
+
+    empresas = db.relationship(
+        'Empresa',
+        secondary=projeto_empresas,
+        lazy='subquery',
+        backref=db.backref('projetos_vinculados', lazy=True)
+    )
+
+    gerente = db.relationship(
+        'Usuario',
+        foreign_keys=[gerente_id]
+    )
+
+    criado_por = db.relationship(
+        'Usuario',
+        foreign_keys=[criado_por_id]
+    )
+
+    tarefas = db.relationship(
+        'ProjetoTarefa',
+        back_populates='projeto',
+        cascade='all, delete-orphan',
+        order_by='ProjetoTarefa.ordem'
+    )
+
+    recursos = db.relationship(
+        'ProjetoRecurso',
+        back_populates='projeto',
+        cascade='all, delete-orphan'
+    )
+
+    calendarios = db.relationship(
+        'ProjetoCalendario',
+        back_populates='projeto',
+        cascade='all, delete-orphan'
+    )
+
+    linhas_base = db.relationship(
+        'ProjetoLinhaBase',
+        back_populates='projeto',
+        cascade='all, delete-orphan'
+    )
+
+    def calcular_percentual(self):
+        tarefas = [
+            tarefa
+            for tarefa in self.tarefas
+            if not tarefa.e_resumo
+        ]
+
+        if not tarefas:
+            self.percentual_concluido = 0
+            return 0
+
+        peso_total = sum(
+            max(tarefa.duracao_minutos or 0, 1)
+            for tarefa in tarefas
+        )
+
+        progresso = sum(
+            max(tarefa.duracao_minutos or 0, 1)
+            * (tarefa.percentual_concluido or 0)
+            for tarefa in tarefas
+        )
+
+        self.percentual_concluido = round(
+            progresso / peso_total,
+            2
+        )
+
+        return self.percentual_concluido
+
+    def to_dict(self, incluir_detalhes=False):
+        dados = {
+            'id': self.id,
+            'codigo': self.codigo,
+            'nome': self.nome,
+            'descricao': self.descricao,
+            'status': self.status,
+            'prioridade': self.prioridade,
+            'modo_agendamento': self.modo_agendamento,
+            'grupo_id': self.grupo_id,
+            'grupo': self.grupo.to_dict() if self.grupo else None,
+            'empresa_principal_id': self.empresa_principal_id,
+            'empresa_principal_nome': (
+                self.empresa_principal.nome
+                if self.empresa_principal else None
+            ),
+            'empresas': [
+                {
+                    'id': empresa.id,
+                    'nome': empresa.nome,
+                    'parent_id': empresa.parent_id
+                }
+                for empresa in self.empresas
+            ],
+            'gerente_id': self.gerente_id,
+            'gerente_nome': (
+                self.gerente.nome_completo or self.gerente.username
+                if self.gerente else None
+            ),
+            'criado_por_id': self.criado_por_id,
+            'data_inicio': _iso(self.data_inicio),
+            'data_fim_prevista': _iso(self.data_fim_prevista),
+            'data_fim_real': _iso(self.data_fim_real),
+            'data_limite': _iso(self.data_limite),
+            'percentual_concluido': self.percentual_concluido,
+            'orcamento': _decimal(self.orcamento),
+            'custo_planejado': _decimal(self.custo_planejado),
+            'custo_real': _decimal(self.custo_real),
+            'publico': self.publico,
+            'ativo': self.ativo,
+            'quantidade_tarefas': len(self.tarefas),
+            'criado_em': _iso(self.criado_em),
+            'atualizado_em': _iso(self.atualizado_em)
+        }
+
+        if incluir_detalhes:
+            dados['tarefas'] = [
+                tarefa.to_dict()
+                for tarefa in self.tarefas
+            ]
+
+            dados['recursos'] = [
+                recurso.to_dict()
+                for recurso in self.recursos
+            ]
+
+            dados['calendarios'] = [
+                calendario.to_dict()
+                for calendario in self.calendarios
+            ]
+
+            dados['linhas_base'] = [
+                linha.to_dict(incluir_dados=False)
+                for linha in self.linhas_base
+            ]
+
+        return dados
+
+
+class ProjetoTarefa(db.Model):
+    __tablename__ = 'projeto_tarefas'
+
+    id = db.Column(db.Integer, primary_key=True)
+
+    projeto_id = db.Column(
+        db.Integer,
+        db.ForeignKey('projetos.id', ondelete='CASCADE'),
+        nullable=False,
+        index=True
+    )
+
+    parent_id = db.Column(
+        db.Integer,
+        db.ForeignKey('projeto_tarefas.id', ondelete='SET NULL'),
+        nullable=True,
+        index=True
+    )
+
+    calendario_id = db.Column(
+        db.Integer,
+        db.ForeignKey('projeto_calendarios.id'),
+        nullable=True
+    )
+
+    nome = db.Column(db.String(255), nullable=False)
+    descricao = db.Column(db.Text, nullable=True)
+
+    ordem = db.Column(db.Integer, default=0, nullable=False)
+    nivel = db.Column(db.Integer, default=0, nullable=False)
+    wbs = db.Column(db.String(100), nullable=True)
+
+    # automatico ou manual
+    modo_agendamento = db.Column(
+        db.String(20),
+        default='automatico',
+        nullable=False
+    )
+
+    data_inicio = db.Column(db.DateTime, nullable=True)
+    data_fim = db.Column(db.DateTime, nullable=True)
+
+    inicio_real = db.Column(db.DateTime, nullable=True)
+    fim_real = db.Column(db.DateTime, nullable=True)
+
+    prazo_final = db.Column(db.DateTime, nullable=True)
+
+    duracao_minutos = db.Column(
+        db.Integer,
+        default=480,
+        nullable=False
+    )
+
+    trabalho_minutos = db.Column(
+        db.Integer,
+        default=480,
+        nullable=False
+    )
+
+    trabalho_real_minutos = db.Column(
+        db.Integer,
+        default=0,
+        nullable=False
+    )
+
+    percentual_concluido = db.Column(
+        db.Float,
+        default=0,
+        nullable=False
+    )
+
+    prioridade = db.Column(
+        db.Integer,
+        default=500,
+        nullable=False
+    )
+
+    # ASAP, ALAP, SNET, SNLT, FNET, FNLT, MSO, MFO
+    restricao_tipo = db.Column(
+        db.String(20),
+        default='ASAP',
+        nullable=False
+    )
+
+    restricao_data = db.Column(db.DateTime, nullable=True)
+
+    e_marco = db.Column(db.Boolean, default=False, nullable=False)
+    e_resumo = db.Column(db.Boolean, default=False, nullable=False)
+    caminho_critico = db.Column(db.Boolean, default=False, nullable=False)
+    inativa = db.Column(db.Boolean, default=False, nullable=False)
+
+    custo_fixo = db.Column(
+        db.Numeric(14, 2),
+        default=0,
+        nullable=False
+    )
+
+    custo_real = db.Column(
+        db.Numeric(14, 2),
+        default=0,
+        nullable=False
+    )
+
+    anotacoes = db.Column(db.Text, nullable=True)
+
+    criado_em = db.Column(
+        db.DateTime,
+        default=datetime.utcnow,
+        nullable=False
+    )
+
+    atualizado_em = db.Column(
+        db.DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False
+    )
+
+    projeto = db.relationship(
+        'Projeto',
+        back_populates='tarefas'
+    )
+
+    pai = db.relationship(
+        'ProjetoTarefa',
+        remote_side=[id],
+        backref=db.backref('filhos', lazy=True),
+        foreign_keys=[parent_id]
+    )
+
+    calendario = db.relationship(
+        'ProjetoCalendario',
+        foreign_keys=[calendario_id]
+    )
+
+    predecessoras = db.relationship(
+        'ProjetoDependencia',
+        foreign_keys='ProjetoDependencia.sucessora_id',
+        back_populates='sucessora',
+        cascade='all, delete-orphan'
+    )
+
+    sucessoras = db.relationship(
+        'ProjetoDependencia',
+        foreign_keys='ProjetoDependencia.predecessora_id',
+        back_populates='predecessora',
+        cascade='all, delete-orphan'
+    )
+
+    alocacoes = db.relationship(
+        'ProjetoAlocacao',
+        back_populates='tarefa',
+        cascade='all, delete-orphan'
+    )
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'projeto_id': self.projeto_id,
+            'parent_id': self.parent_id,
+            'calendario_id': self.calendario_id,
+            'nome': self.nome,
+            'descricao': self.descricao,
+            'ordem': self.ordem,
+            'nivel': self.nivel,
+            'wbs': self.wbs,
+            'modo_agendamento': self.modo_agendamento,
+            'data_inicio': _iso(self.data_inicio),
+            'data_fim': _iso(self.data_fim),
+            'inicio_real': _iso(self.inicio_real),
+            'fim_real': _iso(self.fim_real),
+            'prazo_final': _iso(self.prazo_final),
+            'duracao_minutos': self.duracao_minutos,
+            'duracao_dias': round(
+                (self.duracao_minutos or 0) / 480,
+                2
+            ),
+            'trabalho_minutos': self.trabalho_minutos,
+            'trabalho_real_minutos': self.trabalho_real_minutos,
+            'percentual_concluido': self.percentual_concluido,
+            'prioridade': self.prioridade,
+            'restricao_tipo': self.restricao_tipo,
+            'restricao_data': _iso(self.restricao_data),
+            'e_marco': self.e_marco,
+            'e_resumo': self.e_resumo,
+            'caminho_critico': self.caminho_critico,
+            'inativa': self.inativa,
+            'custo_fixo': _decimal(self.custo_fixo),
+            'custo_real': _decimal(self.custo_real),
+            'anotacoes': self.anotacoes,
+            'predecessoras': [
+                dependencia.to_dict()
+                for dependencia in self.predecessoras
+            ],
+            'alocacoes': [
+                alocacao.to_dict()
+                for alocacao in self.alocacoes
+            ],
+            'criado_em': _iso(self.criado_em),
+            'atualizado_em': _iso(self.atualizado_em)
+        }
+
+
+class ProjetoDependencia(db.Model):
+    __tablename__ = 'projeto_dependencias'
+
+    id = db.Column(db.Integer, primary_key=True)
+
+    predecessora_id = db.Column(
+        db.Integer,
+        db.ForeignKey('projeto_tarefas.id', ondelete='CASCADE'),
+        nullable=False,
+        index=True
+    )
+
+    sucessora_id = db.Column(
+        db.Integer,
+        db.ForeignKey('projeto_tarefas.id', ondelete='CASCADE'),
+        nullable=False,
+        index=True
+    )
+
+    # FS, SS, FF ou SF
+    tipo = db.Column(
+        db.String(2),
+        default='FS',
+        nullable=False
+    )
+
+    atraso_minutos = db.Column(
+        db.Integer,
+        default=0,
+        nullable=False
+    )
+
+    predecessora = db.relationship(
+        'ProjetoTarefa',
+        foreign_keys=[predecessora_id],
+        back_populates='sucessoras'
+    )
+
+    sucessora = db.relationship(
+        'ProjetoTarefa',
+        foreign_keys=[sucessora_id],
+        back_populates='predecessoras'
+    )
+
+    __table_args__ = (
+        db.UniqueConstraint(
+            'predecessora_id',
+            'sucessora_id',
+            name='uq_projeto_dependencia'
+        ),
+        db.CheckConstraint(
+            'predecessora_id <> sucessora_id',
+            name='ck_dependencia_tarefas_diferentes'
+        ),
+    )
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'predecessora_id': self.predecessora_id,
+            'predecessora_nome': (
+                self.predecessora.nome
+                if self.predecessora else None
+            ),
+            'sucessora_id': self.sucessora_id,
+            'tipo': self.tipo,
+            'atraso_minutos': self.atraso_minutos,
+            'atraso_dias': round(
+                (self.atraso_minutos or 0) / 480,
+                2
+            )
+        }
+
+
+class ProjetoRecurso(db.Model):
+    __tablename__ = 'projeto_recursos'
+
+    id = db.Column(db.Integer, primary_key=True)
+
+    projeto_id = db.Column(
+        db.Integer,
+        db.ForeignKey('projetos.id', ondelete='CASCADE'),
+        nullable=False,
+        index=True
+    )
+
+    usuario_id = db.Column(
+        db.Integer,
+        db.ForeignKey('usuarios.id'),
+        nullable=True
+    )
+
+    nome = db.Column(db.String(150), nullable=False)
+    email = db.Column(db.String(150), nullable=True)
+
+    # trabalho, material ou custo
+    tipo = db.Column(
+        db.String(20),
+        default='trabalho',
+        nullable=False
+    )
+
+    unidade_material = db.Column(db.String(50), nullable=True)
+
+    capacidade_percentual = db.Column(
+        db.Float,
+        default=100,
+        nullable=False
+    )
+
+    custo_hora = db.Column(
+        db.Numeric(14, 2),
+        default=0,
+        nullable=False
+    )
+
+    custo_hora_extra = db.Column(
+        db.Numeric(14, 2),
+        default=0,
+        nullable=False
+    )
+
+    custo_por_uso = db.Column(
+        db.Numeric(14, 2),
+        default=0,
+        nullable=False
+    )
+
+    ativo = db.Column(db.Boolean, default=True, nullable=False)
+
+    projeto = db.relationship(
+        'Projeto',
+        back_populates='recursos'
+    )
+
+    usuario = db.relationship(
+        'Usuario',
+        foreign_keys=[usuario_id]
+    )
+
+    alocacoes = db.relationship(
+        'ProjetoAlocacao',
+        back_populates='recurso',
+        cascade='all, delete-orphan'
+    )
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'projeto_id': self.projeto_id,
+            'usuario_id': self.usuario_id,
+            'nome': self.nome,
+            'email': self.email,
+            'tipo': self.tipo,
+            'unidade_material': self.unidade_material,
+            'capacidade_percentual': self.capacidade_percentual,
+            'custo_hora': _decimal(self.custo_hora),
+            'custo_hora_extra': _decimal(self.custo_hora_extra),
+            'custo_por_uso': _decimal(self.custo_por_uso),
+            'ativo': self.ativo
+        }
+
+
+class ProjetoAlocacao(db.Model):
+    __tablename__ = 'projeto_alocacoes'
+
+    id = db.Column(db.Integer, primary_key=True)
+
+    tarefa_id = db.Column(
+        db.Integer,
+        db.ForeignKey('projeto_tarefas.id', ondelete='CASCADE'),
+        nullable=False,
+        index=True
+    )
+
+    recurso_id = db.Column(
+        db.Integer,
+        db.ForeignKey('projeto_recursos.id', ondelete='CASCADE'),
+        nullable=False,
+        index=True
+    )
+
+    unidades_percentual = db.Column(
+        db.Float,
+        default=100,
+        nullable=False
+    )
+
+    trabalho_minutos = db.Column(
+        db.Integer,
+        default=0,
+        nullable=False
+    )
+
+    trabalho_real_minutos = db.Column(
+        db.Integer,
+        default=0,
+        nullable=False
+    )
+
+    custo_planejado = db.Column(
+        db.Numeric(14, 2),
+        default=0,
+        nullable=False
+    )
+
+    custo_real = db.Column(
+        db.Numeric(14, 2),
+        default=0,
+        nullable=False
+    )
+
+    tarefa = db.relationship(
+        'ProjetoTarefa',
+        back_populates='alocacoes'
+    )
+
+    recurso = db.relationship(
+        'ProjetoRecurso',
+        back_populates='alocacoes'
+    )
+
+    __table_args__ = (
+        db.UniqueConstraint(
+            'tarefa_id',
+            'recurso_id',
+            name='uq_projeto_tarefa_recurso'
+        ),
+    )
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'tarefa_id': self.tarefa_id,
+            'recurso_id': self.recurso_id,
+            'recurso_nome': (
+                self.recurso.nome
+                if self.recurso else None
+            ),
+            'unidades_percentual': self.unidades_percentual,
+            'trabalho_minutos': self.trabalho_minutos,
+            'trabalho_real_minutos': self.trabalho_real_minutos,
+            'custo_planejado': _decimal(self.custo_planejado),
+            'custo_real': _decimal(self.custo_real)
+        }
+
+
+class ProjetoCalendario(db.Model):
+    __tablename__ = 'projeto_calendarios'
+
+    id = db.Column(db.Integer, primary_key=True)
+
+    projeto_id = db.Column(
+        db.Integer,
+        db.ForeignKey('projetos.id', ondelete='CASCADE'),
+        nullable=False,
+        index=True
+    )
+
+    nome = db.Column(
+        db.String(100),
+        default='Calendário padrão',
+        nullable=False
+    )
+
+    padrao = db.Column(db.Boolean, default=False, nullable=False)
+
+    minutos_por_dia = db.Column(
+        db.Integer,
+        default=480,
+        nullable=False
+    )
+
+    minutos_por_semana = db.Column(
+        db.Integer,
+        default=2400,
+        nullable=False
+    )
+
+    # Python: segunda=0 e domingo=6.
+    dias_uteis_json = db.Column(
+        db.Text,
+        default='[0, 1, 2, 3, 4]',
+        nullable=False
+    )
+
+    horarios_json = db.Column(
+        db.Text,
+        default=(
+            '{"0":[["08:00","12:00"],["13:00","17:00"]],'
+            '"1":[["08:00","12:00"],["13:00","17:00"]],'
+            '"2":[["08:00","12:00"],["13:00","17:00"]],'
+            '"3":[["08:00","12:00"],["13:00","17:00"]],'
+            '"4":[["08:00","12:00"],["13:00","17:00"]]}'
+        ),
+        nullable=False
+    )
+
+    # [{"data":"2026-12-25","util":false,"nome":"Natal"}]
+    excecoes_json = db.Column(
+        db.Text,
+        default='[]',
+        nullable=False
+    )
+
+    projeto = db.relationship(
+        'Projeto',
+        back_populates='calendarios'
+    )
+
+    def get_dias_uteis(self):
+        return _json_load(
+            self.dias_uteis_json,
+            [0, 1, 2, 3, 4]
+        )
+
+    def get_horarios(self):
+        return _json_load(
+            self.horarios_json,
+            {}
+        )
+
+    def get_excecoes(self):
+        return _json_load(
+            self.excecoes_json,
+            []
+        )
+
+    def set_dias_uteis(self, valor):
+        self.dias_uteis_json = _json_dump(valor)
+
+    def set_horarios(self, valor):
+        self.horarios_json = _json_dump(valor)
+
+    def set_excecoes(self, valor):
+        self.excecoes_json = _json_dump(valor)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'projeto_id': self.projeto_id,
+            'nome': self.nome,
+            'padrao': self.padrao,
+            'minutos_por_dia': self.minutos_por_dia,
+            'minutos_por_semana': self.minutos_por_semana,
+            'dias_uteis': self.get_dias_uteis(),
+            'horarios': self.get_horarios(),
+            'excecoes': self.get_excecoes()
+        }
+
+
+class ProjetoLinhaBase(db.Model):
+    __tablename__ = 'projeto_linhas_base'
+
+    id = db.Column(db.Integer, primary_key=True)
+
+    projeto_id = db.Column(
+        db.Integer,
+        db.ForeignKey('projetos.id', ondelete='CASCADE'),
+        nullable=False,
+        index=True
+    )
+
+    nome = db.Column(db.String(100), nullable=False)
+
+    criado_por_id = db.Column(
+        db.Integer,
+        db.ForeignKey('usuarios.id'),
+        nullable=True
+    )
+
+    criado_em = db.Column(
+        db.DateTime,
+        default=datetime.utcnow,
+        nullable=False
+    )
+
+    dados_json = db.Column(db.Text, nullable=False)
+
+    projeto = db.relationship(
+        'Projeto',
+        back_populates='linhas_base'
+    )
+
+    criado_por = db.relationship(
+        'Usuario',
+        foreign_keys=[criado_por_id]
+    )
+
+    def get_dados(self):
+        return _json_load(self.dados_json, {})
+
+    def set_dados(self, valor):
+        self.dados_json = _json_dump(valor)
+
+    def to_dict(self, incluir_dados=True):
+        resultado = {
+            'id': self.id,
+            'projeto_id': self.projeto_id,
+            'nome': self.nome,
+            'criado_por_id': self.criado_por_id,
+            'criado_por_nome': (
+                self.criado_por.nome_completo
+                or self.criado_por.username
+                if self.criado_por else None
+            ),
+            'criado_em': _iso(self.criado_em)
+        }
+
+        if incluir_dados:
+            resultado['dados'] = self.get_dados()
+
+        return resultado

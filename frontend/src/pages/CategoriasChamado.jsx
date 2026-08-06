@@ -1,8 +1,11 @@
+import { useAuth } from '../context/AuthContext';
+import { apiFetch } from '../apiFetch';
 import React, { useState, useEffect } from 'react';
 import { Trash2, Edit2, Plus, Check, X } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 
 export default function CategoriasChamado() {
+    const { user, can } = useAuth();
     const [categorias, setCategorias] = useState([]);
     const [loading, setLoading] = useState(false);
     const [editando, setEditando] = useState(null);
@@ -18,7 +21,7 @@ export default function CategoriasChamado() {
     const fetchCategorias = async () => {
         setLoading(true);
         try {
-            const response = await fetch('/api/categorias-chamado');
+            const response = await apiFetch('/api/categorias-chamado');
             if (response.ok) {
                 setCategorias(await response.json());
             }
@@ -46,7 +49,7 @@ export default function CategoriasChamado() {
 
             const response = await fetch(url, {
                 method,
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', ...(user?.api_token ? { 'X-API-Token': user.api_token } : {}) },
                 body: JSON.stringify(formData)
             });
 
@@ -74,7 +77,7 @@ export default function CategoriasChamado() {
         if (!window.confirm('Tem certeza que deseja deletar esta categoria?')) return;
 
         try {
-            const response = await fetch(`/api/categorias-chamado/${id}`, { method: 'DELETE' });
+            const response = await apiFetch(`/api/categorias-chamado/${id}`, { method: 'DELETE' });
             if (response.ok) {
                 setSucesso('Categoria deletada!');
                 fetchCategorias();
@@ -212,18 +215,22 @@ export default function CategoriasChamado() {
                                             </td>
                                             <td className="py-3 text-right">
                                                 <div className="flex gap-2 justify-end">
+                                                    {can('chamados','editar') && (
                                                     <button
                                                         onClick={() => handleEdit(categoria)}
                                                         className="p-2 hover:bg-blue-50 rounded-lg text-blue-600"
                                                     >
                                                         <Edit2 className="w-4 h-4" />
                                                     </button>
+                                                    )}
+                                                    {can('chamados','excluir') && (
                                                     <button
                                                         onClick={() => handleDelete(categoria.id)}
                                                         className="p-2 hover:bg-red-50 rounded-lg text-red-600"
                                                     >
                                                         <Trash2 className="w-4 h-4" />
                                                     </button>
+                                                    )}
                                                 </div>
                                             </td>
                                         </tr>

@@ -1,253 +1,500 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { 
-    Plus, Trash2, Edit2, Box, MapPin, Building2, Zap, Hash, Calendar, 
-    User, FileText, ShoppingCart, X, Search, Filter, Info, Paperclip, Eye, QrCode, Printer
+import { openSecureFile } from '../utils/openSecureFile';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import {
+    Plus, Trash2, Edit2, Box, MapPin, Building2, Zap, Hash, Calendar,
+    FileText, X, Search, Paperclip, Eye, QrCode, Printer,
+    Copy, ArrowRightLeft, CheckSquare, Square, ChevronDown, Check
 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { Card, CardContent } from '../components/ui/card';
 import { useEntity } from '../context/EntityContext';
 import { useAuth } from '../context/AuthContext';
 
-/*
-  Ativos.jsx
-  - Keeps no blocking pop-ups (no alert/toast)
-  - Persists newly-uploaded anexos to localStorage so they survive page reloads
-  - Attempts to attach uploaded files to backend (if backend supports it)
-  - If backend refuses update (405), changes are merged locally and not POSTed to collection (prevents duplication)
-*/
+
+function MultiSelect({ options, value = [], onChange, placeholder, getLabel }) {
+    const [open, setOpen] = useState(false);
+    const [search, setSearch] = useState('');
+    const rootRef = useRef(null);
+
+    const selectedIds = useMemo(
+        () => new Set((value || []).map(Number)),
+        [value]
+    );
+
+    const selectedOptions = useMemo(
+        () => options.filter(option => selectedIds.has(Number(option.id))),
+        [options, selectedIds]
+    );
+
+    const filteredOptions = useMemo(() => {
+        const term = search.trim().toLocaleLowerCase('pt-BR');
+        if (!term) return options;
+        return options.filter(option =>
+            getLabel(option).toLocaleLowerCase('pt-BR').includes(term)
+        );
+    }, [options, search, getLabel]);
+
+    useEffect(() => {
+        if (!open) return undefined;
+        const close = event => {
+            if (rootRef.current && !rootRef.current.contains(event.target)) setOpen(false);
+        };
+        document.addEventListener('pointerdown', close);
+        return () => document.removeEventListener('pointerdown', close);
+    }, [open]);
+
+    const toggle = id => {
+        const numericId = Number(id);
+        if (selectedIds.has(numericId)) {
+            onChange(value.filter(item => Number(item) !== numericId));
+        } else {
+            onChange([...value, numericId]);
+        }
+    };
+
+    return (
+        <div ref={rootRef} className="relative">
+            <button
+                type="button"
+                onClick={() => setOpen(current => !current)}
+                className="min-h-[42px] w-full rounded-lg border bg-white px-2.5 py-2 text-left outline-none transition focus:ring-2 focus:ring-gray-500"
+            >
+                <div className="flex items-center gap-2">
+                    <div className="flex min-w-0 flex-1 flex-wrap gap-1.5">
+                        {selectedOptions.length === 0 && (
+                            <span className="text-sm text-gray-400">{placeholder}</span>
+                        )}
+                        {selectedOptions.map(option => (
+                            <span
+                                key={option.id}
+                                className="inline-flex max-w-full items-center gap-1 rounded-md bg-gray-100 px-2 py-1 text-xs font-semibold text-gray-700"
+                            >
+                                <span className="truncate">{getLabel(option)}</span>
+                                <span
+                                    role="button"
+                                    tabIndex={0}
+                                    onClick={event => {
+                                        event.stopPropagation();
+                                        toggle(option.id);
+                                    }}
+                                    onKeyDown={event => {
+                                        if (event.key === 'Enter' || event.key === ' ') {
+                                            event.preventDefault();
+                                            event.stopPropagation();
+                                            toggle(option.id);
+                                        }
+                                    }}
+                                    className="rounded p-0.5 hover:bg-gray-200"
+                                    aria-label={`Remover ${getLabel(option)}`}
+                                >
+                                    <X size={12} />
+                                </span>
+                            </span>
+                        ))}
+                    </div>
+                    <ChevronDown
+                        size={16}
+                        className={`shrink-0 text-gray-400 transition-transform ${open ? 'rotate-180' : ''}`}
+                    />
+                </div>
+            </button>
+
+            {open && (
+                <div className="absolute z-[80] mt-1 w-full overflow-hidden rounded-xl border border-gray-200 bg-white shadow-2xl">
+                    <div className="border-b p-2">
+                        <div className="relative">
+                            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" size={15} />
+                            <input
+                                autoFocus
+                                value={search}
+                                onChange={event => setSearch(event.target.value)}
+                                placeholder="Pesquisar..."
+                                className="w-full rounded-lg border py-2 pl-8 pr-3 text-sm outline-none focus:ring-2 focus:ring-gray-400"
+                            />
+                        </div>
+                    </div>
+                    <div className="max-h-56 overflow-y-auto p-1">
+                        {filteredOptions.length === 0 && (
+                            <p className="px-3 py-4 text-center text-xs text-gray-400">
+                                Nenhum resultado encontrado
+                            </p>
+                        )}
+                        {filteredOptions.map(option => {
+                            const checked = selectedIds.has(Number(option.id));
+                            return (
+                                <button
+                                    type="button"
+                                    key={option.id}
+                                    onClick={() => toggle(option.id)}
+                                    className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition ${checked ? 'bg-gray-100 font-semibold text-gray-900' : 'text-gray-600 hover:bg-gray-50'}`}
+                                >
+                                    <span className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border ${checked ? 'border-black bg-black text-white' : 'border-gray-300'}`}>
+                                        {checked && <Check size={11} />}
+                                    </span>
+                                    <span className="truncate">{getLabel(option)}</span>
+                                </button>
+                            );
+                        })}
+                    </div>
+                    {value.length > 0 && (
+                        <div className="border-t p-2">
+                            <button
+                                type="button"
+                                onClick={() => onChange([])}
+                                className="w-full rounded-lg px-3 py-2 text-xs font-bold text-red-600 hover:bg-red-50"
+                            >
+                                Limpar seleção ({value.length})
+                            </button>
+                        </div>
+                    )}
+                </div>
+            )}
+        </div>
+    );
+}
 
 export default function Ativos() {
     const { selectedEntity } = useEntity();
-    const { user } = useAuth();
+    const { user, can } = useAuth();
     const [ativos, setAtivos] = useState([]);
     const [empresas, setEmpresas] = useState([]);
     const [localizacoes, setLocalizacoes] = useState([]);
     const [fornecedores, setFornecedores] = useState([]);
     const [contratos, setContratos] = useState([]);
     const [orcamentos, setOrcamentos] = useState([]);
-    
+
     const [searchTerm, setSearchTerm] = useState('');
     const [empresaFilter, setEmpresaFilter] = useState('Todas');
     const [localizacaoFilter, setLocalizacaoFilter] = useState('Todas');
-    
+
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [isEditing, setIsEditing] = useState(false);
     const [currentAtivoId, setCurrentAtivoId] = useState(null);
 
-    // attachments state inside the form/modal
-    const [formData, setFormData] = useState({ 
-        nome: '', numero_serie: '', voltagem_entrada: '', 
+    const [formData, setFormData] = useState({
+        nome: '', numero_serie: '', voltagem_entrada: '',
         data_aquisicao: '', data_inativacao: '',
-        empresa_id: '', localizacao_id: '', fornecedor_id: '', 
-        contrato_id: '', orcamento_id: '', anexos: []
+        empresa_id: '', localizacao_id: '', fornecedor_ids: [],
+        contrato_ids: [], orcamento_id: '', anexos: [],
+        registro_anvisa: '', registro_anvisa_ativo: true, registro_anvisa_validade: ''
     });
-
     const [uploading, setUploading] = useState(false);
 
-    // attachments viewer modal (open without editing)
     const [isAttachmentsModalOpen, setIsAttachmentsModalOpen] = useState(false);
     const [attachmentsToShow, setAttachmentsToShow] = useState([]);
-    
+
     const [isQRCodeModalOpen, setIsQRCodeModalOpen] = useState(false);
     const [qrCodeData, setQrCodeData] = useState(null);
 
-    // BACKEND / API base resolution (Vite-friendly)
-    const API_BASE = window.location.origin.includes('5173') 
-        ? `${window.location.protocol}//${window.location.hostname}:5002`
-        : window.location.origin;
+    // ── Transferir ─────────────────────────────────────────────────────────────
+    const [isTransferModalOpen, setIsTransferModalOpen] = useState(false);
+    const [ativoParaTransferir, setAtivoParaTransferir] = useState(null);
+    const [transferEmpresaId, setTransferEmpresaId] = useState('');
+    const [transferLocalizacaoId, setTransferLocalizacaoId] = useState('none');
+    const [transferLoading, setTransferLoading] = useState(false);
 
+    // ── Seleção múltipla ───────────────────────────────────────────────────────
+    const [selectedIds, setSelectedIds] = useState([]);
+    const [isBulkMenuOpen, setIsBulkMenuOpen] = useState(false);
+    const [isBulkTransferOpen, setIsBulkTransferOpen] = useState(false);
+    const [bulkTransferEmpresaId, setBulkTransferEmpresaId] = useState('');
+    const [bulkTransferLocalizacaoId, setBulkTransferLocalizacaoId] = useState('none');
+    const [bulkLoading, setBulkLoading] = useState(false);
+
+    const API_BASE = "";
     const API_PREFIX = `${API_BASE}/api`;
+    const API_COLLECTION = `${API_PREFIX}/ativos/`;
     const API_COLLECTION_NO_SLASH = `${API_PREFIX}/ativos`;
-    const API_COLLECTION = `${API_PREFIX}/ativos/`; // trailing slash
 
     const getCollectionUrls = () => [API_COLLECTION, API_COLLECTION_NO_SLASH];
-    const getItemUrls = (id) => [
-        `${API_PREFIX}/ativos/${id}`,
-        `${API_PREFIX}/ativos/${id}/`
-    ];
+    const getItemUrls = (id) => [`${API_PREFIX}/ativos/${id}`, `${API_PREFIX}/ativos/${id}/`];
 
     const getAnexoHref = (path) => {
         if (!path) return '#';
-        if (path.startsWith('http://' ) || path.startsWith('https://' )) return path;
+        if (path.startsWith('http://') || path.startsWith('https://')) return path;
         if (path.startsWith('//')) return window.location.protocol + path;
-        
-        // Garante que o anexo aponte para o servidor (API_BASE) e não para o frontend
-        let cleanPath = path;
-        cleanPath = cleanPath.replace(/^\/+/, ''); // remove barras no início
-        cleanPath = cleanPath.replace(/^static\/uploads\//, ''); // remove static/uploads/ se já existir
-        cleanPath = cleanPath.replace(/^uploads\//, ''); // remove uploads/ se já existir
-        
+        let cleanPath = path.replace(/^\/+/, '').replace(/^static\/uploads\//, '').replace(/^uploads\//, '');
         return `${API_BASE}/static/uploads/${cleanPath}`;
     };
 
-    // --- localStorage helpers to persist anexos client-side ---
     const localKeyForAtivo = (id) => `ativos_anexos_${id}`;
     const localKeyDraft = 'ativos_anexos_draft';
-
-    const saveLocalAnexosForAtivo = (id, anexos) => {
-        try {
-            localStorage.setItem(localKeyForAtivo(id), JSON.stringify(anexos || []));
-        } catch (e) { console.error('localStorage save error', e); }
-    };
-    const getLocalAnexosForAtivo = (id) => {
-        try {
-            const v = localStorage.getItem(localKeyForAtivo(id));
-            return v ? JSON.parse(v) : [];
-        } catch (e) { return []; }
-    };
-    const clearLocalAnexosForAtivo = (id) => {
-        try { localStorage.removeItem(localKeyForAtivo(id)); } catch (e) {}
-    };
-
-    const saveDraftAnexos = (anexos) => {
-        try { localStorage.setItem(localKeyDraft, JSON.stringify(anexos || [])); } catch (e) {}
-    };
-    const getDraftAnexos = () => {
-        try {
-            const v = localStorage.getItem(localKeyDraft);
-            return v ? JSON.parse(v) : [];
-        } catch (e) { return []; }
-    };
-    const clearDraftAnexos = () => {
-        try { localStorage.removeItem(localKeyDraft); } catch (e) {}
-    };
-    // --- end localStorage helpers ---
+    const saveLocalAnexosForAtivo = (id, anexos) => { try { localStorage.setItem(localKeyForAtivo(id), JSON.stringify(anexos || [])); } catch (e) {} };
+    const getLocalAnexosForAtivo = (id) => { try { const v = localStorage.getItem(localKeyForAtivo(id)); return v ? JSON.parse(v) : []; } catch (e) { return []; } };
+    const clearLocalAnexosForAtivo = (id) => { try { localStorage.removeItem(localKeyForAtivo(id)); } catch (e) {} };
+    const saveDraftAnexos = (anexos) => { try { localStorage.setItem(localKeyDraft, JSON.stringify(anexos || [])); } catch (e) {} };
+    const getDraftAnexos = () => { try { const v = localStorage.getItem(localKeyDraft); return v ? JSON.parse(v) : []; } catch (e) { return []; } };
+    const clearDraftAnexos = () => { try { localStorage.removeItem(localKeyDraft); } catch (e) {} };
 
     const fetchData = useCallback(async () => {
         try {
             const headers = {};
-            if (user?.api_token) {
-                headers['X-API-Token'] = user.api_token;
-            }
-
+            if (user?.api_token) headers['X-API-Token'] = user.api_token;
             const queryParams = selectedEntity !== 'all' ? `?empresa_id=${selectedEntity}` : '';
-
             const [resAtivos, resEmp, resLoc, resFor, resCon, resOrc] = await Promise.all([
-                fetch(`${getCollectionUrls()[0]}${queryParams}`, { headers }),
+                fetch(`${API_COLLECTION}${queryParams}`, { headers }),
                 fetch(`${API_PREFIX}/empresas/`, { headers }),
                 fetch(`${API_PREFIX}/localizacoes/${queryParams}`, { headers }),
                 fetch(`${API_PREFIX}/fornecedores/${queryParams}`, { headers }),
                 fetch(`${API_PREFIX}/contratos/${queryParams}`, { headers }),
                 fetch(`${API_PREFIX}/orcamentos/${queryParams}`, { headers })
             ]);
-            
             let ativosData = [];
             if (resAtivos.ok) ativosData = await resAtivos.json();
             if (resEmp.ok) setEmpresas(await resEmp.json());
             if (resLoc.ok) setLocalizacoes(await resLoc.json());
-            if (resFor.ok) setFornecedores(await resFor.json());
+            if (resFor.ok) {
+                const fornecedoresRecebidos = await resFor.json();
+                const somentePrestadores = Array.isArray(fornecedoresRecebidos)
+                    ? fornecedoresRecebidos.filter(
+                        fornecedor =>
+                            String(fornecedor.tipo_entidade || '')
+                                .trim()
+                                .toLowerCase() === 'prestador'
+                    )
+                    : [];
+
+                setFornecedores(somentePrestadores);
+            }
             if (resCon.ok) setContratos(await resCon.json());
             if (resOrc.ok) setOrcamentos(await resOrc.json());
-
-            // Merge any locally stored attachments for each ativo (so they survive refresh)
             const merged = ativosData.map(a => {
                 const local = getLocalAnexosForAtivo(a.id);
                 if (!local || local.length === 0) return a;
                 const serverAnexos = Array.isArray(a.anexos) ? a.anexos : [];
-                // avoid duplicates by path
                 const paths = new Set(serverAnexos.map(x => x.path));
-                const toAdd = local.filter(x => !paths.has(x.path));
-                return { ...a, anexos: [...serverAnexos, ...toAdd] };
+                return { ...a, anexos: [...serverAnexos, ...local.filter(x => !paths.has(x.path))] };
             });
             setAtivos(merged);
-        } catch (error) {
-            console.error("Erro ao carregar dados:", error);
-        }
+            setSelectedIds([]);
+        } catch (error) { console.error("Erro ao carregar dados:", error); }
     }, [user, selectedEntity, API_PREFIX]);
 
     useEffect(() => { fetchData(); }, [fetchData]);
 
-    // Helpers for selects and filters
+    // ── Helpers select ─────────────────────────────────────────────────────────
     const renderHierarchicalOptions = (items, parentId = null, level = 0) => {
-        return items
-            .filter(item => item.parent_id === parentId)
-            .map(item => (
-                <React.Fragment key={item.id}>
-                    <option value={item.id.toString()}>
-                        {'\u00A0'.repeat(level * 4)}{level > 0 ? '↳ ' : ''}{item.nome}
-                    </option>
-                    {renderHierarchicalOptions(items, item.id, level + 1)}
-                </React.Fragment>
-            ));
+        return items.filter(item => item.parent_id === parentId).map(item => (
+            <React.Fragment key={item.id}>
+                <option value={item.id.toString()}>{'\u00A0'.repeat(level * 4)}{level > 0 ? '↳ ' : ''}{item.nome}</option>
+                {renderHierarchicalOptions(items, item.id, level + 1)}
+            </React.Fragment>
+        ));
     };
 
-    const renderGroupedLocalizacoes = () => {
-        return empresas.map(empresa => {
-            const locsDaEmpresa = localizacoes.filter(l => l.empresa_id === empresa.id);
-            if (locsDaEmpresa.length === 0) return null;
+    const renderGroupedLocalizacoes = (empresaIdFiltro = null) => {
+        const lista = empresaIdFiltro ? empresas.filter(e => e.id === parseInt(empresaIdFiltro)) : empresas;
+        return lista.map(empresa => {
+            const locs = localizacoes.filter(l => l.empresa_id === empresa.id);
+            if (!locs.length) return null;
             return (
                 <optgroup key={empresa.id} label={empresa.nome.toUpperCase()}>
-                    {locsDaEmpresa.map(l => (
-                        <option key={l.id} value={l.id.toString()}>
-                            - {l.nome}
-                        </option>
-                    ))}
+                    {locs.map(l => <option key={l.id} value={l.id.toString()}>- {l.nome}</option>)}
                 </optgroup>
             );
         });
     };
 
+    // ── Seleção ────────────────────────────────────────────────────────────────
+    const toggleSelect = (id) => {
+        setSelectedIds(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]);
+    };
+
+    const toggleSelectAll = () => {
+        if (selectedIds.length === filteredAtivos.length) setSelectedIds([]);
+        else setSelectedIds(filteredAtivos.map(a => a.id));
+    };
+
+    const clearSelection = () => { setSelectedIds([]); setIsBulkMenuOpen(false); };
+
+    // ── Ações em lote ──────────────────────────────────────────────────────────
+    const handleBulkDelete = async () => {
+        if (!window.confirm(`Excluir ${selectedIds.length} ativo(s) selecionado(s)?`)) return;
+        setBulkLoading(true);
+        const headers = {};
+        if (user?.api_token) headers['X-API-Token'] = user.api_token;
+        for (const id of selectedIds) {
+            try {
+                const urls = getItemUrls(id);
+                let res = await fetch(urls[0], { method: 'DELETE', headers });
+                if (!res.ok) res = await fetch(urls[1], { method: 'DELETE', headers });
+                if (res.ok) clearLocalAnexosForAtivo(id);
+            } catch (e) { console.error(e); }
+        }
+        setBulkLoading(false);
+        setIsBulkMenuOpen(false);
+        fetchData();
+    };
+
+    const handleBulkDuplicate = async () => {
+        if (!window.confirm(`Duplicar ${selectedIds.length} ativo(s) selecionado(s)?`)) return;
+        setBulkLoading(true);
+        const headers = { 'Content-Type': 'application/json' };
+        if (user?.api_token) headers['X-API-Token'] = user.api_token;
+        for (const id of selectedIds) {
+            const ativo = ativos.find(a => a.id === id);
+            if (!ativo) continue;
+            const payload = {
+                nome: `${ativo.nome} (Cópia)`, numero_serie: '',
+                voltagem_entrada: ativo.voltagem_entrada || '',
+                data_aquisicao: ativo.data_aquisicao || '', data_inativacao: '',
+                empresa_id: ativo.empresa_id || null, localizacao_id: ativo.localizacao_id || null,
+                fornecedor_ids: ativo.fornecedor_ids || (ativo.fornecedor_id ? [ativo.fornecedor_id] : []), contrato_ids: [], orcamento_id: null, anexos: [],
+                registro_anvisa: ativo.registro_anvisa || null,
+                registro_anvisa_ativo: ativo.registro_anvisa_ativo !== undefined ? ativo.registro_anvisa_ativo : true,
+                registro_anvisa_validade: ativo.registro_anvisa_validade || null
+            };
+            try {
+                let res = await fetch(API_COLLECTION, { method: 'POST', headers, body: JSON.stringify(payload) });
+                if (!res.ok) res = await fetch(API_COLLECTION_NO_SLASH, { method: 'POST', headers, body: JSON.stringify(payload) });
+            } catch (e) { console.error(e); }
+        }
+        setBulkLoading(false);
+        setIsBulkMenuOpen(false);
+        fetchData();
+    };
+
+    // 🆕 CORRIGIDO: envia só os campos que a rota precisa + mostra erro
+    const handleBulkTransferConfirm = async () => {
+        if (!bulkTransferEmpresaId) return;
+        setBulkLoading(true);
+        const headers = { 'Content-Type': 'application/json' };
+        if (user?.api_token) headers['X-API-Token'] = user.api_token;
+        let erros = 0;
+        for (const id of selectedIds) {
+            const ativo = ativos.find(a => a.id === id);
+            if (!ativo) continue;
+            const payload = {
+                nome:             ativo.nome,
+                numero_serie:     ativo.numero_serie || '',
+                voltagem_entrada: ativo.voltagem_entrada || '',
+                data_aquisicao:   ativo.data_aquisicao || null,
+                data_inativacao:  ativo.data_inativacao || null,
+                fornecedor_ids:   ativo.fornecedor_ids || (ativo.fornecedor_id ? [ativo.fornecedor_id] : []),
+                orcamento_id:      ativo.orcamento_id || null,
+                empresa_id:        parseInt(bulkTransferEmpresaId),
+                localizacao_id:    bulkTransferLocalizacaoId === 'none' ? null : parseInt(bulkTransferLocalizacaoId),
+                contrato_ids:      [],
+                registro_anvisa:          ativo.registro_anvisa || null,
+                registro_anvisa_ativo:    ativo.registro_anvisa_ativo !== undefined ? ativo.registro_anvisa_ativo : true,
+                registro_anvisa_validade: ativo.registro_anvisa_validade || null,
+            };
+            try {
+                const urls = getItemUrls(id);
+                let res = await fetch(urls[0], { method: 'PUT', headers, body: JSON.stringify(payload) });
+                if (!res.ok) res = await fetch(urls[1], { method: 'PUT', headers, body: JSON.stringify(payload) });
+                if (!res.ok) erros++;
+            } catch (e) { console.error(e); erros++; }
+        }
+        setBulkLoading(false);
+        setIsBulkTransferOpen(false);
+        setIsBulkMenuOpen(false);
+        if (erros > 0) alert(`${erros} ativo(s) não puderam ser transferidos.`);
+        fetchData();
+    };
+
+    // ── Ações individuais ──────────────────────────────────────────────────────
     const handleOpenModal = (ativo = null) => {
         if (ativo) {
-            setIsEditing(true);
-            setCurrentAtivoId(ativo.id);
-            // merge any local anexos into form
+            setIsEditing(true); setCurrentAtivoId(ativo.id);
             const local = getLocalAnexosForAtivo(ativo.id);
             const serverAnexos = Array.isArray(ativo.anexos) ? ativo.anexos : [];
             const paths = new Set(serverAnexos.map(x => x.path));
             const merged = [...serverAnexos, ...local.filter(x => !paths.has(x.path))];
-
             setFormData({
-                nome: ativo.nome || '',
-                numero_serie: ativo.numero_serie || '',
-                voltagem_entrada: ativo.voltagem_entrada || '',
-                data_aquisicao: ativo.data_aquisicao || '',
-                data_inativacao: ativo.data_inativacao || '',
+                nome: ativo.nome || '', numero_serie: ativo.numero_serie || '',                voltagem_entrada: ativo.voltagem_entrada || '',
+                data_aquisicao: ativo.data_aquisicao || '', data_inativacao: ativo.data_inativacao || '',
                 empresa_id: ativo.empresa_id?.toString() || '',
                 localizacao_id: ativo.localizacao_id?.toString() || 'none',
-                fornecedor_id: ativo.fornecedor_id?.toString() || 'none',
-                contrato_id: ativo.contrato_id?.toString() || 'none',
+                fornecedor_ids: ativo.fornecedor_ids?.length
+                    ? ativo.fornecedor_ids.map(Number)
+                    : (ativo.fornecedor_id ? [Number(ativo.fornecedor_id)] : []),
+                contrato_ids: ativo.contrato_ids?.length
+                    ? ativo.contrato_ids.map(Number)
+                    : (ativo.contrato_id ? [Number(ativo.contrato_id)] : []),
                 orcamento_id: ativo.orcamento_id?.toString() || 'none',
-                anexos: merged
+                anexos: merged,
+                registro_anvisa: ativo.registro_anvisa || '',
+                registro_anvisa_ativo: ativo.registro_anvisa_ativo !== undefined && ativo.registro_anvisa_ativo !== null ? ativo.registro_anvisa_ativo : true,
+                registro_anvisa_validade: ativo.registro_anvisa_validade || ''
             });
         } else {
-            setIsEditing(false);
-            setCurrentAtivoId(null);
-            // load draft anexos (for new ativo)
-            const draft = getDraftAnexos();
-            setFormData({ 
-                nome: '', numero_serie: '', voltagem_entrada: '', 
-                data_aquisicao: '', data_inativacao: '',
-                empresa_id: '', localizacao_id: 'none', fornecedor_id: 'none', 
-                contrato_id: 'none', orcamento_id: 'none', anexos: draft || []
-            });
+            setIsEditing(false); setCurrentAtivoId(null);
+            setFormData({ nome: '', numero_serie: '', voltagem_entrada: '', data_aquisicao: '', data_inativacao: '', empresa_id: '', localizacao_id: 'none', fornecedor_ids: [], contrato_ids: [], orcamento_id: 'none', anexos: getDraftAnexos() || [], registro_anvisa: '', registro_anvisa_ativo: true, registro_anvisa_validade: '' });
         }
         setIsModalOpen(true);
     };
 
+    const handleDuplicar = async (ativo) => {
+        const headers = { 'Content-Type': 'application/json' };
+        if (user?.api_token) headers['X-API-Token'] = user.api_token;
+        const payload = { nome: `${ativo.nome} (Cópia)`, numero_serie: '', voltagem_entrada: ativo.voltagem_entrada || '', data_aquisicao: ativo.data_aquisicao || '', data_inativacao: '', empresa_id: ativo.empresa_id || null, localizacao_id: ativo.localizacao_id || null, fornecedor_ids: ativo.fornecedor_ids || (ativo.fornecedor_id ? [ativo.fornecedor_id] : []), contrato_ids: [], orcamento_id: null, anexos: [], registro_anvisa: ativo.registro_anvisa || null, registro_anvisa_ativo: ativo.registro_anvisa_ativo !== undefined ? ativo.registro_anvisa_ativo : true, registro_anvisa_validade: ativo.registro_anvisa_validade || null };
+        try {
+            let res = await fetch(API_COLLECTION, { method: 'POST', headers, body: JSON.stringify(payload) });
+            if (!res.ok) res = await fetch(API_COLLECTION_NO_SLASH, { method: 'POST', headers, body: JSON.stringify(payload) });
+            if (res.ok) fetchData();
+        } catch (e) { console.error(e); }
+    };
+
+    const handleOpenTransfer = (ativo) => {
+        setAtivoParaTransferir(ativo);
+        setTransferEmpresaId(ativo.empresa_id?.toString() || '');
+        setTransferLocalizacaoId(ativo.localizacao_id?.toString() || 'none');
+        setIsTransferModalOpen(true);
+    };
+
+    // 🆕 CORRIGIDO: envia só os campos que a rota precisa + mostra erro
+    const handleConfirmarTransfer = async () => {
+        if (!ativoParaTransferir || !transferEmpresaId) return;
+        setTransferLoading(true);
+        const headers = { 'Content-Type': 'application/json' };
+        if (user?.api_token) headers['X-API-Token'] = user.api_token;
+        const payload = {
+            nome:             ativoParaTransferir.nome,
+            numero_serie:     ativoParaTransferir.numero_serie || '',
+            voltagem_entrada: ativoParaTransferir.voltagem_entrada || '',
+            data_aquisicao:   ativoParaTransferir.data_aquisicao || null,
+            data_inativacao:  ativoParaTransferir.data_inativacao || null,
+            fornecedor_ids:   ativoParaTransferir.fornecedor_ids || (ativoParaTransferir.fornecedor_id ? [ativoParaTransferir.fornecedor_id] : []),
+            orcamento_id:      ativoParaTransferir.orcamento_id || null,
+            empresa_id:        parseInt(transferEmpresaId),
+            localizacao_id:    transferLocalizacaoId === 'none' ? null : parseInt(transferLocalizacaoId),
+            contrato_ids:      [],
+            registro_anvisa:          ativoParaTransferir.registro_anvisa || null,
+            registro_anvisa_ativo:    ativoParaTransferir.registro_anvisa_ativo !== undefined ? ativoParaTransferir.registro_anvisa_ativo : true,
+            registro_anvisa_validade: ativoParaTransferir.registro_anvisa_validade || null,
+        };
+        try {
+            const urls = getItemUrls(ativoParaTransferir.id);
+            let res = await fetch(urls[0], { method: 'PUT', headers, body: JSON.stringify(payload) });
+            if (!res.ok) res = await fetch(urls[1], { method: 'PUT', headers, body: JSON.stringify(payload) });
+            if (res.ok) {
+                setIsTransferModalOpen(false);
+                setAtivoParaTransferir(null);
+                fetchData();
+            } else {
+                const err = await res.json().catch(() => ({}));
+                alert('Erro ao transferir: ' + (err.error || res.status));
+            }
+        } catch (e) {
+            console.error(e);
+            alert('Erro de conexão ao transferir.');
+        } finally {
+            setTransferLoading(false);
+        }
+    };
+
     const handleFileUpload = async (e) => {
         const files = Array.from(e.target.files);
-        if (files.length === 0) return;
+        if (!files.length) return;
         setUploading(true);
         const newAnexos = [...formData.anexos];
         for (const file of files) {
-            const fData = new FormData();
-            fData.append('file', file);
+            const fData = new FormData(); fData.append('file', file);
             try {
-                const res = await fetch(`${API_BASE}/api/upload`, { 
-                    method: 'POST', 
-                    body: fData 
-                });
-                if (res.ok) {
-                    const data = await res.json();
-                    newAnexos.push({
-                        name: file.name,
-                        filename: data.filename,
-                        path: data.path,
-                        url: data.url
-                    });
-                }
-            } catch (err) { console.error('Upload error', err); }
+                const res = await fetch(`${API_BASE}/api/upload`, { method: 'POST', body: fData, headers: (()=>{const t=(()=>{try{return JSON.parse(localStorage.getItem('user'))?.api_token;}catch{return null;}})(); return t?{'X-API-Token':t}:{};})() });
+                if (res.ok) { const data = await res.json(); newAnexos.push({ name: file.name, filename: data.filename, path: data.path, url: data.url }); }
+            } catch (err) { console.error(err); }
         }
         setFormData({ ...formData, anexos: newAnexos });
         if (isEditing && currentAtivoId) saveLocalAnexosForAtivo(currentAtivoId, newAnexos);
@@ -261,42 +508,21 @@ export default function Ativos() {
             ...formData,
             empresa_id: formData.empresa_id ? parseInt(formData.empresa_id) : null,
             localizacao_id: formData.localizacao_id === 'none' ? null : parseInt(formData.localizacao_id),
-            fornecedor_id: formData.fornecedor_id === 'none' ? null : parseInt(formData.fornecedor_id),
-            contrato_id: formData.contrato_id === 'none' ? null : parseInt(formData.contrato_id),
+            fornecedor_ids: (formData.fornecedor_ids || []).map(Number),
+            contrato_ids: (formData.contrato_ids || []).map(Number),
             orcamento_id: formData.orcamento_id === 'none' ? null : parseInt(formData.orcamento_id),
-            anexos: formData.anexos // sending the list of {name, filename, path, url}
+            anexos: formData.anexos
         };
-
         const headers = { 'Content-Type': 'application/json' };
         if (user?.api_token) headers['X-API-Token'] = user.api_token;
-
         const urls = isEditing ? getItemUrls(currentAtivoId) : getCollectionUrls();
         const method = isEditing ? 'PUT' : 'POST';
-
         try {
-            // try first URL variant
             let res = await fetch(urls[0], { method, headers, body: JSON.stringify(payload) });
-            
-            // if 405 or 404 on first variant, try second
-            if (!res.ok && (res.status === 405 || res.status === 404)) {
-                res = await fetch(urls[1], { method, headers, body: JSON.stringify(payload) });
-            }
-
-            if (res.ok) {
-                if (isEditing && currentAtivoId) clearLocalAnexosForAtivo(currentAtivoId);
-                else clearDraftAnexos();
-                setIsModalOpen(false);
-                fetchData();
-            } else {
-                // If backend refuses update but it's just a 405 (Method Not Allowed), 
-                // we keep changes locally for this session.
-                if (isEditing && res.status === 405) {
-                    setIsModalOpen(false);
-                }
-            }
-        } catch (error) {
-            console.error("Erro ao salvar:", error);
-        }
+            if (!res.ok && (res.status === 405 || res.status === 404)) res = await fetch(urls[1], { method, headers, body: JSON.stringify(payload) });
+            if (res.ok) { if (isEditing && currentAtivoId) clearLocalAnexosForAtivo(currentAtivoId); else clearDraftAnexos(); setIsModalOpen(false); fetchData(); }
+            else if (isEditing && res.status === 405) setIsModalOpen(false);
+        } catch (error) { console.error("Erro ao salvar:", error); }
     };
 
     const handleDelete = async (id) => {
@@ -306,245 +532,341 @@ export default function Ativos() {
         const urls = getItemUrls(id);
         try {
             let res = await fetch(urls[0], { method: 'DELETE', headers });
-            if (!res.ok && (res.status === 405 || res.status === 404)) {
-                res = await fetch(urls[1], { method: 'DELETE', headers });
-            }
-            if (res.ok) {
-                clearLocalAnexosForAtivo(id);
-                fetchData();
-            }
-        } catch (error) { console.error("Erro ao excluir:", error); }
-    };
-
-    const handleOpenAttachments = (anexos) => {
-        setAttachmentsToShow(anexos || []);
-        setIsAttachmentsModalOpen(true);
+            if (!res.ok) res = await fetch(urls[1], { method: 'DELETE', headers });
+            if (res.ok) { clearLocalAnexosForAtivo(id); fetchData(); }
+        } catch (error) { console.error(error); }
     };
 
     const handleOpenQRCode = (ativo) => {
-        const publicUrl = `${window.location.origin}/abrir-chamado/${ativo.id}`;
-        setQrCodeData({
-            url: publicUrl,
-            nome: ativo.nome,
-            sn: ativo.numero_serie,
-            clinica: ativo.empresa_nome,
-            local: ativo.localizacao_nome
-        });
+        setQrCodeData({ url: `${window.location.origin}/abrir-chamado/${ativo.id}`, nome: ativo.nome, sn: ativo.numero_serie, clinica: ativo.empresa_nome, local: ativo.localizacao_nome });
         setIsQRCodeModalOpen(true);
     };
 
     const handlePrintQRCode = () => {
-        const printContent = document.getElementById('qrcode-print-area');
-        const svgElement = printContent.querySelector('svg');
-        
-        // Clone the element to avoid modifying the UI
+        const svgElement = document.getElementById('qrcode-print-area').querySelector('svg');
         const printWindow = window.open('', '_blank');
-        printWindow.document.write(`
-            <html>
-                <head>
-                    <title>Imprimir Etiqueta - ${qrCodeData.nome}</title>
-                    <style>
-                        body { 
-                            font-family: 'Courier New', Courier, monospace; 
-                            display: flex; 
-                            flex-direction: column; 
-                            align-items: center; 
-                            justify-content: center; 
-                            padding: 20px;
-                            text-align: center;
-                        }
-                        .container { border: 1px solid #eee; padding: 20px; border-radius: 10px; }
-                        h2 { margin: 10px 0; font-size: 18px; }
-                        p { margin: 2px 0; font-size: 12px; color: #666; }
-                        .qr-container { margin: 15px 0; }
-                        @media print {
-                            body { padding: 0; }
-                            .container { border: none; }
-                            button { display: none; }
-                        }
-                    </style>
-                </head>
-                <body>
-                    <div class="container">
-                        <div class="qr-container">
-                            ${svgElement.outerHTML}
-                        </div>
-                        <h2>${qrCodeData.nome}</h2>
-                        <p>S/N: ${qrCodeData.sn || 'N/A'}</p>
-                        <p><strong>${qrCodeData.clinica}</strong></p>
-                        <p>${qrCodeData.local || 'N/A'}</p>
-                    </div>
-                    <script>
-                        window.onload = () => {
-                            window.print();
-                            window.onafterprint = () => window.close();
-                        };
-                    </script>
-                </body>
-            </html>
-        `);
+        printWindow.document.write(`<html><head><title>${qrCodeData.nome}</title><style>body{font-family:'Courier New',monospace;display:flex;flex-direction:column;align-items:center;padding:20px;text-align:center;}.container{border:1px solid #eee;padding:20px;border-radius:10px;}h2{margin:10px 0;font-size:18px;}p{margin:2px 0;font-size:12px;color:#666;}.qr-container{margin:15px 0;}@media print{body{padding:0;}.container{border:none;}}</style></head><body><div class="container"><div class="qr-container">${svgElement.outerHTML}</div><h2>${qrCodeData.nome}</h2><p>S/N: ${qrCodeData.sn || 'N/A'}</p><p><strong>${qrCodeData.clinica}</strong></p><p>${qrCodeData.local || 'N/A'}</p></div><script>window.onload=()=>{window.print();window.onafterprint=()=>window.close();};<\/script></body></html>`);
         printWindow.document.close();
     };
 
     const filteredAtivos = useMemo(() => {
+        const term = searchTerm.trim().toLocaleLowerCase('pt-BR');
         return ativos.filter(a => {
-            const matchesSearch = a.nome.toLowerCase().includes(searchTerm.toLowerCase()) || 
-                                 (a.numero_serie && a.numero_serie.toLowerCase().includes(searchTerm.toLowerCase()));
-            
-            let matchesEmpresa = true;
-            if (empresaFilter !== 'Todas') {
-                matchesEmpresa = a.empresa_id === parseInt(empresaFilter);
-            }
-            
-            let matchesLocal = true;
-            if (localizacaoFilter !== 'Todas') {
-                matchesLocal = a.localizacao_id === parseInt(localizacaoFilter);
-            }
-            
+            const searchable = [
+                a.nome,
+                a.numero_serie,
+                ...(a.fornecedores_nomes || []),
+                ...(a.contratos_numeros || [])
+            ].filter(Boolean);
+            const matchesSearch = !term || searchable.some(value =>
+                String(value).toLocaleLowerCase('pt-BR').includes(term)
+            );
+            const matchesEmpresa = empresaFilter === 'Todas' || a.empresa_id === parseInt(empresaFilter);
+            const matchesLocal = localizacaoFilter === 'Todas' || a.localizacao_id === parseInt(localizacaoFilter);
             return matchesSearch && matchesEmpresa && matchesLocal;
         });
     }, [ativos, searchTerm, empresaFilter, localizacaoFilter]);
 
+    const allSelected = filteredAtivos.length > 0 && selectedIds.length === filteredAtivos.length;
+    const someSelected = selectedIds.length > 0;
+
     return (
         <div className="p-6 bg-gray-50 min-h-screen">
+
+            {/* ── Header ── */}
             <div className="flex justify-between items-center mb-6">
                 <h1 className="text-2xl font-bold text-gray-800 flex items-center gap-2">
-                    <Box className="text-indigo-600" /> Gestão de Ativos
+                    <Box className="text-black" /> Gestão de Ativos
                 </h1>
-                <button 
-                    onClick={() => handleOpenModal()}
-                    className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg flex items-center gap-2 transition-all shadow-lg"
-                >
+                {can('ativos','criar') && (
+                <button onClick={() => handleOpenModal()}
+                    className="bg-black hover:bg-black text-white px-4 py-2 rounded-lg flex items-center gap-2 transition-all shadow-lg">
                     <Plus size={20} /> Novo Ativo
                 </button>
+                )}
             </div>
 
-            {/* Filtros */}
-            <div className="bg-white p-4 rounded-xl shadow-sm mb-6 border border-gray-200 grid grid-cols-1 md:grid-cols-3 gap-4">
+            {/* ── Filtros ── */}
+            <div className="bg-white p-4 rounded-xl shadow-sm mb-4 border border-gray-200 grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div className="relative">
                     <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
-                    <input 
-                        type="text" 
-                        placeholder="Pesquisar por nome ou S/N..." 
-                        className="w-full pl-10 pr-4 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none"
-                        value={searchTerm}
-                        onChange={(e) => setSearchTerm(e.target.value)}
-                    />
+                    <input type="text" placeholder="Pesquisar por nome ou S/N..."
+                        className="w-full pl-10 pr-4 py-2 border rounded-lg focus:ring-2 focus:ring-gray-500 outline-none"
+                        value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
                 </div>
-                <select 
-                    className="p-2 border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500"
-                    value={empresaFilter}
-                    onChange={(e) => setEmpresaFilter(e.target.value)}
-                >
+                <select className="p-2 border rounded-lg outline-none focus:ring-2 focus:ring-gray-500"
+                    value={empresaFilter} onChange={(e) => setEmpresaFilter(e.target.value)}>
                     <option value="Todas">Todas as Empresas</option>
                     {renderHierarchicalOptions(empresas)}
                 </select>
-                <select 
-                    className="p-2 border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500"
-                    value={localizacaoFilter}
-                    onChange={(e) => setLocalizacaoFilter(e.target.value)}
-                >
+                <select className="p-2 border rounded-lg outline-none focus:ring-2 focus:ring-gray-500"
+                    value={localizacaoFilter} onChange={(e) => setLocalizacaoFilter(e.target.value)}>
                     <option value="Todas">Todas as Localizações</option>
                     {renderGroupedLocalizacoes()}
                 </select>
             </div>
 
-            {/* Grid de Ativos */}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {filteredAtivos.map(a => (
-                    <Card key={a.id} className="hover:shadow-md transition-shadow border-gray-200 group relative overflow-hidden">
-                        <CardContent className="p-0">
-                            <div className="p-5 border-b border-gray-100 bg-white">
-                                <div className="flex justify-between items-start mb-2">
-                                    <h3 className="font-bold text-gray-800 text-lg flex items-center gap-2">
-                                        <Box size={18} className="text-indigo-500" /> {a.nome}
-                                    </h3>
-                                    <div className="flex gap-1">
-                                        <button onClick={() => handleOpenQRCode(a)} className="p-1.5 text-indigo-600 hover:bg-indigo-50 rounded-md transition-colors" title="QR Code">
-                                            <QrCode size={16} />
-                                        </button>
-                                        <button onClick={() => handleOpenModal(a)} className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-md transition-colors" title="Editar">
-                                            <Edit2 size={16} />
-                                        </button>
-                                        <button onClick={() => handleDelete(a.id)} className="p-1.5 text-red-600 hover:bg-red-50 rounded-md transition-colors" title="Excluir">
-                                            <Trash2 size={16} />
-                                        </button>
-                                    </div>
-                                </div>
-                                <div className="space-y-1.5 text-sm text-gray-600">
-                                    <p className="flex items-center gap-2"><Hash size={14} className="text-gray-400" /> S/N: <span className="font-mono text-xs">{a.numero_serie || 'N/A'}</span></p>
-                                    <p className="flex items-center gap-2"><Building2 size={14} className="text-gray-400" /> {a.empresa_nome}</p>
-                                    <p className="flex items-center gap-2"><MapPin size={14} className="text-gray-400" /> {a.localizacao_nome || 'N/A'}</p>
-                                </div>
-                            </div>
-                            <div className="p-4 bg-gray-50/50 flex justify-between items-center">
-                                <div className="flex gap-3">
-                                    {a.voltagem_entrada && (
-                                        <span className="flex items-center gap-1 text-xs font-medium text-amber-700 bg-amber-50 px-2 py-1 rounded-md border border-amber-100">
-                                            <Zap size={12} /> {a.voltagem_entrada}
-                                        </span>
-                                    )}
-                                    {a.data_aquisicao && (
-                                        <span className="flex items-center gap-1 text-xs font-medium text-blue-700 bg-blue-50 px-2 py-1 rounded-md border border-blue-100">
-                                            <Calendar size={12} /> {new Date(a.data_aquisicao).toLocaleDateString()}
-                                        </span>
-                                    )}
-                                </div>
-                                
-                                {a.anexos && a.anexos.length > 0 && (
-                                    <button 
-                                        onClick={() => handleOpenAttachments(a.anexos)}
-                                        className="flex items-center gap-1 text-xs font-bold text-indigo-600 hover:underline"
-                                    >
-                                        <Paperclip size={12} /> {a.anexos.length} Anexos
+            {/* ── Barra de seleção em lote ── */}
+            <div className={`mb-4 flex items-center gap-3 px-4 py-3 rounded-xl border transition-all duration-200 ${someSelected ? 'bg-gray-50 border-gray-200 shadow-sm' : 'bg-white border-gray-200'}`}>
+                <button onClick={toggleSelectAll} className="flex items-center gap-2 text-sm font-bold text-gray-600 hover:text-gray-600 transition-colors">
+                    {allSelected
+                        ? <CheckSquare size={20} className="text-gray-600" />
+                        : someSelected
+                            ? <CheckSquare size={20} className="text-gray-400" />
+                            : <Square size={20} className="text-gray-400" />}
+                    {someSelected ? `${selectedIds.length} selecionado(s)` : 'Selecionar todos'}
+                </button>
+
+                {someSelected && (
+                    <>
+                        <span className="text-gray-300">|</span>
+                        <div className="relative">
+                            <button onClick={() => setIsBulkMenuOpen(o => !o)}
+                                className="flex items-center gap-1.5 bg-gray-600 hover:bg-black text-white px-3 py-1.5 rounded-lg text-sm font-bold transition-all">
+                                Ações em lote <ChevronDown size={14} />
+                            </button>
+                            {isBulkMenuOpen && (
+                                <div className="absolute left-0 top-full mt-1 bg-white border border-gray-200 rounded-xl shadow-xl z-30 min-w-[200px] overflow-hidden">
+                                    <button onClick={handleBulkDuplicate} disabled={bulkLoading}
+                                        className="w-full flex items-center gap-2 px-4 py-3 text-sm font-medium text-emerald-700 hover:bg-emerald-50 transition-colors">
+                                        <Copy size={15} /> Duplicar selecionados
                                     </button>
-                                )}
-                            </div>
-                        </CardContent>
-                    </Card>
-                ))}
+                                    <button onClick={() => { setIsBulkTransferOpen(true); setIsBulkMenuOpen(false); }}
+                                        className="w-full flex items-center gap-2 px-4 py-3 text-sm font-medium text-amber-700 hover:bg-amber-50 transition-colors">
+                                        <ArrowRightLeft size={15} /> Transferir selecionados
+                                    </button>
+                                    <div className="border-t border-gray-100" />
+                                    <button onClick={handleBulkDelete} disabled={bulkLoading}
+                                        className="w-full flex items-center gap-2 px-4 py-3 text-sm font-medium text-red-600 hover:bg-red-50 transition-colors">
+                                        <Trash2 size={15} /> Excluir selecionados
+                                    </button>
+                                </div>
+                            )}
+                        </div>
+                        <button onClick={clearSelection} className="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-600 transition-colors ml-auto">
+                            <X size={14} /> Limpar seleção
+                        </button>
+                    </>
+                )}
+
+                {!someSelected && (
+                    <span className="text-xs text-gray-400 ml-2">
+                        {filteredAtivos.length} ativo(s) encontrado(s)
+                    </span>
+                )}
             </div>
 
-            {/* Modal de Anexos */}
-            {isAttachmentsModalOpen && (
-                <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-[60] p-4">
-                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden flex flex-col">
-                        <div className="p-4 border-b border-gray-100 flex justify-between items-center bg-indigo-600 text-white">
-                            <h3 className="font-bold flex items-center gap-2"><Paperclip size={18} /> Anexos</h3>
-                            <button onClick={() => setIsAttachmentsModalOpen(false)} className="p-1 hover:bg-white/10 rounded-full"><X size={20} /></button>
-                        </div>
-                        <div className="p-4 max-h-[60vh] overflow-y-auto space-y-2">
-                            {attachmentsToShow.map((anexo, idx) => (
-                                <div key={idx} className="flex items-center justify-between p-3 bg-gray-50 rounded-xl border border-gray-100 hover:border-indigo-200 transition-colors">
-                                    <div className="flex items-center gap-3 overflow-hidden">
-                                        <div className="p-2 bg-indigo-100 text-indigo-600 rounded-lg"><FileText size={16} /></div>
-                                        <span className="text-sm font-medium text-gray-700 truncate">{anexo.name || anexo.filename || 'Arquivo'}</span>
+            {/* ── Grid de Ativos ── */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                {filteredAtivos.map(a => {
+                    const isSelected = selectedIds.includes(a.id);
+                    return (
+                        <Card key={a.id}
+                            className={`transition-all border-2 group relative overflow-hidden cursor-pointer ${isSelected ? 'border-gray-400 shadow-md ring-2 ring-gray-200' : 'border-gray-200 hover:shadow-md'}`}>
+                            <CardContent className="p-0">
+                                <div className="p-5 border-b border-gray-100 bg-white">
+                                    <div className="flex justify-between items-start mb-2">
+                                        <div className="flex items-start gap-2 flex-1 min-w-0">
+                                            <button onClick={() => toggleSelect(a.id)}
+                                                className="mt-0.5 shrink-0 transition-colors">
+                                                {isSelected
+                                                    ? <CheckSquare size={18} className="text-gray-600" />
+                                                    : <Square size={18} className="text-gray-300 hover:text-gray-400" />}
+                                            </button>
+                                            <h3 className="font-bold text-gray-800 text-base flex items-center gap-1.5 truncate">
+                                                <Box size={16} className="text-gray-500 shrink-0" /> {a.nome}                                            </h3>
+                                        </div>
+                                        <div className="flex gap-1 shrink-0 ml-1">
+                                            <button onClick={() => handleOpenQRCode(a)} className="p-1.5 text-gray-600 hover:bg-gray-50 rounded-md transition-colors" title="QR Code"><QrCode size={15} /></button>
+                                            <button onClick={() => handleDuplicar(a)} className="p-1.5 text-emerald-600 hover:bg-emerald-50 rounded-md transition-colors" title="Duplicar"><Copy size={15} /></button>
+                                            <button onClick={() => handleOpenTransfer(a)} className="p-1.5 text-amber-600 hover:bg-amber-50 rounded-md transition-colors" title="Transferir"><ArrowRightLeft size={15} /></button>
+                                            {can('ativos','editar') && <button onClick={() => handleOpenModal(a)} className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-md transition-colors" title="Editar"><Edit2 size={15} /></button>}
+                                            {can('ativos','excluir') && <button onClick={() => handleDelete(a.id)} className="p-1.5 text-red-600 hover:bg-red-50 rounded-md transition-colors" title="Excluir"><Trash2 size={15} /></button>}
+                                        </div>
                                     </div>
-                                    <button 
-                                        onClick={() => window.open(getAnexoHref(anexo.path || anexo.url), '_blank')}
-                                        className="p-2 text-indigo-600 hover:bg-indigo-100 rounded-lg transition-colors"
-                                    >
-                                        <Eye size={18} />
-                                    </button>
+                                    <div className="space-y-1.5 text-sm text-gray-600 pl-6">
+                                        <p className="flex items-center gap-2"><Hash size={13} className="text-gray-400" /> S/N: <span className="font-mono text-xs">{a.numero_serie || 'N/A'}</span></p>
+                                        <p className="flex items-center gap-2"><Building2 size={13} className="text-gray-400" /> {a.empresa_nome}</p>
+                                        <p className="flex items-center gap-2"><MapPin size={13} className="text-gray-400" /> {a.localizacao_nome || 'N/A'}</p>
+                                        {(a.fornecedores_nomes?.length > 0 || a.fornecedor_nome) && (
+                                            <p className="flex items-start gap-2">
+                                                <Building2 size={13} className="mt-0.5 shrink-0 text-gray-400" />
+                                                <span className="line-clamp-2">
+                                                    Prest.: {(a.fornecedores_nomes?.length ? a.fornecedores_nomes : [a.fornecedor_nome]).join(', ')}
+                                                </span>
+                                            </p>
+                                        )}
+                                        {(a.contratos_numeros?.length > 0 || a.contrato_nome) && (
+                                            <p className="flex items-start gap-2">
+                                                <FileText size={13} className="mt-0.5 shrink-0 text-gray-400" />
+                                                <span className="line-clamp-2">
+                                                    Contratos: {(a.contratos_numeros?.length ? a.contratos_numeros : [a.contrato_nome]).join(', ')}
+                                                </span>
+                                            </p>
+                                        )}
+                                        {a.registro_anvisa && (
+                                            <p className="flex items-center gap-2">
+                                                <FileText size={13} className="text-gray-400" /> Anvisa: <span className="font-mono text-xs">{a.registro_anvisa}</span>
+                                                <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${a.registro_anvisa_ativo ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
+                                                    {a.registro_anvisa_ativo ? 'ATIVO' : 'INATIVO'}
+                                                </span>
+                                            </p>
+                                        )}
+                                    </div>
                                 </div>
-                            ))}
+                                <div className={`p-4 flex justify-between items-center transition-colors ${isSelected ? 'bg-gray-50/60' : 'bg-gray-50/50'}`}>
+                                    <div className="flex gap-2 flex-wrap">
+                                        {a.voltagem_entrada && (
+                                            <span className="flex items-center gap-1 text-xs font-medium text-amber-700 bg-amber-50 px-2 py-1 rounded-md border border-amber-100">
+                                                <Zap size={11} /> {a.voltagem_entrada}
+                                            </span>
+                                        )}
+                                        {a.data_aquisicao && (
+                                            <span className="flex items-center gap-1 text-xs font-medium text-blue-700 bg-blue-50 px-2 py-1 rounded-md border border-blue-100">
+                                                <Calendar size={11} /> {new Date(a.data_aquisicao).toLocaleDateString()}
+                                            </span>
+                                        )}
+                                    </div>
+                                    {a.anexos && a.anexos.length > 0 && (
+                                        <button onClick={() => { setAttachmentsToShow(a.anexos); setIsAttachmentsModalOpen(true); }}
+                                            className="flex items-center gap-1 text-xs font-bold text-gray-600 hover:underline">
+                                            <Paperclip size={11} /> {a.anexos.length} Anexos
+                                        </button>
+                                    )}
+                                </div>
+                            </CardContent>
+                        </Card>
+                    );
+                })}
+            </div>
+
+            {/* ── Modal Transferir em Lote ── */}
+            {isBulkTransferOpen && (
+                <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-[60] p-4">
+                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+                        <div className="p-5 border-b flex justify-between items-center bg-amber-500 text-white">
+                            <h3 className="font-bold flex items-center gap-2">
+                                <ArrowRightLeft size={18} /> Transferir {selectedIds.length} Ativo(s)
+                            </h3>
+                            <button onClick={() => setIsBulkTransferOpen(false)} className="p-1 hover:bg-white/10 rounded-full"><X size={20} /></button>
                         </div>
-                        <div className="p-4 border-t border-gray-100 bg-gray-50 flex justify-end">
-                            <button onClick={() => setIsAttachmentsModalOpen(false)} className="px-4 py-2 bg-white border border-gray-200 rounded-lg text-gray-600 hover:bg-gray-100 font-semibold transition-colors">Fechar</button>
+                        <div className="p-6 space-y-5">
+                            <div className="p-3 bg-amber-50 rounded-xl border border-amber-100 text-sm text-amber-800">
+                                <p className="font-bold">{selectedIds.length} ativo(s) selecionado(s) serão transferidos.</p>
+                                <p className="text-xs text-amber-600 mt-1">⚠️ Os contratos vinculados serão desassociados.</p>
+                            </div>
+                            <div>
+                                <label className="block text-xs font-bold text-gray-700 mb-1 uppercase">Nova Empresa / Clínica *</label>
+                                <select className="w-full p-2.5 border rounded-lg outline-none focus:ring-2 focus:ring-amber-400"
+                                    value={bulkTransferEmpresaId}
+                                    onChange={e => { setBulkTransferEmpresaId(e.target.value); setBulkTransferLocalizacaoId('none'); }}>
+                                    <option value="">Selecione a empresa destino...</option>
+                                    {renderHierarchicalOptions(empresas)}
+                                </select>
+                            </div>
+                            <div>
+                                <label className="block text-xs font-bold text-gray-700 mb-1 uppercase">Nova Localização</label>
+                                <select className="w-full p-2.5 border rounded-lg outline-none focus:ring-2 focus:ring-amber-400"
+                                    value={bulkTransferLocalizacaoId}
+                                    onChange={e => setBulkTransferLocalizacaoId(e.target.value)}>
+                                    <option value="none">Nenhuma</option>
+                                    {renderGroupedLocalizacoes(bulkTransferEmpresaId || null)}
+                                </select>
+                            </div>
+                        </div>
+                        <div className="p-5 border-t flex gap-3">
+                            <button onClick={() => setIsBulkTransferOpen(false)}
+                                className="flex-1 py-2.5 bg-gray-100 hover:bg-gray-200 text-gray-600 rounded-xl font-bold transition-all">
+                                Cancelar
+                            </button>
+                            <button onClick={handleBulkTransferConfirm}
+                                disabled={!bulkTransferEmpresaId || bulkLoading}
+                                className="flex-1 py-2.5 bg-black hover:bg-black text-white rounded-xl font-bold transition-all disabled:opacity-50 flex items-center justify-center gap-2">
+                                <ArrowRightLeft size={16} />
+                                {bulkLoading ? 'Transferindo...' : 'Confirmar'}
+                            </button>
                         </div>
                     </div>
                 </div>
             )}
 
-            {/* Modal de QR Code */}
+            {/* ── Modal Transferir individual ── */}
+            {isTransferModalOpen && ativoParaTransferir && (
+                <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-[60] p-4">
+                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+                        <div className="p-5 border-b flex justify-between items-center bg-black text-white">
+                            <h3 className="font-bold flex items-center gap-2"><ArrowRightLeft size={18} /> Transferir Ativo</h3>
+                            <button onClick={() => setIsTransferModalOpen(false)} className="p-1 hover:bg-white/10 rounded-full"><X size={20} /></button>
+                        </div>
+                        <div className="p-6 space-y-5">
+                            <div className="p-3 bg-amber-50 rounded-xl border border-amber-100 text-sm text-amber-800">
+                                <p className="font-bold">{ativoParaTransferir.nome}</p>
+                                <p className="text-xs text-amber-600">S/N: {ativoParaTransferir.numero_serie || 'N/A'}</p>
+                                <p className="text-xs text-amber-600 mt-1">De: <strong>{ativoParaTransferir.empresa_nome}</strong>{ativoParaTransferir.localizacao_nome && ` — ${ativoParaTransferir.localizacao_nome}`}</p>
+                            </div>
+                            <div>
+                                <label className="block text-xs font-bold text-gray-700 mb-1 uppercase">Nova Empresa *</label>
+                                <select className="w-full p-2.5 border rounded-lg outline-none focus:ring-2 focus:ring-amber-400"
+                                    value={transferEmpresaId} onChange={e => { setTransferEmpresaId(e.target.value); setTransferLocalizacaoId('none'); }}>
+                                    <option value="">Selecione...</option>
+                                    {renderHierarchicalOptions(empresas)}
+                                </select>
+                            </div>
+                            <div>
+                                <label className="block text-xs font-bold text-gray-700 mb-1 uppercase">Nova Localização</label>
+                                <select className="w-full p-2.5 border rounded-lg outline-none focus:ring-2 focus:ring-amber-400"
+                                    value={transferLocalizacaoId} onChange={e => setTransferLocalizacaoId(e.target.value)}>
+                                    <option value="none">Nenhuma</option>
+                                    {renderGroupedLocalizacoes(transferEmpresaId || null)}
+                                </select>
+                            </div>
+                            <p className="text-xs text-gray-400">⚠️ Os contratos vinculados serão desassociados.</p>
+                        </div>
+                        <div className="p-5 border-t flex gap-3">
+                            <button onClick={() => setIsTransferModalOpen(false)} className="flex-1 py-2.5 bg-gray-100 hover:bg-gray-200 text-gray-600 rounded-xl font-bold">Cancelar</button>
+                            <button onClick={handleConfirmarTransfer} disabled={!transferEmpresaId || transferLoading}
+                                className="flex-1 py-2.5 bg-black hover:bg-black text-white rounded-xl font-bold disabled:opacity-50 flex items-center justify-center gap-2">
+                                <ArrowRightLeft size={16} /> {transferLoading ? 'Transferindo...' : 'Confirmar'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* ── Modal Anexos ── */}
+            {isAttachmentsModalOpen && (
+                <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-[60] p-4">
+                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden flex flex-col">
+                        <div className="p-4 border-b flex justify-between items-center bg-gray-600 text-white">
+                            <h3 className="font-bold flex items-center gap-2"><Paperclip size={18} /> Anexos</h3>
+                            <button onClick={() => setIsAttachmentsModalOpen(false)} className="p-1 hover:bg-white/10 rounded-full"><X size={20} /></button>
+                        </div>
+                        <div className="p-4 max-h-[60vh] overflow-y-auto space-y-2">
+                            {attachmentsToShow.map((anexo, idx) => (
+                                <div key={idx} className="flex items-center justify-between p-3 bg-gray-50 rounded-xl border border-gray-100 hover:border-gray-200">
+                                    <div className="flex items-center gap-3 overflow-hidden">
+                                        <div className="p-2 bg-gray-100 text-gray-600 rounded-lg"><FileText size={16} /></div>
+                                        <span className="text-sm font-medium text-gray-700 truncate">{anexo.name || anexo.filename || 'Arquivo'}</span>
+                                    </div>
+                                    <button onClick={() => openSecureFile(anexo.path || anexo.url)} className="p-2 text-gray-600 hover:bg-gray-100 rounded-lg"><Eye size={18} /></button>
+                                </div>
+                            ))}
+                        </div>
+                        <div className="p-4 border-t bg-gray-50 flex justify-end">
+                            <button onClick={() => setIsAttachmentsModalOpen(false)} className="px-4 py-2 bg-white border border-gray-200 rounded-lg text-gray-600 hover:bg-gray-100 font-semibold">Fechar</button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* ── Modal QR Code ── */}
             {isQRCodeModalOpen && qrCodeData && (
                 <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-[60] p-4">
                     <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden p-6 text-center space-y-4">
-                        <div className="flex justify-between items-center mb-2">
+                        <div className="flex justify-between items-center">
                             <h3 className="font-bold text-gray-800">Etiqueta do Ativo</h3>
                             <button onClick={() => setIsQRCodeModalOpen(false)} className="p-1 hover:bg-gray-100 rounded-full"><X size={20} /></button>
                         </div>
-                        
                         <div id="qrcode-print-area" className="bg-white p-4 border rounded-xl inline-block">
                             <QRCodeSVG value={qrCodeData.url} size={180} />
                             <div className="mt-4 text-left">
@@ -554,164 +876,148 @@ export default function Ativos() {
                                 <p className="text-[10px] text-gray-400 m-0 italic">{qrCodeData.local || 'N/A'}</p>
                             </div>
                         </div>
-
                         <div className="flex gap-3">
-                            <button onClick={handlePrintQRCode} className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white py-2 rounded-lg font-bold flex items-center justify-center gap-2 shadow-md transition-all active:scale-95">
+                            <button onClick={handlePrintQRCode} className="flex-1 bg-gray-600 hover:bg-gray-700 text-white py-2 rounded-lg font-bold flex items-center justify-center gap-2 shadow-md transition-all">
                                 <Printer size={18} /> Imprimir
                             </button>
-                            <button onClick={() => setIsQRCodeModalOpen(false)} className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-600 py-2 rounded-lg font-bold transition-all">
-                                Fechar
-                            </button>
+                            <button onClick={() => setIsQRCodeModalOpen(false)} className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-600 py-2 rounded-lg font-bold">Fechar</button>
                         </div>
                         <p className="text-[10px] text-gray-400 break-all">{qrCodeData.url}</p>
                     </div>
                 </div>
             )}
 
-            {/* Modal de Cadastro/Edição */}
+            {/* ── Modal Cadastro/Edição ── */}
             {isModalOpen && (
                 <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col animate-in fade-in zoom-in duration-200">
-                        <div className="p-6 border-b border-gray-100 flex justify-between items-center bg-indigo-600 text-white">
-                            <h2 className="text-xl font-bold flex items-center gap-2">
-                                <Box size={24} /> {isEditing ? 'Editar Ativo' : 'Novo Ativo'}
-                            </h2>
-                            <button onClick={() => setIsModalOpen(false)} className="p-1 hover:bg-white/10 rounded-full transition-colors"><X size={28} /></button>
+                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
+                        <div className="p-6 border-b flex justify-between items-center bg-black text-white">
+                            <h2 className="text-xl font-bold flex items-center gap-2"><Box size={24} /> {isEditing ? 'Editar Ativo' : 'Novo Ativo'}</h2>
+                            <button onClick={() => setIsModalOpen(false)} className="p-1 hover:bg-white/10 rounded-full"><X size={28} /></button>
                         </div>
-                        
                         <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-8 space-y-8">
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                                {/* Seção 1: Identificação */}
                                 <div className="space-y-4">
-                                    <h3 className="text-xs font-bold text-gray-400 uppercase tracking-widest border-b border-gray-100 pb-2">Identificação</h3>
+                                    <h3 className="text-xs font-bold text-gray-400 uppercase tracking-widest border-b pb-2">Identificação</h3>
                                     <div>
-                                        <label className="block text-xs font-bold text-gray-700 mb-1 uppercase">Nome do Ativo *</label>
-                                        <input 
-                                            type="text" required 
-                                            className="w-full p-2.5 border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500" 
-                                            value={formData.nome} onChange={e => setFormData({...formData, nome: e.target.value})} 
-                                        />
+                                        <label className="block text-xs font-bold text-gray-700 mb-1 uppercase">Nome *</label>
+                                        <input type="text" required className="w-full p-2.5 border rounded-lg outline-none focus:ring-2 focus:ring-gray-500" value={formData.nome} onChange={e => setFormData({...formData, nome: e.target.value})} />
                                     </div>
                                     <div className="grid grid-cols-2 gap-4">
                                         <div>
-                                            <label className="block text-xs font-bold text-gray-700 mb-1 uppercase">Nº de Série</label>
-                                            <input 
-                                                type="text" 
-                                                className="w-full p-2.5 border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500" 
-                                                value={formData.numero_serie} onChange={e => setFormData({...formData, numero_serie: e.target.value})} 
-                                            />
+                                            <label className="block text-xs font-bold text-gray-700 mb-1 uppercase">Nº Série</label>
+                                            <input type="text" className="w-full p-2.5 border rounded-lg outline-none focus:ring-2 focus:ring-gray-500" value={formData.numero_serie} onChange={e => setFormData({...formData, numero_serie: e.target.value})} />
                                         </div>
                                         <div>
                                             <label className="block text-xs font-bold text-gray-700 mb-1 uppercase">Voltagem</label>
-                                            <input 
-                                                type="text" placeholder="ex: 220V"
-                                                className="w-full p-2.5 border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500" 
-                                                value={formData.voltagem_entrada} onChange={e => setFormData({...formData, voltagem_entrada: e.target.value})} 
-                                            />
+                                            <input type="text" placeholder="220V" className="w-full p-2.5 border rounded-lg outline-none focus:ring-2 focus:ring-gray-500" value={formData.voltagem_entrada} onChange={e => setFormData({...formData, voltagem_entrada: e.target.value})} />
                                         </div>
                                     </div>
                                     <div className="grid grid-cols-2 gap-4">
                                         <div>
-                                            <label className="block text-xs font-bold text-gray-700 mb-1 uppercase">Data Aquisição</label>
-                                            <input 
-                                                type="date" 
-                                                className="w-full p-2.5 border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500" 
-                                                value={formData.data_aquisicao} onChange={e => setFormData({...formData, data_aquisicao: e.target.value})} 
-                                            />
+                                            <label className="block text-xs font-bold text-gray-700 mb-1 uppercase">Aquisição</label>
+                                            <input type="date" className="w-full p-2.5 border rounded-lg outline-none focus:ring-2 focus:ring-gray-500" value={formData.data_aquisicao} onChange={e => setFormData({...formData, data_aquisicao: e.target.value})} />
                                         </div>
                                         <div>
-                                            <label className="block text-xs font-bold text-gray-700 mb-1 uppercase">Data Inativação</label>
-                                            <input 
-                                                type="date" 
-                                                className="w-full p-2.5 border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500" 
-                                                value={formData.data_inativacao} onChange={e => setFormData({...formData, data_inativacao: e.target.value})} 
-                                            />
+                                            <label className="block text-xs font-bold text-gray-700 mb-1 uppercase">Inativação</label>
+                                            <input type="date" className="w-full p-2.5 border rounded-lg outline-none focus:ring-2 focus:ring-gray-500" value={formData.data_inativacao} onChange={e => setFormData({...formData, data_inativacao: e.target.value})} />
                                         </div>
                                     </div>
                                 </div>
-
-                                {/* Seção 2: Vínculos */}
                                 <div className="space-y-4">
-                                    <h3 className="text-xs font-bold text-gray-400 uppercase tracking-widest border-b border-gray-100 pb-2">Vínculos</h3>
+                                    <h3 className="text-xs font-bold text-gray-400 uppercase tracking-widest border-b pb-2">Vínculos</h3>
                                     <div>
-                                        <label className="block text-xs font-bold text-gray-700 mb-1 uppercase">Empresa / Clínica *</label>
-                                        <select 
-                                            required 
-                                            className="w-full p-2.5 border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500" 
-                                            value={formData.empresa_id} onChange={e => setFormData({...formData, empresa_id: e.target.value})}
-                                        >
+                                        <label className="block text-xs font-bold text-gray-700 mb-1 uppercase">Empresa *</label>
+                                        <select required className="w-full p-2.5 border rounded-lg outline-none focus:ring-2 focus:ring-gray-500" value={formData.empresa_id} onChange={e => setFormData({...formData, empresa_id: e.target.value})}>
                                             <option value="">Selecione...</option>
                                             {renderHierarchicalOptions(empresas)}
                                         </select>
                                     </div>
                                     <div>
-                                        <label className="block text-xs font-bold text-gray-700 mb-1 uppercase">Localização Interna</label>
-                                        <select 
-                                            className="w-full p-2.5 border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500" 
-                                            value={formData.localizacao_id} onChange={e => setFormData({...formData, localizacao_id: e.target.value})}
-                                        >
+                                        <label className="block text-xs font-bold text-gray-700 mb-1 uppercase">Localização</label>
+                                        <select className="w-full p-2.5 border rounded-lg outline-none focus:ring-2 focus:ring-gray-500" value={formData.localizacao_id} onChange={e => setFormData({...formData, localizacao_id: e.target.value})}>
                                             <option value="none">Nenhuma</option>
                                             {renderGroupedLocalizacoes()}
                                         </select>
-                                    </div>
-                                    <div className="grid grid-cols-2 gap-4">
+                                    </div>                                    <div className="space-y-4">
                                         <div>
-                                            <label className="block text-xs font-bold text-gray-700 mb-1 uppercase">Fornecedor</label>
-                                            <select 
-                                                className="w-full p-2.5 border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500 text-sm" 
-                                                value={formData.fornecedor_id} onChange={e => setFormData({...formData, fornecedor_id: e.target.value})}
-                                            >
-                                                <option value="none">Nenhum</option>
-                                                {fornecedores.map(f => <option key={f.id} value={f.id.toString()}>{f.nome}</option>)}
-                                            </select>
+                                            <label className="block text-xs font-bold text-gray-700 mb-1 uppercase">
+                                                Prestadores
+                                            </label>
+                                            <MultiSelect
+                                                options={fornecedores}
+                                                value={formData.fornecedor_ids}
+                                                onChange={fornecedor_ids => setFormData(current => ({ ...current, fornecedor_ids }))}
+                                                placeholder="Selecione um ou mais prestadores"
+                                                getLabel={fornecedor => `${fornecedor.nome}${fornecedor.empresa_nome ? ` — ${fornecedor.empresa_nome}` : ''}`}
+                                            />
                                         </div>
                                         <div>
-                                            <label className="block text-xs font-bold text-gray-700 mb-1 uppercase">Contrato</label>
-                                            <select 
-                                                className="w-full p-2.5 border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500 text-sm" 
-                                                value={formData.contrato_id} onChange={e => setFormData({...formData, contrato_id: e.target.value})}
-                                            >
-                                                <option value="none">Nenhum</option>
-                                                {contratos.map(c => <option key={c.id} value={c.id.toString()}>#{c.numero}</option>)}
-                                            </select>
+                                            <label className="block text-xs font-bold text-gray-700 mb-1 uppercase">
+                                                Contratos
+                                            </label>
+                                            <MultiSelect
+                                                options={contratos}
+                                                value={formData.contrato_ids}
+                                                onChange={contrato_ids => setFormData(current => ({ ...current, contrato_ids }))}
+                                                placeholder="Selecione um ou mais contratos"
+                                                getLabel={contrato => `#${contrato.numero}${contrato.fornecedor_nome ? ` — ${contrato.fornecedor_nome}` : ''}`}
+                                            />
                                         </div>
                                     </div>
                                 </div>
                             </div>
 
-                            {/* Seção 3: Anexos */}
-                            <div className="space-y-4 pt-4 border-t border-gray-100">
-                                <h3 className="text-xs font-bold text-gray-400 uppercase tracking-widest border-b border-gray-100 pb-2">Anexos e Documentos</h3>
-                                <div className="border-2 border-dashed border-gray-200 rounded-xl p-6 text-center hover:border-indigo-300 transition-colors relative group">
-                                    <input 
-                                        type="file" multiple 
-                                        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" 
-                                        onChange={handleFileUpload}
-                                        disabled={uploading}
-                                    />
-                                    <Paperclip className="mx-auto text-gray-400 group-hover:text-indigo-500 mb-2 transition-colors" size={24} />
-                                    <p className="text-sm text-gray-500">{uploading ? 'Enviando arquivos...' : 'Clique ou arraste arquivos para anexar (Manuais, Fotos, Notas)'}</p>
+                            {/* ── Registro ANVISA ── */}
+                            <div className="space-y-4 pt-4 border-t">
+                                <h3 className="text-xs font-bold text-gray-400 uppercase tracking-widest border-b pb-2">Registro ANVISA</h3>
+                                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
+                                    <div>
+                                        <label className="block text-xs font-bold text-gray-700 mb-1 uppercase">Registro Anvisa</label>
+                                        <input type="text" className="w-full p-2.5 border rounded-lg outline-none focus:ring-2 focus:ring-gray-500"
+                                            value={formData.registro_anvisa}
+                                            onChange={e => setFormData({...formData, registro_anvisa: e.target.value})} />
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs font-bold text-gray-700 mb-1 uppercase">Validade do Registro</label>
+                                        <input type="date" className="w-full p-2.5 border rounded-lg outline-none focus:ring-2 focus:ring-gray-500"
+                                            value={formData.registro_anvisa_validade}
+                                            onChange={e => setFormData({...formData, registro_anvisa_validade: e.target.value})} />
+                                    </div>
+                                    <div className="flex items-center gap-2 pb-2.5">
+                                        <input type="checkbox" id="registro_anvisa_ativo" className="w-4 h-4 accent-gray-600"
+                                            checked={formData.registro_anvisa_ativo}
+                                            onChange={e => setFormData({...formData, registro_anvisa_ativo: e.target.checked})} />
+                                        <label htmlFor="registro_anvisa_ativo" className="text-sm font-medium text-gray-700 select-none">Registro ativo</label>
+                                    </div>
                                 </div>
-                                
+                            </div>
+
+                            <div className="space-y-4 pt-4 border-t">
+                                <h3 className="text-xs font-bold text-gray-400 uppercase tracking-widest border-b pb-2">Anexos</h3>
+                                <div className="border-2 border-dashed border-gray-200 rounded-xl p-6 text-center hover:border-gray-300 transition-colors relative group">
+                                    <input type="file" multiple className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" onChange={handleFileUpload} disabled={uploading} />
+                                    <Paperclip className="mx-auto text-gray-400 group-hover:text-gray-500 mb-2" size={24} />
+                                    <p className="text-sm text-gray-500">{uploading ? 'Enviando...' : 'Clique ou arraste arquivos'}</p>
+                                </div>
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                                     {formData.anexos.map((file, idx) => (
                                         <div key={idx} className="flex items-center justify-between bg-gray-50 p-3 rounded-xl border border-gray-100 group">
                                             <div className="flex items-center gap-3 overflow-hidden">
-                                                <div className="p-2 bg-white rounded-lg shadow-sm text-indigo-500"><FileText size={14} /></div>
+                                                <div className="p-2 bg-white rounded-lg shadow-sm text-gray-500"><FileText size={14} /></div>
                                                 <span className="text-sm font-medium text-gray-700 truncate">{file.name || file.filename}</span>
                                             </div>
                                             <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                                                <button type="button" onClick={() => window.open(getAnexoHref(file.path || file.url), '_blank')} className="p-1.5 text-indigo-600 hover:bg-indigo-50 rounded-md transition-colors"><Eye size={16} /></button>
-                                                <button type="button" onClick={() => setFormData({...formData, anexos: formData.anexos.filter((_, i) => i !== idx)})} className="p-1.5 text-red-500 hover:bg-red-50 rounded-md transition-colors"><X size={16} /></button>
+                                                <button type="button" onClick={() => openSecureFile(file.path || file.url)} className="p-1.5 text-black hover:bg-gray-50 rounded-md"><Eye size={16} /></button>
+                                                <button type="button" onClick={() => setFormData({...formData, anexos: formData.anexos.filter((_, i) => i !== idx)})} className="p-1.5 text-red-500 hover:bg-red-50 rounded-md"><X size={16} /></button>
                                             </div>
                                         </div>
                                     ))}
                                 </div>
                             </div>
-
-                            <div className="pt-6 border-t border-gray-100 flex justify-end gap-4">
-                                <button type="button" onClick={() => setIsModalOpen(false)} className="px-6 py-2.5 text-gray-500 font-bold hover:bg-gray-100 rounded-xl transition-all">Cancelar</button>
-                                <button type="submit" disabled={uploading} className="px-12 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold shadow-lg transition-all active:scale-95 disabled:opacity-50">
+                            <div className="pt-6 border-t flex justify-end gap-4">
+                                <button type="button" onClick={() => setIsModalOpen(false)} className="px-6 py-2.5 text-gray-500 font-bold hover:bg-gray-100 rounded-xl">Cancelar</button>
+                                <button type="submit" disabled={uploading} className="px-12 py-2.5 bg-black hover:bg-black text-white rounded-xl font-bold shadow-lg disabled:opacity-50">
                                     {isEditing ? 'Salvar Alterações' : 'Cadastrar Ativo'}
                                 </button>
                             </div>

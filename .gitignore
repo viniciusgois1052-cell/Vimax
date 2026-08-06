@@ -1,0 +1,46 @@
+# Variáveis de ambiente / segredos
+.env
+*.env
+backend/.env
+frontend/.env
+
+# Dependências (geradas automaticamente)
+node_modules/
+frontend/node_modules/
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# Arquivos de sistema
+.DS_Store
+Thumbs.db
+
+# Banco de dados
+backend/instance/*.db
+*.db
+*.sqlite
+*.sqlite3
+
+# Uploads de clientes (dados sensíveis)
+backend/app/static/uploads/
+backend/static/uploads/
+
+# Logs
+backend/logs/
+*.log
+nohup.out
+
+# Build do frontend (gerado automaticamente)
+frontend/dist/
+frontend/public/assets/
+
+# Arquivos de backup/lixo
+*.bak
+*.bak.*
+*.old
+*.jsx.2
+
+# Python
+__pycache__/
+*.pyc

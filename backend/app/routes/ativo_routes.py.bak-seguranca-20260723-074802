@@ -1,0 +1,250 @@
+from datetime import datetime
+
+from flask import Blueprint, jsonify, request
+
+from .. import db
+from ..models.ativo import Ativo
+from ..models.contrato import Contrato
+from ..models.fornecedor import Fornecedor
+from ..models.usuario import Usuario
+from ..utils.auth import get_current_user_from_request
+from ..utils.filters import apply_entity_filter
+from ..utils.logging import create_log
+
+
+ativo_bp = Blueprint('ativo_bp', __name__)
+
+
+def _data_iso(valor, campo):
+    if not valor:
+        return None
+    try:
+        return datetime.strptime(valor, '%Y-%m-%d').date()
+    except (TypeError, ValueError):
+        raise ValueError(f'O campo {campo} deve estar no formato AAAA-MM-DD')
+
+
+def _normalizar_ids(data, campo_plural, campo_legado):
+    """Aceita o payload novo e também o singular usado por telas antigas."""
+    if campo_plural in data:
+        valores = data.get(campo_plural) or []
+        if not isinstance(valores, list):
+            raise ValueError(f'{campo_plural} deve ser uma lista')
+    elif campo_legado in data:
+        valor = data.get(campo_legado)
+        valores = [] if valor in (None, '', 'none') else [valor]
+    else:
+        return None
+
+    resultado = []
+    vistos = set()
+    for valor in valores:
+        try:
+            identificador = int(valor)
+        except (TypeError, ValueError):
+            raise ValueError(f'ID inválido em {campo_plural}: {valor}')
+        if identificador <= 0:
+            raise ValueError(f'ID inválido em {campo_plural}: {valor}')
+        if identificador not in vistos:
+            vistos.add(identificador)
+            resultado.append(identificador)
+    return resultado
+
+
+def _buscar_em_ordem(model, ids, descricao):
+    if ids is None:
+        return None
+    if not ids:
+        return []
+
+    encontrados = model.query.filter(model.id.in_(ids)).all()
+    por_id = {item.id: item for item in encontrados}
+    ausentes = [identificador for identificador in ids if identificador not in por_id]
+    if ausentes:
+        raise ValueError(
+            f'{descricao} não encontrado(s): ' + ', '.join(map(str, ausentes))
+        )
+    return [por_id[identificador] for identificador in ids]
+
+
+def _aplicar_vinculos(ativo, data):
+    fornecedor_ids = _normalizar_ids(data, 'fornecedor_ids', 'fornecedor_id')
+    contrato_ids = _normalizar_ids(data, 'contrato_ids', 'contrato_id')
+
+    fornecedores = _buscar_em_ordem(Fornecedor, fornecedor_ids, 'Fornecedor')
+    contratos = _buscar_em_ordem(Contrato, contrato_ids, 'Contrato')
+
+    if fornecedores is not None:
+        ativo.fornecedores = fornecedores
+        # Espelho temporário para integrações antigas.
+        ativo.fornecedor_id = fornecedores[0].id if fornecedores else None
+
+    if contratos is not None:
+        ativo.contratos = contratos
+        # Espelho temporário para integrações antigas.
+        ativo.contrato_id = contratos[0].id if contratos else None
+
+
+def _erro_validacao(mensagem):
+    return jsonify({'error': str(mensagem)}), 400
+
+
+@ativo_bp.route('/', methods=['GET'])
+def get_ativos():
+    empresa_id = request.args.get('empresa_id')
+    api_token = request.headers.get('X-API-Token')
+    user = Usuario.query.filter_by(api_token=api_token).first() if api_token else None
+
+    query = apply_entity_filter(Ativo.query, Ativo, empresa_id, user)
+    ativos = query.order_by(Ativo.nome, Ativo.id).all()
+    return jsonify([ativo.to_dict() for ativo in ativos])
+
+
+@ativo_bp.route('/<int:id>', methods=['GET'])
+def get_ativo(id):
+    ativo = Ativo.query.get_or_404(id)
+    return jsonify(ativo.to_dict())
+
+
+@ativo_bp.route('/', methods=['POST'])
+def create_ativo():
+    data = request.get_json() or {}
+    nome = (data.get('nome') or '').strip()
+    if not nome:
+        return _erro_validacao('Informe o nome do ativo')
+    if data.get('empresa_id') in (None, ''):
+        return _erro_validacao('Informe a empresa do ativo')
+
+    try:
+        novo_ativo = Ativo(
+            nome=nome,
+            numero_serie=data.get('numero_serie'),
+            voltagem_entrada=data.get('voltagem_entrada'),
+            data_aquisicao=_data_iso(data.get('data_aquisicao'), 'data_aquisicao'),
+            data_inativacao=_data_iso(data.get('data_inativacao'), 'data_inativacao'),
+            empresa_id=int(data['empresa_id']),
+            localizacao_id=data.get('localizacao_id'),
+            orcamento_id=data.get('orcamento_id'),
+            anexos=data.get('anexos', []),
+            registro_anvisa=data.get('registro_anvisa'),
+            registro_anvisa_ativo=data.get('registro_anvisa_ativo', True),
+            registro_anvisa_validade=_data_iso(
+                data.get('registro_anvisa_validade'),
+                'registro_anvisa_validade'
+            )
+        )
+        _aplicar_vinculos(novo_ativo, data)
+        db.session.add(novo_ativo)
+        db.session.commit()
+        return jsonify(novo_ativo.to_dict()), 201
+    except ValueError as exc:
+        db.session.rollback()
+        return _erro_validacao(exc)
+    except Exception as exc:
+        db.session.rollback()
+        return jsonify({'error': str(exc)}), 500
+
+
+@ativo_bp.route('/<int:id>', methods=['PUT'])
+def update_ativo(id):
+    user = get_current_user_from_request(request)
+    ativo = Ativo.query.get_or_404(id)
+    data = request.get_json() or {}
+
+    try:
+        before = ativo.to_dict()
+    except Exception:
+        before = None
+
+    try:
+        if 'nome' in data:
+            nome = (data.get('nome') or '').strip()
+            if not nome:
+                raise ValueError('Informe o nome do ativo')
+            ativo.nome = nome
+        if 'numero_serie' in data:
+            ativo.numero_serie = data.get('numero_serie')
+        if 'voltagem_entrada' in data:
+            ativo.voltagem_entrada = data.get('voltagem_entrada')
+        if 'data_aquisicao' in data:
+            ativo.data_aquisicao = _data_iso(
+                data.get('data_aquisicao'), 'data_aquisicao'
+            )
+        if 'data_inativacao' in data:
+            ativo.data_inativacao = _data_iso(
+                data.get('data_inativacao'), 'data_inativacao'
+            )
+        if 'empresa_id' in data and data.get('empresa_id') is not None:
+            ativo.empresa_id = int(data['empresa_id'])
+        if 'localizacao_id' in data:
+            ativo.localizacao_id = data.get('localizacao_id')
+        if 'orcamento_id' in data:
+            ativo.orcamento_id = data.get('orcamento_id')
+        if 'anexos' in data:
+            ativo.anexos = data.get('anexos', [])
+        if 'registro_anvisa' in data:
+            ativo.registro_anvisa = data.get('registro_anvisa')
+        if 'registro_anvisa_ativo' in data:
+            ativo.registro_anvisa_ativo = data.get('registro_anvisa_ativo', True)
+        if 'registro_anvisa_validade' in data:
+            ativo.registro_anvisa_validade = _data_iso(
+                data.get('registro_anvisa_validade'),
+                'registro_anvisa_validade'
+            )
+
+        _aplicar_vinculos(ativo, data)
+        db.session.commit()
+    except ValueError as exc:
+        db.session.rollback()
+        return _erro_validacao(exc)
+    except Exception as exc:
+        db.session.rollback()
+        return jsonify({'error': str(exc)}), 500
+
+    try:
+        create_log(
+            user=user,
+            action='update_ativo',
+            entity='ativo',
+            entity_id=id,
+            details={'before': before, 'after_payload': data},
+            req=request
+        )
+    except Exception:
+        pass
+
+    return jsonify(ativo.to_dict())
+
+
+@ativo_bp.route('/<int:id>', methods=['DELETE'])
+def delete_ativo(id):
+    user = get_current_user_from_request(request)
+    ativo = Ativo.query.get_or_404(id)
+
+    try:
+        snapshot = ativo.to_dict()
+    except Exception:
+        snapshot = None
+
+    try:
+        from ..models.chamado import Chamado
+        Chamado.query.filter_by(ativo_id=id).update({'ativo_id': None})
+        db.session.delete(ativo)
+        db.session.commit()
+
+        try:
+            create_log(
+                user=user,
+                action='delete_ativo',
+                entity='ativo',
+                entity_id=id,
+                details={'deleted': snapshot},
+                req=request
+            )
+        except Exception:
+            pass
+
+        return jsonify({'ok': True}), 200
+    except Exception as exc:
+        db.session.rollback()
+        return jsonify({'error': str(exc)}), 500

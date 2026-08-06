@@ -1,0 +1,1150 @@
+// frontend/src/pages/Fornecedores.jsx
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import {
+    FaPlus, FaEdit, FaTrashAlt, FaSearch, FaUserTie, FaBuilding,
+    FaEnvelope, FaPhone, FaTimes, FaFileInvoice, FaInfoCircle, 
+    FaBriefcase, FaTools, FaBoxes, FaUser, FaFilter, FaShoppingCart, FaStar
+} from 'react-icons/fa';
+import { useSearchParams } from 'react-router-dom';
+import { useEntity } from '../context/EntityContext';
+import { useAuth } from '../context/AuthContext';
+
+const Fornecedores = () => {
+    const { selectedEntity } = useEntity();
+    const { user, can } = useAuth();
+    const [searchParams, setSearchParams] = useSearchParams();
+    
+    const [fornecedores, setFornecedores] = useState([]);
+    const [empresas, setEmpresas] = useState([]);
+    const [tiposServico, setTiposServico] = useState([]);
+    
+    const [searchTerm, setSearchTerm] = useState('');
+    const [empresaFilter, setEmpresaFilter] = useState('Todas');
+    const [tipoFilter, setTipoFilter] = useState('Todos');
+    const [criadoPorFilter, setCriadoPorFilter] = useState('Todos');
+    
+    const [isModalOpen, setIsModalOpen] = useState(false);
+    const [isEditing, setIsEditing] = useState(false);
+    const [currentFornecedor, setCurrentFornecedor] = useState(null);
+    const [modalTab, setModalTab] = useState('detalhes');
+    const [chamadosFornecedor, setChamadosFornecedor] = useState([]);
+    const [loadingChamados, setLoadingChamados] = useState(false);
+    const [orcamentosFornecedor, setOrcamentosFornecedor] = useState([]);
+    const [loadingOrcamentos, setLoadingOrcamentos] = useState(false);
+
+    const [isAvaliacaoOpen, setIsAvaliacaoOpen] = useState(false);
+    const [salvandoAvaliacao, setSalvandoAvaliacao] = useState(false);
+    const [avaliacaoErro, setAvaliacaoErro] = useState('');
+    const [avaliacaoSucesso, setAvaliacaoSucesso] = useState('');
+    const [avaliacaoResumo, setAvaliacaoResumo] = useState(null);
+    const [avaliacaoForm, setAvaliacaoForm] = useState({
+        fornecedor_id: '', empresa_id: '', nota: 0, comentario: ''
+    });
+    
+    const [formData, setFormData] = useState({
+        nome: '', cnpj: '', servico: '', tipo_servico_id: '', email: '',
+        telefone: '', endereco: '', empresa_id: '', tipos_pagamento: '',
+        tipo_entidade: 'fornecedor', origem: ''
+    });
+
+    const API_URL = '/api';
+
+    const perfil = user?.perfil_acesso;
+    const canViewFornecedor = perfil ? (perfil.visualizar_fornecedores !== false) : true;
+    const canViewPrestador = perfil ? (perfil.visualizar_prestadores !== false) : true;
+    const canAvaliarFornecedor = can('compras', 'editar');
+
+    const fetchData = useCallback(async () => {
+        try {
+            const headers = {};
+            if (user?.api_token) headers['X-API-Token'] = user.api_token;
+            const queryParams = selectedEntity !== 'all' ? `?empresa_id=${selectedEntity}` : '';
+            const [f, e, ts] = await Promise.all([
+                fetch(`${API_URL}/fornecedores${queryParams}`, { headers }),
+                fetch(`${API_URL}/empresas`, { headers }),
+                fetch(`${API_URL}/tipos-servico`, { headers })
+            ]);
+            if (f.ok) setFornecedores(await f.json());
+            if (e.ok) setEmpresas(await e.json());
+            if (ts.ok) setTiposServico(await ts.json());
+        } catch (error) { 
+            console.error("Erro ao carregar dados:", error); 
+        }
+    }, [user, selectedEntity]);
+
+    useEffect(() => { 
+        fetchData(); 
+    }, [fetchData]);
+
+    // 🆕 Abre o modal de cadastro automaticamente quando chega via link de Compras:
+    //     /fornecedores?novo=1&origem=compras&tipo=fornecedor
+    useEffect(() => {
+        if (searchParams.get('novo') === '1') {
+            const origem = searchParams.get('origem') || '';
+            const tipoUrl = searchParams.get('tipo') || 'fornecedor';
+            const tipoDefault = (tipoUrl === 'prestador' && canViewPrestador)
+                ? 'prestador'
+                : (canViewFornecedor ? 'fornecedor' : (canViewPrestador ? 'prestador' : 'fornecedor'));
+
+            setIsEditing(false);
+            setCurrentFornecedor(null);
+            setModalTab('detalhes');
+            setChamadosFornecedor([]);
+            setOrcamentosFornecedor([]);
+            setFormData({
+                nome: '', cnpj: '', servico: '', tipo_servico_id: '', email: '',
+                telefone: '', endereco: '', empresa_id: '', tipos_pagamento: '',
+                tipo_entidade: tipoDefault, origem: origem
+            });
+            setIsModalOpen(true);
+            // limpa os parâmetros da URL para não reabrir ao navegar/atualizar
+            setSearchParams({}, { replace: true });
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    useEffect(() => {
+        if (searchParams.get('avaliar') !== '1') return;
+
+        if (!canAvaliarFornecedor) {
+            alert('Seu perfil não possui permissão para avaliar fornecedores.');
+            setSearchParams({}, { replace: true });
+            return;
+        }
+
+        const empresaInicial = (
+            selectedEntity && selectedEntity !== 'all'
+                ? String(selectedEntity)
+                : user?.empresa_id
+                    ? String(user.empresa_id)
+                    : ''
+        );
+
+        setAvaliacaoForm({
+            fornecedor_id: '',
+            empresa_id: empresaInicial,
+            nota: 0,
+            comentario: ''
+        });
+        setAvaliacaoResumo(null);
+        setAvaliacaoErro('');
+        setAvaliacaoSucesso('');
+        setIsAvaliacaoOpen(true);
+        setSearchParams({}, { replace: true });
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    useEffect(() => {
+        if (
+            !isAvaliacaoOpen
+            || !avaliacaoForm.fornecedor_id
+            || !avaliacaoForm.empresa_id
+            || !user?.api_token
+        ) return;
+
+        let cancelado = false;
+        const carregar = async () => {
+            try {
+                const params = new URLSearchParams({
+                    empresa_id: avaliacaoForm.empresa_id
+                });
+                const resposta = await fetch(
+                    `${API_URL}/compras/classificacao-fornecedores/fornecedor/${avaliacaoForm.fornecedor_id}?${params}`,
+                    { headers: { 'X-API-Token': user.api_token } }
+                );
+                const dados = await resposta.json();
+                if (!resposta.ok) {
+                    throw new Error(dados.error || 'Erro ao carregar avaliação');
+                }
+                if (cancelado) return;
+
+                const minha = dados.minha_avaliacao;
+                setAvaliacaoResumo(dados.resumo || null);
+                setAvaliacaoForm(anterior => ({
+                    ...anterior,
+                    nota: minha
+                        ? Number(minha.nota_geral || minha.qualidade || 0)
+                        : 0,
+                    comentario: minha?.comentario || ''
+                }));
+            } catch (erro) {
+                if (!cancelado) {
+                    setAvaliacaoResumo(null);
+                    setAvaliacaoErro(erro.message);
+                }
+            }
+        };
+        carregar();
+        return () => { cancelado = true; };
+    }, [
+        isAvaliacaoOpen,
+        avaliacaoForm.fornecedor_id,
+        avaliacaoForm.empresa_id,
+        user?.api_token
+    ]);
+
+    const salvarAvaliacaoFornecedor = async (event) => {
+        event.preventDefault();
+        setAvaliacaoErro('');
+        setAvaliacaoSucesso('');
+
+        if (
+            !avaliacaoForm.fornecedor_id
+            || !avaliacaoForm.empresa_id
+            || avaliacaoForm.nota < 1
+        ) {
+            setAvaliacaoErro(
+                'Selecione o fornecedor, a clínica e uma nota de 1 a 5.'
+            );
+            return;
+        }
+
+        setSalvandoAvaliacao(true);
+        try {
+            const resposta = await fetch(
+                `${API_URL}/compras/classificacao-fornecedores`,
+                {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-API-Token': user.api_token
+                    },
+                    body: JSON.stringify({
+                        fornecedor_id: Number(
+                            avaliacaoForm.fornecedor_id
+                        ),
+                        empresa_id: Number(avaliacaoForm.empresa_id),
+                        nota: Number(avaliacaoForm.nota),
+                        comentario: avaliacaoForm.comentario
+                    })
+                }
+            );
+            const dados = await resposta.json();
+            if (!resposta.ok) {
+                throw new Error(
+                    dados.message || dados.error || 'Erro ao salvar avaliação'
+                );
+            }
+
+            setAvaliacaoSucesso('Avaliação salva com sucesso.');
+            setAvaliacaoResumo(anterior => ({
+                ...(anterior || {}),
+                nota_media: dados.nota_geral,
+                total_avaliacoes: anterior?.total_avaliacoes || 1
+            }));
+        } catch (erro) {
+            setAvaliacaoErro(erro.message);
+        } finally {
+            setSalvandoAvaliacao(false);
+        }
+    };
+
+    const handleOpenModal = (fornecedor = null) => {
+        if (fornecedor) {
+            setIsEditing(true);
+            setCurrentFornecedor(fornecedor);
+            setFormData({
+                nome: fornecedor.nome || '',
+                cnpj: fornecedor.cnpj || '',
+                servico: fornecedor.servico || '',
+                tipo_servico_id: fornecedor.tipo_servico_id?.toString() || '',
+                email: fornecedor.email || '',
+                telefone: fornecedor.telefone || '',
+                endereco: fornecedor.endereco || '',
+                empresa_id: fornecedor.empresa_id?.toString() || '',
+                tipos_pagamento: fornecedor.tipos_pagamento || '',
+                tipo_entidade: fornecedor.tipo_entidade || 'fornecedor',
+                origem: fornecedor.origem || ''
+            });
+        } else {
+            setIsEditing(false);
+            setCurrentFornecedor(null);
+            const tipoDefault = !canViewFornecedor && canViewPrestador ? 'prestador' : 'fornecedor';
+            setFormData({ 
+                nome: '', cnpj: '', servico: '', tipo_servico_id: '', email: '', 
+                telefone: '', endereco: '', empresa_id: '', tipos_pagamento: '', 
+                tipo_entidade: tipoDefault, origem: ''
+            });
+        }
+        setModalTab('detalhes');
+        setChamadosFornecedor([]);
+        setOrcamentosFornecedor([]);
+        
+        if (fornecedor) {
+            setLoadingChamados(true);
+            setLoadingOrcamentos(true);
+            const headers = {};
+            if (user?.api_token) headers['X-API-Token'] = user.api_token;
+            
+            fetch(`/api/chamados?fornecedor_id=${fornecedor.id}&per_page=200`, { headers })
+                .then(r => r.ok ? r.json() : { chamados: [] })
+                .then(d => { setChamadosFornecedor(d.chamados || []); setLoadingChamados(false); })
+                .catch(() => setLoadingChamados(false));
+                
+            fetch(`/api/orcamentos/?fornecedor_id=${fornecedor.id}`, { headers })
+                .then(r => r.ok ? r.json() : [])
+                .then(d => { setOrcamentosFornecedor(Array.isArray(d) ? d : []); setLoadingOrcamentos(false); })
+                .catch(() => setLoadingOrcamentos(false));
+        }
+        setIsModalOpen(true);
+    };
+
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+        const payload = {
+            ...formData,
+            empresa_id: formData.empresa_id ? parseInt(formData.empresa_id) : null,
+            tipo_servico_id: formData.tipo_servico_id ? parseInt(formData.tipo_servico_id) : null,
+            tipo_entidade: formData.tipo_entidade,
+            origem: formData.origem || null
+        };
+        const method = isEditing ? 'PUT' : 'POST';
+        const url = isEditing ? `${API_URL}/fornecedores/${currentFornecedor.id}` : `${API_URL}/fornecedores`;
+        
+        try {
+            const response = await fetch(url, {
+                method,
+                headers: { 
+                    'Content-Type': 'application/json', 
+                    ...(user?.api_token ? { 'X-API-Token': user.api_token } : {}) 
+                },
+                body: JSON.stringify(payload),
+            });
+            
+            if (response.ok) { 
+                setIsModalOpen(false); 
+                await fetchData();
+            } else { 
+                const err = await response.json(); 
+                alert("Erro ao salvar: " + (err.error || err.detail || "Verifique os dados")); 
+            }
+        } catch (error) { 
+            console.error("Erro ao submeter:", error); 
+            alert("Erro ao salvar: " + error.message);
+        }
+    };
+
+    const handleDelete = async (id) => {
+        if (window.confirm('Deseja realmente excluir este fornecedor?')) {
+            try {
+                const headers = {};
+                if (user?.api_token) headers['X-API-Token'] = user.api_token;
+                const response = await fetch(`${API_URL}/fornecedores/${id}`, { 
+                    method: 'DELETE',
+                    headers 
+                });
+                if (response.ok) fetchData();
+            } catch (error) { 
+                console.error("Erro ao excluir:", error); 
+            }
+        }
+    };
+
+    const buildEmpresaHierarchy = useCallback((empresaId) => {
+        if (!empresaId) return '';
+        const empresa = empresas.find(e => e.id === empresaId);
+        if (!empresa) return '';
+        let hierarchy = empresa.nome;
+        let currentParentId = empresa.parent_id;
+        while (currentParentId) {
+            const parent = empresas.find(e => e.id === currentParentId);
+            if (parent) { 
+                hierarchy = `${parent.nome} > ${hierarchy}`; 
+                currentParentId = parent.parent_id; 
+            } else break;
+        }
+        return hierarchy;
+    }, [empresas]);
+
+    const renderEmpresaOptions = () => {
+        const buildTree = (parentId = null, level = 0) => {
+            return empresas
+                .filter(e => e.parent_id === parentId)
+                .flatMap(empresa => [
+                    <option key={empresa.id} value={empresa.id.toString()}>
+                        {'\u00A0'.repeat(level * 4)}{level > 0 ? '└─ ' : ''}{empresa.nome}
+                    </option>,
+                    ...buildTree(empresa.id, level + 1)
+                ]);
+        };
+        return buildTree();
+    };
+
+    const filteredFornecedores = useMemo(() => {
+        return fornecedores.filter(f => {
+            const matchesSearch = f.nome.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                                 (f.cnpj && f.cnpj.includes(searchTerm));
+            
+            const matchesEmpresa = empresaFilter === 'Todas' || f.empresa_id?.toString() === empresaFilter;
+            
+            const matchesTipo = tipoFilter === 'Todos' || 
+                               (tipoFilter === 'Fornecedor' && (f.tipo_entidade === 'fornecedor' || !f.tipo_entidade)) ||
+                               (tipoFilter === 'Prestador' && f.tipo_entidade === 'prestador') ||
+                               (tipoFilter === 'Compras' && f.origem === 'compras');
+            
+            const matchesCriadoPor = criadoPorFilter === 'Todos' || 
+                                    (criadoPorFilter === 'Meus' && f.criado_por_usuario_id === user?.id) ||
+                                    (criadoPorFilter === 'Outros' && f.criado_por_usuario_id !== user?.id);
+            
+            const matchesPermission = 
+                (f.tipo_entidade === 'fornecedor' && canViewFornecedor) ||
+                (f.tipo_entidade === 'prestador' && canViewPrestador) ||
+                (!f.tipo_entidade && canViewFornecedor);
+            
+            return matchesSearch && matchesEmpresa && matchesTipo && matchesCriadoPor && matchesPermission;
+        });
+    }, [fornecedores, searchTerm, empresaFilter, tipoFilter, criadoPorFilter, user, canViewFornecedor, canViewPrestador]);
+
+    const countByType = useMemo(() => {
+        const fornecedorCount = canViewFornecedor ? fornecedores.filter(f => f.tipo_entidade === 'fornecedor' || !f.tipo_entidade).length : 0;
+        const prestadorCount = canViewPrestador ? fornecedores.filter(f => f.tipo_entidade === 'prestador').length : 0;
+        const meusCadastros = fornecedores.filter(f => f.criado_por_usuario_id === user?.id).length;
+        const comprasCount = fornecedores.filter(f => f.origem === 'compras').length;
+        return { 
+            fornecedor: fornecedorCount, 
+            prestador: prestadorCount, 
+            total: fornecedorCount + prestadorCount,
+            meus: meusCadastros,
+            compras: comprasCount
+        };
+    }, [fornecedores, user, canViewFornecedor, canViewPrestador]);
+
+    return (
+        <div className="p-6 bg-gray-50 min-h-screen">
+            <div className="flex justify-between items-start mb-6">
+                <div>
+                    <h1 className="text-2xl font-bold text-gray-800 flex items-center gap-2 mb-4">
+                        <FaUserTie className="text-black" /> Gestão de Fornecedores e Prestadores
+                    </h1>
+                    <div className="flex gap-3 flex-wrap">
+                        {canViewFornecedor && (
+                            <div className="flex items-center gap-2 bg-blue-50 px-4 py-2 rounded-lg border border-blue-200">
+                                <FaBoxes className="text-blue-600" />
+                                <span className="text-sm font-bold text-blue-700">{countByType.fornecedor} Fornecedores</span>
+                            </div>
+                        )}
+                        {canViewPrestador && (
+                            <div className="flex items-center gap-2 bg-green-50 px-4 py-2 rounded-lg border border-green-200">
+                                <FaTools className="text-green-600" />
+                                <span className="text-sm font-bold text-green-700">{countByType.prestador} Prestadores</span>
+                            </div>
+                        )}
+                        <div className="flex items-center gap-2 bg-emerald-50 px-4 py-2 rounded-lg border border-emerald-200">
+                            <FaShoppingCart className="text-emerald-600" />
+                            <span className="text-sm font-bold text-emerald-700">{countByType.compras} via Compras</span>
+                        </div>
+                        <div className="flex items-center gap-2 bg-gray-50 px-4 py-2 rounded-lg border border-gray-200">
+                            <FaUser className="text-gray-600" />
+                            <span className="text-sm font-bold text-gray-700">{countByType.meus} Meus Cadastros</span>
+                        </div>
+                        <div className="flex items-center gap-2 bg-gray-100 px-4 py-2 rounded-lg border border-gray-300">
+                            <FaUserTie className="text-gray-600" />
+                            <span className="text-sm font-bold text-gray-700">{countByType.total} Total</span>
+                        </div>
+                    </div>
+                </div>
+                {can('fornecedores', 'criar') && (
+                    <button
+                        onClick={() => handleOpenModal()}
+                        className="bg-black hover:bg-black text-white px-4 py-2 rounded-lg flex items-center gap-2 transition-all shadow-lg"
+                    >
+                        <FaPlus /> Novo Cadastro
+                    </button>
+                )}
+            </div>
+
+            <div className="bg-white p-4 rounded-xl shadow-sm mb-6 border border-gray-200">
+                <div className="flex items-center gap-2 mb-3">
+                    <FaFilter className="text-gray-400" />
+                    <span className="text-xs font-bold text-gray-500 uppercase">Filtros</span>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                    <div className="relative">
+                        <FaSearch className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                        <input
+                            type="text"
+                            placeholder="Buscar por nome ou CNPJ..."
+                            className="w-full pl-10 pr-4 py-2 border rounded-lg focus:ring-2 focus:ring-gray-500 outline-none"
+                            value={searchTerm}
+                            onChange={(e) => setSearchTerm(e.target.value)}
+                        />
+                    </div>
+                    
+                    <select
+                        className="p-2 border rounded-lg outline-none focus:ring-2 focus:ring-gray-500"
+                        value={tipoFilter}
+                        onChange={(e) => setTipoFilter(e.target.value)}
+                    >
+                        <option value="Todos">📦 Todos os Tipos</option>
+                        {canViewFornecedor && <option value="Fornecedor">🏭 Fornecedores</option>}
+                        {canViewPrestador && <option value="Prestador">🔧 Prestadores</option>}
+                        <option value="Compras">🛒 Cadastrados via Compras</option>
+                    </select>
+                    
+                    <select
+                        className="p-2 border rounded-lg outline-none focus:ring-2 focus:ring-gray-500"
+                        value={criadoPorFilter}
+                        onChange={(e) => setCriadoPorFilter(e.target.value)}
+                    >
+                        <option value="Todos">👥 Todos os Cadastros</option>
+                        <option value="Meus">👤 Meus Cadastros</option>
+                        <option value="Outros">🌐 Outros Usuários</option>
+                    </select>
+                    
+                    <select
+                        className="p-2 border rounded-lg outline-none focus:ring-2 focus:ring-gray-500"
+                        value={empresaFilter}
+                        onChange={(e) => setEmpresaFilter(e.target.value)}
+                    >
+                        <option value="Todas">🏢 Todas as Empresas</option>
+                        {empresas.map(e => (
+                            <option key={e.id} value={e.id.toString()}>{buildEmpresaHierarchy(e.id)}</option>
+                        ))}
+                    </select>
+                </div>
+                
+                {(searchTerm || empresaFilter !== 'Todas' || tipoFilter !== 'Todos' || criadoPorFilter !== 'Todos') && (
+                    <div className="mt-3 flex items-center gap-2 text-xs text-gray-600">
+                        <span className="font-bold">Mostrando:</span>
+                        <span className="bg-gray-50 text-gray-700 px-2 py-1 rounded-full font-bold">
+                            {filteredFornecedores.length} de {fornecedores.length} registros
+                        </span>
+                        <button 
+                            onClick={() => {
+                                setSearchTerm('');
+                                setEmpresaFilter('Todas');
+                                setTipoFilter('Todos');
+                                setCriadoPorFilter('Todos');
+                            }}
+                            className="ml-auto text-gray-600 hover:text-gray-800 font-bold"
+                        >
+                            Limpar Filtros
+                        </button>
+                    </div>
+                )}
+            </div>
+
+            <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                <table className="w-full text-left border-collapse">
+                    <thead>
+                        <tr className="bg-gray-50 border-b border-gray-200 text-gray-600 text-sm uppercase font-bold">
+                            <th className="px-6 py-4">Tipo</th>
+                            <th className="px-6 py-4">Nome / CNPJ</th>
+                            <th className="px-6 py-4">Empresa</th>
+                            <th className="px-6 py-4">Tipo de Serviço</th>
+                            <th className="px-6 py-4">Criado Por</th>
+                            <th className="px-6 py-4">Contato</th>
+                            <th className="px-6 py-4 text-right">Ações</th>
+                        </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100">
+                        {filteredFornecedores.length === 0 ? (
+                            <tr>
+                                <td colSpan="7" className="px-6 py-12 text-center text-gray-400">
+                                    <FaUserTie size={48} className="mx-auto mb-3 opacity-30" />
+                                    <p className="font-bold">Nenhum registro encontrado</p>
+                                    <p className="text-sm">Ajuste os filtros ou crie um novo cadastro</p>
+                                </td>
+                            </tr>
+                        ) : (
+                            filteredFornecedores.map(f => (
+                                <tr key={f.id} className="hover:bg-gray-50/30 transition-colors group">
+                                    <td className="px-6 py-4">
+                                        {f.tipo_entidade === 'prestador' ? (
+                                            <div className="flex items-center gap-2 bg-green-50 text-green-700 px-3 py-1 rounded-full text-xs font-bold w-fit">
+                                                <FaTools /> Prestador
+                                            </div>
+                                        ) : (
+                                            <div className="flex items-center gap-2 bg-blue-50 text-blue-700 px-3 py-1 rounded-full text-xs font-bold w-fit">
+                                                <FaBoxes /> Fornecedor
+                                            </div>
+                                        )}
+                                        {f.origem === 'compras' && (
+                                            <div className="flex items-center gap-1 bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded-full text-[10px] font-bold w-fit mt-1">
+                                                <FaShoppingCart size={10} /> Compras
+                                            </div>
+                                        )}
+                                    </td>
+                                    
+                                    <td className="px-6 py-4">
+                                        <span className="text-gray-800 font-semibold block">{f.nome}</span>
+                                        {f.cnpj && (
+                                            <span className="text-xs text-gray-400 flex items-center gap-1 mt-1">
+                                                <FaFileInvoice className="text-gray-300" /> {f.cnpj}
+                                            </span>
+                                        )}
+                                    </td>
+                                    
+                                    <td className="px-6 py-4">
+                                        {f.empresa_id ? (
+                                            <span className="text-sm text-gray-600 flex items-center gap-2">
+                                                <FaBuilding className="text-gray-400" />
+                                                {buildEmpresaHierarchy(f.empresa_id)}
+                                            </span>
+                                        ) : (
+                                            <span className="text-sm text-gray-400 italic">Sem empresa</span>
+                                        )}
+                                    </td>
+                                    
+                                    <td className="px-6 py-4">
+                                        <span className="text-sm text-gray-600 flex items-center gap-2">
+                                            <FaInfoCircle className="text-blue-400" /> {f.tipo_servico_nome || '-'}
+                                        </span>
+                                        {f.servico && (
+                                            <div className="text-xs text-gray-400 mt-1 flex items-center gap-1">
+                                                <FaBriefcase className="text-green-400" /> {f.servico}
+                                            </div>
+                                        )}
+                                    </td>
+                                    
+                                    <td className="px-6 py-4">
+                                        {f.criado_por_usuario_id === user?.id ? (
+                                            <div className="flex items-center gap-2 bg-gray-50 text-gray-700 px-3 py-1 rounded-full text-xs font-bold w-fit">
+                                                <FaUser /> Você
+                                            </div>
+                                        ) : f.criado_por_nome ? (
+                                            <div className="flex flex-col gap-1">
+                                                <div className="flex items-center gap-2 bg-gray-50 text-gray-700 px-3 py-1 rounded-full text-xs font-bold w-fit">
+                                                    <FaUser /> {f.criado_por_nome}
+                                                </div>
+                                            </div>
+                                        ) : (
+                                            <span className="text-xs text-gray-400 italic">Sistema</span>
+                                        )}
+                                    </td>
+                                    
+                                    <td className="px-6 py-4">
+                                        <div className="text-sm text-gray-600 space-y-1">
+                                            {f.email && (
+                                                <div className="flex items-center gap-2">
+                                                    <FaEnvelope className="text-blue-400 text-xs" /> 
+                                                    <span className="truncate max-w-[150px]">{f.email}</span>
+                                                </div>
+                                            )}
+                                            {f.telefone && (
+                                                <div className="flex items-center gap-2">
+                                                    <FaPhone className="text-green-400 text-xs" /> {f.telefone}
+                                                </div>
+                                            )}
+                                            {!f.email && !f.telefone && (
+                                                <span className="text-xs text-gray-400 italic">Sem contato</span>
+                                            )}
+                                        </div>
+                                    </td>
+                                    
+                                    <td className="px-6 py-4 text-right">
+                                        <div className="flex justify-end gap-2">
+                                            {can('fornecedores', 'editar') && (
+                                                <button 
+                                                    onClick={() => handleOpenModal(f)} 
+                                                    className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors" 
+                                                    title="Editar"
+                                                >
+                                                    <FaEdit />
+                                                </button>
+                                            )}
+                                            {can('fornecedores', 'excluir') && (
+                                                <button 
+                                                    onClick={() => handleDelete(f.id)} 
+                                                    className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors" 
+                                                    title="Excluir"
+                                                >
+                                                    <FaTrashAlt />
+                                                </button>
+                                            )}
+                                        </div>
+                                    </td>
+                                </tr>
+                            ))
+                        )}
+                    </tbody>
+                </table>
+            </div>
+
+            {/* MODAL */}
+            {isModalOpen && (
+                <ModalFornecedor 
+                    isEditing={isEditing}
+                    currentFornecedor={currentFornecedor}
+                    formData={formData}
+                    setFormData={setFormData}
+                    modalTab={modalTab}
+                    setModalTab={setModalTab}
+                    chamadosFornecedor={chamadosFornecedor}
+                    loadingChamados={loadingChamados}
+                    orcamentosFornecedor={orcamentosFornecedor}
+                    loadingOrcamentos={loadingOrcamentos}
+                    tiposServico={tiposServico}
+                    renderEmpresaOptions={renderEmpresaOptions}
+                    canViewFornecedor={canViewFornecedor}
+                    canViewPrestador={canViewPrestador}
+                    handleSubmit={handleSubmit}
+                    setIsModalOpen={setIsModalOpen}
+                />
+            )}
+
+            {isAvaliacaoOpen && (
+                <ModalAvaliacaoFornecedor
+                    fornecedores={fornecedores}
+                    empresas={empresas}
+                    form={avaliacaoForm}
+                    setForm={setAvaliacaoForm}
+                    resumo={avaliacaoResumo}
+                    erro={avaliacaoErro}
+                    sucesso={avaliacaoSucesso}
+                    salvando={salvandoAvaliacao}
+                    onSubmit={salvarAvaliacaoFornecedor}
+                    onClose={() => setIsAvaliacaoOpen(false)}
+                />
+            )}
+        </div>
+    );
+};
+
+const ModalAvaliacaoFornecedor = ({
+    fornecedores, empresas, form, setForm, resumo, erro, sucesso,
+    salvando, onSubmit, onClose
+}) => {
+    const selecionarFornecedor = (valor) => {
+        const fornecedor = fornecedores.find(
+            item => String(item.id) === String(valor)
+        );
+        setForm(anterior => ({
+            ...anterior,
+            fornecedor_id: valor,
+            empresa_id: fornecedor?.empresa_id
+                ? String(fornecedor.empresa_id)
+                : anterior.empresa_id,
+            nota: 0,
+            comentario: ''
+        }));
+    };
+
+    return (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-[60] p-4">
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden">
+                <div className="bg-amber-500 text-white px-6 py-5 flex items-center justify-between">
+                    <div>
+                        <h2 className="text-xl font-bold flex items-center gap-2">
+                            <FaStar /> Avaliar fornecedor
+                        </h2>
+                        <p className="text-sm text-amber-100 mt-1">
+                            Avaliação interna do módulo de Compras
+                        </p>
+                    </div>
+                    <button
+                        type="button"
+                        onClick={onClose}
+                        className="p-2 hover:bg-white/20 rounded-full"
+                    >
+                        <FaTimes size={20} />
+                    </button>
+                </div>
+
+                <form onSubmit={onSubmit} className="p-6 space-y-5">
+                    {erro && (
+                        <div className="p-3 bg-red-50 border border-red-200 text-red-700 rounded-lg text-sm">
+                            {erro}
+                        </div>
+                    )}
+                    {sucesso && (
+                        <div className="p-3 bg-green-50 border border-green-200 text-green-700 rounded-lg text-sm font-bold">
+                            {sucesso}
+                        </div>
+                    )}
+
+                    <div>
+                        <label className="block text-sm font-bold text-gray-700 mb-1">
+                            Fornecedor ou prestador *
+                        </label>
+                        <select
+                            required
+                            value={form.fornecedor_id}
+                            onChange={event => selecionarFornecedor(
+                                event.target.value
+                            )}
+                            className="w-full p-3 border rounded-lg outline-none focus:ring-2 focus:ring-amber-400"
+                        >
+                            <option value="">Selecione...</option>
+                            {[...fornecedores]
+                                .sort((a, b) => a.nome.localeCompare(b.nome))
+                                .map(item => (
+                                    <option key={item.id} value={item.id}>
+                                        {item.nome} — {
+                                            item.tipo_entidade === 'prestador'
+                                                ? 'Prestador'
+                                                : 'Fornecedor'
+                                        }
+                                    </option>
+                                ))}
+                        </select>
+                    </div>
+
+                    <div>
+                        <label className="block text-sm font-bold text-gray-700 mb-1">
+                            Clínica/empresa *
+                        </label>
+                        <select
+                            required
+                            value={form.empresa_id}
+                            onChange={event => setForm(anterior => ({
+                                ...anterior,
+                                empresa_id: event.target.value,
+                                nota: 0,
+                                comentario: ''
+                            }))}
+                            className="w-full p-3 border rounded-lg outline-none focus:ring-2 focus:ring-amber-400"
+                        >
+                            <option value="">Selecione...</option>
+                            {empresas.map(empresa => (
+                                <option key={empresa.id} value={empresa.id}>
+                                    {empresa.nome}
+                                </option>
+                            ))}
+                        </select>
+                    </div>
+
+                    <div>
+                        <label className="block text-sm font-bold text-gray-700 mb-2">
+                            Nota *
+                        </label>
+                        <div className="flex items-center gap-2">
+                            {[1, 2, 3, 4, 5].map(nota => (
+                                <button
+                                    type="button"
+                                    key={nota}
+                                    onClick={() => setForm(anterior => ({
+                                        ...anterior,
+                                        nota
+                                    }))}
+                                    className="p-1 hover:scale-110 transition-transform"
+                                    title={`${nota} estrela${nota > 1 ? 's' : ''}`}
+                                >
+                                    <FaStar
+                                        size={32}
+                                        className={
+                                            nota <= form.nota
+                                                ? 'text-amber-400'
+                                                : 'text-gray-200'
+                                        }
+                                    />
+                                </button>
+                            ))}
+                            {form.nota > 0 && (
+                                <span className="ml-2 font-bold text-gray-700">
+                                    {form.nota}/5
+                                </span>
+                            )}
+                        </div>
+                        {resumo?.total_avaliacoes > 0 && (
+                            <p className="text-xs text-gray-500 mt-2">
+                                Média da clínica: {resumo.nota_media}/5 em{' '}
+                                {resumo.total_avaliacoes} avaliação(ões)
+                            </p>
+                        )}
+                    </div>
+
+                    <div>
+                        <label className="block text-sm font-bold text-gray-700 mb-1">
+                            Comentário
+                        </label>
+                        <textarea
+                            maxLength={2000}
+                            rows={4}
+                            value={form.comentario}
+                            onChange={event => setForm(anterior => ({
+                                ...anterior,
+                                comentario: event.target.value
+                            }))}
+                            placeholder="Comentário opcional sobre o fornecedor..."
+                            className="w-full p-3 border rounded-lg resize-none outline-none focus:ring-2 focus:ring-amber-400"
+                        />
+                    </div>
+
+                    <div className="flex gap-3 pt-2">
+                        <button
+                            type="button"
+                            onClick={onClose}
+                            className="flex-1 py-3 border rounded-lg font-bold text-gray-600 hover:bg-gray-50"
+                        >
+                            Fechar
+                        </button>
+                        <button
+                            type="submit"
+                            disabled={salvando}
+                            className="flex-1 py-3 bg-amber-500 hover:bg-amber-600 text-white rounded-lg font-bold disabled:opacity-50"
+                        >
+                            {salvando ? 'Salvando...' : 'Salvar avaliação'}
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    );
+};
+
+// COMPONENTE MODAL SEPARADO
+const ModalFornecedor = ({
+    isEditing, currentFornecedor, formData, setFormData, modalTab, setModalTab,
+    chamadosFornecedor, loadingChamados, orcamentosFornecedor, loadingOrcamentos,
+    tiposServico, renderEmpresaOptions, canViewFornecedor, canViewPrestador,
+    handleSubmit, setIsModalOpen
+}) => {
+    return (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[90vh] overflow-hidden flex flex-col">
+                <div className="p-6 border-b border-gray-100 flex justify-between items-center bg-black text-white">
+                    <div className="flex-1">
+                        <h2 className="text-xl font-bold flex items-center gap-2">
+                            <FaUserTie /> {isEditing ? 'Editar Cadastro' : 'Novo Cadastro'}
+                            {formData.origem === 'compras' && (
+                                <span className="ml-2 inline-flex items-center gap-1 bg-white/20 text-white text-[11px] font-bold px-2 py-1 rounded-full">
+                                    <FaShoppingCart size={11} /> Origem: Compras
+                                </span>
+                            )}
+                        </h2>
+                        {isEditing && (
+                            <div className="flex gap-1 mt-3">
+                                {[
+                                    { key: 'detalhes', label: '📋 Detalhes' },
+                                    { key: 'chamados', label: `🔧 Chamados (${chamadosFornecedor.length})` },
+                                    { key: 'orcamentos', label: `💰 Orçamentos (${orcamentosFornecedor.length})` },
+                                ].map(t => (
+                                    <button 
+                                        key={t.key} 
+                                        type="button"
+                                        onClick={() => setModalTab(t.key)}
+                                        className={`px-4 py-2 rounded-lg text-xs font-bold transition-all ${
+                                            modalTab === t.key 
+                                                ? 'bg-white text-gray-600 shadow-lg' 
+                                                : 'bg-white/10 text-white/80 hover:bg-white/20'
+                                        }`}
+                                    >
+                                        {t.label}
+                                    </button>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                    <button 
+                        onClick={() => setIsModalOpen(false)} 
+                        className="p-2 hover:bg-white/10 rounded-full transition-colors"
+                    >
+                        <FaTimes size={24} />
+                    </button>
+                </div>
+
+                {modalTab === 'detalhes' ? (
+                    <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-8">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            <div className="md:col-span-2 bg-gradient-to-r from-gray-50 to-purple-50 p-6 rounded-xl border-2 border-gray-200">
+                                <label className="block text-sm font-bold text-gray-700 mb-4">Tipo de Entidade *</label>
+                                <div className="grid grid-cols-2 gap-4">
+                                    <button
+                                        type="button"
+                                        onClick={() => canViewFornecedor && setFormData({...formData, tipo_entidade: 'fornecedor'})}
+                                        disabled={!canViewFornecedor}
+                                        className={`p-4 rounded-xl border-2 transition-all flex flex-col items-center gap-2 ${
+                                            !canViewFornecedor 
+                                                ? 'bg-gray-100 border-gray-200 text-gray-400 cursor-not-allowed opacity-50' 
+                                                : formData.tipo_entidade === 'fornecedor' 
+                                                    ? 'bg-black border-black text-white shadow-lg scale-105' 
+                                                    : 'bg-white border-gray-200 text-gray-600 hover:border-blue-300'
+                                        }`}
+                                    >
+                                        <FaBoxes size={32} />
+                                        <span className="font-bold text-lg">Fornecedor</span>
+                                        <span className="text-xs opacity-80">
+                                            {!canViewFornecedor ? '🚫 Sem permissão' : 'Fornece produtos e materiais'}
+                                        </span>
+                                    </button>
+                                    
+                                    <button
+                                        type="button"
+                                        onClick={() => canViewPrestador && setFormData({...formData, tipo_entidade: 'prestador'})}
+                                        disabled={!canViewPrestador}
+                                        className={`p-4 rounded-xl border-2 transition-all flex flex-col items-center gap-2 ${
+                                            !canViewPrestador 
+                                                ? 'bg-gray-100 border-gray-200 text-gray-400 cursor-not-allowed opacity-50' 
+                                                : formData.tipo_entidade === 'prestador' 
+                                                    ? 'bg-black bg-black text-white shadow-lg scale-105' 
+                                                    : 'bg-white border-gray-200 text-gray-600 hover:bg-white'
+                                        }`}
+                                    >
+                                        <FaTools size={32} />
+                                        <span className="font-bold text-lg">Prestador</span>
+                                        <span className="text-xs opacity-80">
+                                            {!canViewPrestador ? '🚫 Sem permissão' : 'Presta serviços especializados'}
+                                        </span>
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div className="space-y-4">
+                                <h3 className="text-sm font-bold text-gray-400 uppercase tracking-widest border-b pb-2">Dados Principais</h3>
+                                <div>
+                                    <label className="block text-xs font-bold text-gray-700 mb-1">
+                                        Nome do {formData.tipo_entidade === 'prestador' ? 'Prestador' : 'Fornecedor'} *
+                                    </label>
+                                    <input 
+                                        type="text" 
+                                        required 
+                                        className="w-full p-2 border rounded-lg outline-none focus:ring-2 focus:ring-gray-500" 
+                                        value={formData.nome} 
+                                        onChange={(e) => setFormData({...formData, nome: e.target.value})} 
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-bold text-gray-700 mb-1">CNPJ</label>
+                                    <input 
+                                        type="text" 
+                                        className="w-full p-2 border rounded-lg outline-none focus:ring-2 focus:ring-gray-500" 
+                                        value={formData.cnpj} 
+                                        onChange={(e) => setFormData({...formData, cnpj: e.target.value})} 
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-bold text-gray-700 mb-1">Tipo de Serviço</label>
+                                    <select 
+                                        className="w-full p-2 border rounded-lg outline-none focus:ring-2 focus:ring-gray-500" 
+                                        value={formData.tipo_servico_id} 
+                                        onChange={(e) => setFormData({...formData, tipo_servico_id: e.target.value})}
+                                    >
+                                        <option value="">Selecione o Tipo de Serviço</option>
+                                        {tiposServico.map(ts => (
+                                            <option key={ts.id} value={ts.id.toString()}>{ts.nome}</option>
+                                        ))}
+                                    </select>
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-bold text-gray-700 mb-1">Tipos de Pagamento</label>
+                                    <input 
+                                        type="text" 
+                                        placeholder="Ex: Boleto, PIX, Cartão, 30/60 dias..." 
+                                        className="w-full p-2 border rounded-lg outline-none focus:ring-2 focus:ring-gray-500" 
+                                        value={formData.tipos_pagamento} 
+                                        onChange={(e) => setFormData({...formData, tipos_pagamento: e.target.value})} 
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-bold text-gray-700 mb-1">
+                                        {formData.tipo_entidade === 'prestador' ? 'Serviço Prestado' : 'Serviço (Detalhes)'}
+                                    </label>
+                                    <input 
+                                        type="text" 
+                                        className="w-full p-2 border rounded-lg outline-none focus:ring-2 focus:ring-gray-500" 
+                                        value={formData.servico} 
+                                        onChange={(e) => setFormData({...formData, servico: e.target.value})} 
+                                    />
+                                </div>
+                            </div>
+
+                            <div className="space-y-4">
+                                <h3 className="text-sm font-bold text-gray-400 uppercase tracking-widest border-b pb-2">Contato</h3>
+                                <div>
+                                    <label className="block text-xs font-bold text-gray-700 mb-1">Email</label>
+                                    <input 
+                                        type="email" 
+                                        className="w-full p-2 border rounded-lg outline-none focus:ring-2 focus:ring-gray-500" 
+                                        value={formData.email} 
+                                        onChange={(e) => setFormData({...formData, email: e.target.value})} 
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-bold text-gray-700 mb-1">Telefone</label>
+                                    <input 
+                                        type="text" 
+                                        className="w-full p-2 border rounded-lg outline-none focus:ring-2 focus:ring-gray-500" 
+                                        value={formData.telefone} 
+                                        onChange={(e) => setFormData({...formData, telefone: e.target.value})} 
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-bold text-gray-700 mb-1">Endereço</label>
+                                    <input 
+                                        type="text" 
+                                        className="w-full p-2 border rounded-lg outline-none focus:ring-2 focus:ring-gray-500" 
+                                        value={formData.endereco} 
+                                        onChange={(e) => setFormData({...formData, endereco: e.target.value})} 
+                                    />
+                                </div>
+                            </div>
+
+                            <div className="md:col-span-2 bg-gray-50 p-6 rounded-xl border border-gray-100">
+                                <label className="block text-sm font-bold text-gray-700 mb-4 flex items-center gap-2">
+                                    <FaBuilding className="text-gray-600" /> Vincular Empresa
+                                </label>
+                                <select 
+                                    className="w-full p-2 border rounded-lg outline-none focus:ring-2 focus:ring-gray-500" 
+                                    value={formData.empresa_id} 
+                                    onChange={(e) => setFormData({...formData, empresa_id: e.target.value})}
+                                >
+                                    <option value="">Selecione a Empresa (Opcional)</option>
+                                    {renderEmpresaOptions()}
+                                </select>
+                            </div>
+                        </div>
+
+                        <div className="mt-8 pt-6 border-t border-gray-100 flex justify-end gap-4">
+                            <button 
+                                type="button" 
+                                onClick={() => setIsModalOpen(false)} 
+                                className="px-6 py-3 rounded-xl font-bold text-gray-500 hover:bg-gray-100 transition-colors"
+                            >
+                                Cancelar
+                            </button>
+                            <button 
+                                type="submit" 
+                                className="px-10 py-3 bg-black hover:bg-black text-white rounded-xl font-bold shadow-lg transition-all"
+                            >
+                                {isEditing ? 'Salvar Alterações' : `Criar ${formData.tipo_entidade === 'prestador' ? 'Prestador' : 'Fornecedor'}`}
+                            </button>
+                        </div>
+                    </form>
+                ) : modalTab === 'chamados' ? (
+                    <div className="flex-1 overflow-y-auto p-6">
+                        {loadingChamados ? (
+                            <div className="text-center py-12">Carregando...</div>
+                        ) : chamadosFornecedor.length === 0 ? (
+                            <div className="text-center py-12 text-gray-400">
+                                <FaTools size={48} className="mx-auto mb-3 opacity-30" />
+                                <p>Nenhum chamado vinculado</p>
+                            </div>
+                        ) : (
+                            <div className="space-y-3">
+                                {chamadosFornecedor.map(c => (
+                                    <div key={c.id} className="p-4 bg-gray-50 rounded-lg border">
+                                        <div className="font-bold">#{c.id} - {c.titulo}</div>
+                                        <div className="text-xs text-gray-500 mt-1">{c.status}</div>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                ) : (
+                    <div className="flex-1 overflow-y-auto p-6">
+                        {loadingOrcamentos ? (
+                            <div className="text-center py-12">Carregando...</div>
+                        ) : orcamentosFornecedor.length === 0 ? (
+                            <div className="text-center py-12 text-gray-400">
+                                <FaBriefcase size={48} className="mx-auto mb-3 opacity-30" />
+                                <p>Nenhum orçamento vinculado</p>
+                            </div>
+                        ) : (
+                            <div className="space-y-3">
+                                {orcamentosFornecedor.map(o => (
+                                    <div key={o.id} className="p-4 bg-gray-50 rounded-lg border">
+                                        <div className="font-bold">#{o.id} - {o.numero || 'Orçamento'}</div>
+                                        <div className="text-xs text-gray-500 mt-1">{o.status}</div>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                )}
+            </div>
+        </div>
+    );
+};
+
+export default Fornecedores;

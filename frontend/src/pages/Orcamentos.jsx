@@ -1,6 +1,7 @@
+import { openSecureFile } from '../utils/openSecureFile';
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { 
-    FaPlus, FaEdit, FaTrashAlt, FaSearch, FaFileInvoiceDollar, 
+import {
+    FaPlus, FaEdit, FaTrashAlt, FaSearch, FaFileInvoiceDollar,
     FaTimes, FaInfoCircle, FaCalendarAlt, FaTag, FaBuilding,
     FaCheckCircle, FaExclamationCircle, FaClock, FaPaperclip, FaEye, FaUser
 } from 'react-icons/fa';
@@ -9,7 +10,7 @@ import { useAuth } from '../context/AuthContext';
 
 const Orcamentos = () => {
     const { selectedEntity } = useEntity();
-    const { user } = useAuth();
+    const { user, can } = useAuth();
     const [orcamentos, setOrcamentos] = useState([]);
     const [empresas, setEmpresas] = useState([]);
     const [fornecedores, setFornecedores] = useState([]);
@@ -20,20 +21,20 @@ const Orcamentos = () => {
     const [currentOrcamento, setCurrentOrcamento] = useState(null);
     const [isAnexosModalOpen, setIsAnexosModalOpen] = useState(false);
     const [selectedAnexos, setSelectedAnexos] = useState([]);
-    
+
     const [formData, setFormData] = useState({
         numero: '', descricao: '', valor: '', data_emissao: '',
         data_validade: '', status: 'Pendente', empresa_id: '',
-        fornecedor_id: '', localizacao_id: '', anexos: []
+        fornecedor_id: '', localizacao_id: '', anexos: [], valor_material: '', valor_mao_de_obra: ''
     });
 
     const [uploading, setUploading] = useState(false);
     const [isSaving, setIsSaving] = useState(false);
+    const [modalTab, setModalTab] = useState('detalhes');
+    const [chamadosOrcamento, setChamadosOrcamento] = useState([]);
+    const [loadingChamados, setLoadingChamados] = useState(false);
 
-    // Definição da base da API e do Backend
-    const API_BASE = window.location.origin.includes('5173') 
-        ? `${window.location.protocol}//${window.location.hostname}:5002`
-        : window.location.origin;
+    const API_BASE = "";
     const API_URL = `${API_BASE}/api`;
 
     const fetchData = useCallback(async () => {
@@ -41,14 +42,12 @@ const Orcamentos = () => {
             const headers = {};
             if (user?.api_token) headers['X-API-Token'] = user.api_token;
             const queryParams = selectedEntity && selectedEntity !== 'all' ? `?empresa_id=${selectedEntity}` : '';
-            
             const [o, e, f, l] = await Promise.all([
                 fetch(`${API_URL}/orcamentos${queryParams}`, { headers }),
                 fetch(`${API_URL}/empresas`, { headers }),
                 fetch(`${API_URL}/fornecedores${queryParams}`, { headers }),
                 fetch(`${API_URL}/localizacoes`, { headers })
             ]);
-            
             if (o.ok) setOrcamentos(await o.json());
             if (e.ok) setEmpresas(await e.json());
             if (f.ok) setFornecedores(await f.json());
@@ -72,6 +71,8 @@ const Orcamentos = () => {
                 empresa_id: orcamento.empresa_id?.toString() || '',
                 fornecedor_id: orcamento.fornecedor_id?.toString() || '',
                 localizacao_id: orcamento.localizacao_id?.toString() || '',
+                valor_material: orcamento.valor_material || '',
+                valor_mao_de_obra: orcamento.valor_mao_de_obra || '',
                 anexos: Array.isArray(orcamento.anexos) ? orcamento.anexos : (typeof orcamento.anexos === 'string' ? JSON.parse(orcamento.anexos) : [])
             });
         } else {
@@ -80,8 +81,19 @@ const Orcamentos = () => {
             setFormData({
                 numero: '', descricao: '', valor: '', data_emissao: '',
                 data_validade: '', status: 'Pendente', empresa_id: '',
-                fornecedor_id: '', localizacao_id: '', anexos: []
+                fornecedor_id: '', localizacao_id: '', anexos: [], valor_material: '', valor_mao_de_obra: ''
             });
+        }
+        setModalTab('detalhes');
+        setChamadosOrcamento([]);
+        if (orcamento) {
+            setLoadingChamados(true);
+            const headers = {};
+            if (user?.api_token) headers['X-API-Token'] = user.api_token;
+            fetch(`${API_URL}/chamados?orcamento_id=${orcamento.id}&per_page=200`, { headers })
+                .then(r => r.ok ? r.json() : { chamados: [] })
+                .then(d => { setChamadosOrcamento(d.chamados || []); setLoadingChamados(false); })
+                .catch(() => setLoadingChamados(false));
         }
         setIsModalOpen(true);
     };
@@ -89,47 +101,25 @@ const Orcamentos = () => {
     const handleFileUpload = async (e) => {
         const files = Array.from(e.target.files);
         if (files.length === 0) return;
-        
         setUploading(true);
-        // Criamos uma cópia local para acumular os novos anexos
         let updatedAnexos = [...formData.anexos];
-        
         for (const file of files) {
             const fData = new FormData();
             fData.append('file', file);
-            
             try {
-                const res = await fetch(`${API_BASE}/api/upload`, { 
-                    method: 'POST', 
-                    body: fData 
-                });
-                
+                const res = await fetch(`${API_BASE}/api/upload`, { method: 'POST', body: fData, headers: (()=>{const t=(()=>{try{return JSON.parse(localStorage.getItem('user'))?.api_token;}catch{return null;}})(); return t?{'X-API-Token':t}:{};})() });
                 if (res.ok) {
                     const data = await res.json();
-                    // Adicionamos o novo anexo à lista
-                    updatedAnexos = [...updatedAnexos, { 
-                        name: file.name, 
-                        path: data.path, 
-                        url: data.url 
-                    }];
-                    
-                    // Atualizamos o estado a cada upload bem-sucedido para feedback imediato
+                    updatedAnexos = [...updatedAnexos, { name: file.name, path: data.path, url: data.url }];
                     setFormData(prev => ({ ...prev, anexos: updatedAnexos }));
                 }
-            } catch (err) { 
-                console.error('Upload error', err); 
-            }
+            } catch (err) { console.error('Upload error', err); }
         }
-        
         setUploading(false);
-        // Limpar o input de arquivo para permitir novo upload do mesmo arquivo se necessário
         e.target.value = '';
     };
 
-    const removeAnexo = (index) => {
-        const updated = formData.anexos.filter((_, i) => i !== index);
-        setFormData({ ...formData, anexos: updated });
-    };
+    const removeAnexo = (index) => setFormData({ ...formData, anexos: formData.anexos.filter((_, i) => i !== index) });
 
     const handleSubmit = async (e) => {
         e.preventDefault();
@@ -140,8 +130,7 @@ const Orcamentos = () => {
         const method = isEditing ? 'PUT' : 'POST';
         try {
             const res = await fetch(url, {
-                method,
-                headers,
+                method, headers,
                 body: JSON.stringify({
                     ...formData,
                     empresa_id: formData.empresa_id ? parseInt(formData.empresa_id) : null,
@@ -165,22 +154,7 @@ const Orcamentos = () => {
         } catch (err) { console.error('Delete error', err); }
     };
 
-    const handleOpenAnexosModal = (anexos) => {
-        setSelectedAnexos(anexos || []);
-        setIsAnexosModalOpen(true);
-    };
-
-    const getAnexoHref = (path) => {
-        if (!path) return '#';
-        if (path.startsWith('http')) return path;
-        
-        let cleanPath = path;
-        cleanPath = cleanPath.replace(/^\/+/, '');
-        cleanPath = cleanPath.replace(/^static\/uploads\//, '');
-        cleanPath = cleanPath.replace(/^uploads\//, '');
-        
-        return `${API_BASE}/static/uploads/${cleanPath}`;
-    };
+    const handleOpenAnexosModal = (anexos) => { setSelectedAnexos(anexos || []); setIsAnexosModalOpen(true); };
 
     const getStatusColor = (status) => {
         switch (status) {
@@ -197,7 +171,7 @@ const Orcamentos = () => {
         return localizacoes.filter(l => l.empresa_id?.toString() === formData.empresa_id.toString());
     }, [localizacoes, formData.empresa_id]);
 
-    const filteredOrcamentos = orcamentos.filter(o => 
+    const filteredOrcamentos = orcamentos.filter(o =>
         o.numero?.toLowerCase().includes(searchTerm.toLowerCase()) ||
         o.descricao?.toLowerCase().includes(searchTerm.toLowerCase())
     );
@@ -211,9 +185,11 @@ const Orcamentos = () => {
                     </h1>
                     <p className="text-slate-500 mt-1">Gerencie propostas comerciais e aprovações de custos</p>
                 </div>
-                <button onClick={() => handleOpenModal()} className="bg-primary hover:bg-primary/90 text-white px-6 py-3 rounded-xl font-bold shadow-lg transition-all active:scale-95 flex items-center gap-2">
-                    <FaPlus /> Novo Orçamento
-                </button>
+                {can('orcamentos', 'criar') && (
+                    <button onClick={() => handleOpenModal()} className="bg-primary hover:bg-primary/90 text-white px-6 py-3 rounded-xl font-bold shadow-lg transition-all active:scale-95 flex items-center gap-2">
+                        <FaPlus /> Novo Orçamento
+                    </button>
+                )}
             </div>
 
             <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100">
@@ -248,9 +224,7 @@ const Orcamentos = () => {
                                     <td className="p-4">
                                         <div className="flex flex-col">
                                             <span className="text-sm font-semibold text-slate-600">{o.empresa_nome}</span>
-                                            <span className="text-[10px] text-slate-400 flex items-center gap-1 mb-1">
-                                                <FaBuilding size={10} /> {o.localizacao_nome || 'Sem localização'}
-                                            </span>
+                                            <span className="text-[10px] text-slate-400 flex items-center gap-1 mb-1"><FaBuilding size={10} /> {o.localizacao_nome || 'Sem localização'}</span>
                                             <span className="text-xs text-slate-400 flex items-center gap-1"><FaUser size={10} /> {o.fornecedor_nome}</span>
                                         </div>
                                     </td>
@@ -269,8 +243,12 @@ const Orcamentos = () => {
                                     </td>
                                     <td className="p-4 text-right">
                                         <div className="flex items-center justify-end gap-2">
-                                            <button onClick={() => handleOpenModal(o)} className="p-2 text-slate-400 hover:text-primary hover:bg-primary/10 rounded-lg transition-all"><FaEdit /></button>
-                                            <button onClick={() => handleDelete(o.id)} className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all"><FaTrashAlt /></button>
+                                            {can('orcamentos', 'editar') && (
+                                                <button onClick={() => handleOpenModal(o)} className="p-2 text-slate-400 hover:text-primary hover:bg-primary/10 rounded-lg transition-all" title="Editar"><FaEdit /></button>
+                                            )}
+                                            {can('orcamentos', 'excluir') && (
+                                                <button onClick={() => handleDelete(o.id)} className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all" title="Excluir"><FaTrashAlt /></button>
+                                            )}
                                         </div>
                                     </td>
                                 </tr>
@@ -280,22 +258,21 @@ const Orcamentos = () => {
                 </div>
             </div>
 
-            {/* Anexos Modal */}
             {isAnexosModalOpen && (
                 <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[110] flex items-center justify-center p-4">
-                    <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden animate-in fade-in zoom-in duration-200">
+                    <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden">
                         <div className="p-6 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
                             <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2"><FaPaperclip className="text-primary" /> Documentos do Orçamento</h2>
                             <button onClick={() => setIsAnexosModalOpen(false)} className="p-2 hover:bg-slate-200 rounded-full transition-colors"><FaTimes className="text-slate-400" /></button>
                         </div>
                         <div className="p-6 max-h-[60vh] overflow-y-auto space-y-3">
                             {selectedAnexos.map((anexo, idx) => (
-                                <div key={idx} className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100 hover:border-primary/30 transition-all group">
+                                <div key={idx} className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100 hover:border-primary/30 transition-all">
                                     <div className="flex items-center gap-4 truncate">
                                         <FaPaperclip className="text-primary" />
                                         <span className="text-sm font-bold text-slate-700 truncate">{anexo.name || anexo.filename}</span>
                                     </div>
-                                    <button onClick={() => window.open(getAnexoHref(anexo.path || anexo.url), '_blank')} className="p-2 bg-white text-primary hover:bg-primary hover:text-white rounded-xl shadow-sm transition-all"><FaEye size={18} /></button>
+                                    <button onClick={() => openSecureFile(anexo.path || anexo.url)} className="p-2 bg-white text-primary hover:bg-primary hover:text-white rounded-xl shadow-sm transition-all"><FaEye size={18} /></button>
                                 </div>
                             ))}
                         </div>
@@ -303,14 +280,52 @@ const Orcamentos = () => {
                 </div>
             )}
 
-            {/* Cadastro Modal */}
             {isModalOpen && (
                 <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
                     <div className="bg-white rounded-3xl shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
                         <div className="p-6 border-b border-slate-100 flex items-center justify-between">
-                            <h2 className="text-xl font-bold text-slate-800">{isEditing ? 'Editar Orçamento' : 'Novo Orçamento'}</h2>
+                            <div>
+                                <h2 className="text-xl font-bold text-slate-800">{isEditing ? 'Editar Orçamento' : 'Novo Orçamento'}</h2>
+                                {isEditing && (
+                                    <div className="flex gap-1 mt-2">
+                                        {['detalhes','chamados'].map(t => (
+                                            <button key={t} type="button" onClick={() => setModalTab(t)}
+                                                className={`px-4 py-1 rounded-full text-xs font-bold transition-all ${modalTab===t ? 'bg-primary text-white shadow' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}>
+                                                {t === 'detalhes' ? '📋 Detalhes' : `🔧 Chamados ${chamadosOrcamento.length > 0 ? `(${chamadosOrcamento.length})` : ''}`}
+                                            </button>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
                             <button onClick={() => setIsModalOpen(false)} className="p-2 hover:bg-slate-100 rounded-full transition-colors"><FaTimes /></button>
                         </div>
+                        {modalTab === 'chamados' ? (
+                            <div className="flex-1 overflow-y-auto p-6 space-y-3">
+                                {loadingChamados ? (
+                                    <div className="text-center py-12 text-slate-400 text-sm">Carregando chamados...</div>
+                                ) : chamadosOrcamento.length === 0 ? (
+                                    <div className="text-center py-12 text-slate-400">
+                                        <div className="text-4xl mb-2">🔧</div>
+                                        <div className="text-sm font-bold">Nenhum chamado vinculado a este orçamento</div>
+                                    </div>
+                                ) : chamadosOrcamento.map(c => (
+                                    <div key={c.id} className="flex items-start gap-3 p-4 bg-slate-50 border border-slate-100 rounded-2xl hover:border-primary/30 transition-all">
+                                        <div className="flex-1 min-w-0">
+                                            <div className="flex items-center gap-2 mb-1">
+                                                <span className="text-xs font-bold text-primary">#{c.id}</span>
+                                                <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${c.status === 'Concluído' || c.status === 'Fechado' ? 'bg-green-100 text-green-700' : c.status === 'Em Atendimento' ? 'bg-blue-100 text-blue-700' : 'bg-yellow-100 text-yellow-700'}`}>{c.status}</span>
+                                                {c.tipo && <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-200 text-slate-600 font-bold">{c.tipo}</span>}
+                                            </div>
+                                            <div className="text-sm font-bold text-slate-700 truncate">{c.titulo}</div>
+                                            <div className="flex gap-3 mt-1 text-xs text-slate-400">
+                                                {c.empresa_nome && <span>🏢 {c.empresa_nome}</span>}
+                                                {c.created_at && <span>📅 {new Date(c.created_at).toLocaleDateString('pt-BR')}</span>}
+                                            </div>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        ) : (
                         <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-8 space-y-6">
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                                 <div className="space-y-4">
@@ -323,9 +338,19 @@ const Orcamentos = () => {
                                         <label className="text-xs font-bold text-slate-600 uppercase ml-1">Descrição</label>
                                         <textarea rows="3" className="w-full px-4 py-2 bg-slate-50 border rounded-xl outline-none resize-none" value={formData.descricao} onChange={e => setFormData({...formData, descricao: e.target.value})}></textarea>
                                     </div>
+                                    <div className="md:col-span-2 grid grid-cols-2 gap-4">
+                                        <div className="space-y-1">
+                                            <label className="text-xs font-bold text-slate-600 uppercase ml-1">💰 Valor Material (R$)</label>
+                                            <input type="number" step="0.01" className="w-full px-4 py-2 bg-slate-50 border rounded-xl outline-none" value={formData.valor_material} onChange={e => setFormData({...formData, valor_material: e.target.value, valor: (parseFloat(e.target.value||0) + parseFloat(formData.valor_mao_de_obra||0)).toFixed(2)})} />
+                                        </div>
+                                        <div className="space-y-1">
+                                            <label className="text-xs font-bold text-slate-600 uppercase ml-1">🔧 Valor Mão de Obra (R$)</label>
+                                            <input type="number" step="0.01" className="w-full px-4 py-2 bg-slate-50 border rounded-xl outline-none" value={formData.valor_mao_de_obra} onChange={e => setFormData({...formData, valor_mao_de_obra: e.target.value, valor: (parseFloat(formData.valor_material||0) + parseFloat(e.target.value||0)).toFixed(2)})} />
+                                        </div>
+                                    </div>
                                     <div className="grid grid-cols-2 gap-4">
                                         <div className="space-y-1">
-                                            <label className="text-xs font-bold text-slate-600 uppercase ml-1">Valor (R$)</label>
+                                            <label className="text-xs font-bold text-slate-600 uppercase ml-1">Valor Total (R$)</label>
                                             <input type="number" step="0.01" className="w-full px-4 py-2 bg-slate-50 border rounded-xl outline-none" value={formData.valor} onChange={e => setFormData({...formData, valor: e.target.value})} />
                                         </div>
                                         <div className="space-y-1">
@@ -372,7 +397,7 @@ const Orcamentos = () => {
                                                 <div key={idx} className="flex items-center justify-between bg-slate-50 p-2 rounded-lg border">
                                                     <span className="text-xs font-medium truncate max-w-[200px]">{file.name || file.filename}</span>
                                                     <div className="flex gap-1">
-                                                        <button type="button" onClick={() => window.open(getAnexoHref(file.path || file.url), '_blank')} className="p-1 text-primary"><FaEye size={12} /></button>
+                                                        <button type="button" onClick={() => openSecureFile(file.path || file.url)} className="p-1 text-primary"><FaEye size={12} /></button>
                                                         <button type="button" onClick={() => removeAnexo(idx)} className="p-1 text-red-500"><FaTimes size={12} /></button>
                                                     </div>
                                                 </div>
@@ -386,6 +411,7 @@ const Orcamentos = () => {
                                 <button type="submit" disabled={isSaving || uploading} className="px-10 py-2 bg-primary text-white rounded-xl font-bold shadow-lg disabled:opacity-50">{isSaving ? 'Salvando...' : 'Salvar Orçamento'}</button>
                             </div>
                         </form>
+                        )}
                     </div>
                 </div>
             )}

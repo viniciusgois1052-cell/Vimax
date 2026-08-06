@@ -1,0 +1,501 @@
+from .. import db
+from datetime import datetime
+from enum import Enum
+
+class StatusRequisicao(Enum):
+    RASCUNHO = "Rascunho"
+    PENDENTE_APROVACAO = "Pendente Aprovação"
+    APROVADA = "Aprovada"
+    REJEITADA = "Rejeitada"
+    CANCELADA = "Cancelada"
+
+class StatusPedido(Enum):
+    RASCUNHO = "Rascunho"
+    EMITIDO = "Emitido"
+    CONFIRMADO = "Confirmado"
+    ENTREGA_PARCIAL = "Entrega Parcial"
+    ENTREGUE = "Entregue"
+    CANCELADO = "Cancelado"
+
+# ============= GRUPOS DE ITENS =============
+class GrupoItem(db.Model):
+    __tablename__ = 'grupos_itens'
+    id = db.Column(db.Integer, primary_key=True)
+    nome = db.Column(db.String(100), nullable=False, unique=True)
+    descricao = db.Column(db.Text)
+    codigo = db.Column(db.String(50), unique=True)
+    
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    ativo = db.Column(db.Boolean, default=True)
+    
+    itens = db.relationship('Item', backref='grupo_ref', lazy=True, cascade="all, delete-orphan")
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'nome': self.nome,
+            'descricao': self.descricao,
+            'codigo': self.codigo,
+            'ativo': self.ativo,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+        }
+
+# ============= ITENS (CATÁLOGO) =============
+class Item(db.Model):
+    __tablename__ = 'itens_catalogo'
+    id = db.Column(db.Integer, primary_key=True)
+    codigo = db.Column(db.String(100), unique=True, nullable=False)
+    nome = db.Column(db.String(255), nullable=False)
+    descricao = db.Column(db.Text)
+    grupo_id = db.Column(db.Integer, db.ForeignKey('grupos_itens.id'), nullable=False)
+    
+    unidade_medida = db.Column(db.String(20))  # UN, KG, L, etc
+    preco_unitario = db.Column(db.Float)
+    especificacoes = db.Column(db.Text)
+    
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    ativo = db.Column(db.Boolean, default=True)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'codigo': self.codigo,
+            'nome': self.nome,
+            'descricao': self.descricao,
+            'grupo_id': self.grupo_id,
+            'grupo_nome': self.grupo_ref.nome if self.grupo_ref else None,
+            'unidade_medida': self.unidade_medida,
+            'preco_unitario': self.preco_unitario,
+            'especificacoes': self.especificacoes,
+            'ativo': self.ativo,
+        }
+
+# ============= REQUISIÇÃO DE COMPRA =============
+class RequisicaoCompra(db.Model):
+    __tablename__ = 'requisicoes_compra'
+    id = db.Column(db.Integer, primary_key=True)
+    numero_rq = db.Column(db.String(100), unique=True, nullable=False)  # RQ-2026-001
+    status = db.Column(db.String(50), default=StatusRequisicao.RASCUNHO.value)
+    
+    empresa_id = db.Column(db.Integer, db.ForeignKey('empresas.id'), nullable=False)
+
+    # Preenchido quando a requisição nasce da projeção de um projeto.
+    projeto_id = db.Column(
+        db.Integer,
+        db.ForeignKey('projetos.id', ondelete='SET NULL'),
+        nullable=True,
+        index=True
+    )
+
+    usuario_solicitante_id = db.Column(db.Integer, db.ForeignKey('usuarios.id'), nullable=False)
+    
+    data_solicitacao = db.Column(db.DateTime, default=datetime.utcnow)
+    data_necessaria = db.Column(db.DateTime)  # Data desejada de entrega
+    
+    descricao = db.Column(db.Text)
+    observacoes = db.Column(db.Text)
+    justificativa = db.Column(db.Text)
+    
+    data_aprovacao = db.Column(db.DateTime)
+    usuario_aprovador_id = db.Column(db.Integer, db.ForeignKey('usuarios.id'))
+    motivo_rejeicao = db.Column(db.Text)
+    
+    anexos = db.Column(db.JSON, default=[])
+    
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    ativo = db.Column(db.Boolean, default=True)
+    
+    empresa = db.relationship('Empresa', backref='requisicoes_compra', foreign_keys=[empresa_id])
+    projeto = db.relationship('Projeto', foreign_keys=[projeto_id])
+    solicitante = db.relationship('Usuario', foreign_keys=[usuario_solicitante_id], backref='requisicoes_solicitadas')
+    aprovador = db.relationship('Usuario', foreign_keys=[usuario_aprovador_id], backref='requisicoes_aprovadas')
+    itens = db.relationship('ItemRequisicao', backref='requisicao_ref', lazy=True, cascade="all, delete-orphan")
+
+    def to_dict(self):
+        valor_total = sum(item.valor_total for item in self.itens) if self.itens else 0
+        return {
+            'id': self.id,
+            'numero_rq': self.numero_rq,
+            'status': self.status,
+            'empresa_id': self.empresa_id,
+            'empresa_nome': self.empresa.nome if self.empresa else None,
+            'projeto_id': self.projeto_id,
+            'projeto_codigo': (
+                self.projeto.codigo
+                if self.projeto else None
+            ),
+            'projeto_nome': (
+                self.projeto.nome
+                if self.projeto else None
+            ),
+            'origem': (
+                'Projeto'
+                if self.projeto_id else 'Compra direta'
+            ),
+            'projeto_link': (
+                f'/projetos/projecoes?projeto={self.projeto_id}'
+                if self.projeto_id else None
+            ),
+            'usuario_solicitante_id': self.usuario_solicitante_id,
+            'usuario_solicitante_nome': self.solicitante.username if self.solicitante else None,
+            'data_solicitacao': self.data_solicitacao.isoformat() if self.data_solicitacao else None,
+            'data_necessaria': self.data_necessaria.isoformat() if self.data_necessaria else None,
+            'descricao': self.descricao,
+            'observacoes': self.observacoes,
+            'justificativa': self.justificativa,
+            'data_aprovacao': self.data_aprovacao.isoformat() if self.data_aprovacao else None,
+            'usuario_aprovador_nome': self.aprovador.username if self.aprovador else None,
+            'motivo_rejeicao': self.motivo_rejeicao,
+            'valor_total': valor_total,
+            'itens': [item.to_dict() for item in self.itens],
+            'anexos': self.anexos or [],
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+        }
+
+# ============= ITENS DA REQUISIÇÃO =============
+class ItemRequisicao(db.Model):
+    __tablename__ = 'itens_requisicao'
+    id = db.Column(db.Integer, primary_key=True)
+    requisicao_id = db.Column(db.Integer, db.ForeignKey('requisicoes_compra.id', ondelete='CASCADE'), nullable=False)
+    item_id = db.Column(db.Integer, db.ForeignKey('itens_catalogo.id'), nullable=True)
+    
+    codigo_item = db.Column(db.String(100))
+    nome_item = db.Column(db.String(255), nullable=False)
+    descricao = db.Column(db.Text)
+    
+    quantidade = db.Column(db.Float, nullable=False, default=1)
+    unidade_medida = db.Column(db.String(20))
+    valor_unitario = db.Column(db.Float)
+    valor_total = db.Column(db.Float)
+    
+    especificacoes = db.Column(db.Text)
+
+    # Origem e endereço de compra informado no projeto.
+    projecao_item_id = db.Column(
+        db.Integer,
+        nullable=True,
+        index=True
+    )
+
+    link_compra = db.Column(
+        db.String(2048),
+        nullable=True
+    )
+    
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'item_id': self.item_id,
+            'codigo_item': self.codigo_item,
+            'nome_item': self.nome_item,
+            'descricao': self.descricao,
+            'quantidade': self.quantidade,
+            'unidade_medida': self.unidade_medida,
+            'valor_unitario': self.valor_unitario,
+            'valor_total': self.valor_total,
+            'especificacoes': self.especificacoes,
+            'projecao_item_id': self.projecao_item_id,
+            'link_compra': self.link_compra,
+        }
+
+# ============= PEDIDO DE COMPRA =============
+class PedidoCompra(db.Model):
+    __tablename__ = 'pedidos_compra'
+    id = db.Column(db.Integer, primary_key=True)
+    numero_pc = db.Column(db.String(100), unique=True, nullable=False)  # PC-2026-001
+    requisicao_id = db.Column(db.Integer, db.ForeignKey('requisicoes_compra.id'))
+    
+    status = db.Column(db.String(50), default=StatusPedido.RASCUNHO.value)
+    
+    empresa_id = db.Column(db.Integer, db.ForeignKey('empresas.id'), nullable=False)
+    fornecedor_id = db.Column(db.Integer, db.ForeignKey('fornecedores.id'))
+
+    # fornecedor: fluxo tradicional
+    # site: compra direta pelo endereço indicado no item
+    tipo_compra = db.Column(
+        db.String(20),
+        default='fornecedor',
+        nullable=False,
+        index=True
+    )
+
+    usuario_comprador_id = db.Column(db.Integer, db.ForeignKey('usuarios.id'), nullable=False)
+    
+    data_emissao = db.Column(db.DateTime, default=datetime.utcnow)
+    data_entrega_prevista = db.Column(db.DateTime)
+    data_entrega_real = db.Column(db.DateTime)
+    
+    valor_total = db.Column(db.Float, default=0)
+    desconto = db.Column(db.Float, default=0)
+    valor_final = db.Column(db.Float, default=0)
+    
+    condicao_pagamento = db.Column(db.String(100))  # 30 dias, à vista, etc
+    local_entrega = db.Column(db.String(255))
+    
+    observacoes = db.Column(db.Text)
+    anexos = db.Column(db.JSON, default=[])
+    
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    ativo = db.Column(db.Boolean, default=True)
+    
+    empresa = db.relationship('Empresa', backref='pedidos_compra', foreign_keys=[empresa_id])
+    fornecedor = db.relationship('Fornecedor', backref='pedidos_compra', foreign_keys=[fornecedor_id])
+    comprador = db.relationship('Usuario', backref='pedidos_compra', foreign_keys=[usuario_comprador_id])
+    requisicao = db.relationship('RequisicaoCompra', backref='pedidos_compra')
+    itens = db.relationship('ItemPedido', backref='pedido_ref', lazy=True, cascade="all, delete-orphan")
+    ordens = db.relationship('OrdemCompra', backref='pedido_ref', lazy=True, cascade="all, delete-orphan")
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'numero_pc': self.numero_pc,
+            'status': self.status,
+            'requisicao_id': self.requisicao_id,
+            'empresa_id': self.empresa_id,
+            'empresa_nome': self.empresa.nome if self.empresa else None,
+            'fornecedor_id': self.fornecedor_id,
+            'fornecedor_nome': self.fornecedor.nome if self.fornecedor else None,
+            'tipo_compra': self.tipo_compra or 'fornecedor',
+            'compra_por_site': self.tipo_compra == 'site',
+            'usuario_comprador_id': self.usuario_comprador_id,
+            'usuario_comprador_nome': self.comprador.username if self.comprador else None,
+            'data_emissao': self.data_emissao.isoformat() if self.data_emissao else None,
+            'data_entrega_prevista': self.data_entrega_prevista.isoformat() if self.data_entrega_prevista else None,
+            'data_entrega_real': self.data_entrega_real.isoformat() if self.data_entrega_real else None,
+            'valor_total': self.valor_total,
+            'desconto': self.desconto,
+            'valor_final': self.valor_final,
+            'condicao_pagamento': self.condicao_pagamento,
+            'local_entrega': self.local_entrega,
+            'observacoes': self.observacoes,
+            'itens': [item.to_dict() for item in self.itens],
+            'anexos': self.anexos or [],
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+        }
+
+# ============= ITENS DO PEDIDO =============
+class ItemPedido(db.Model):
+    __tablename__ = 'itens_pedido'
+    id = db.Column(db.Integer, primary_key=True)
+    pedido_id = db.Column(db.Integer, db.ForeignKey('pedidos_compra.id', ondelete='CASCADE'), nullable=False)
+    item_id = db.Column(db.Integer, db.ForeignKey('itens_catalogo.id'), nullable=True)
+    
+    codigo_item = db.Column(db.String(100))
+    nome_item = db.Column(db.String(255), nullable=False)
+    
+    quantidade = db.Column(db.Float, nullable=False, default=1)
+    unidade_medida = db.Column(db.String(20))
+    valor_unitario = db.Column(db.Float)
+    valor_total = db.Column(db.Float)
+
+    link_compra = db.Column(
+        db.String(2048),
+        nullable=True
+    )
+    
+    quantidade_entregue = db.Column(db.Float, default=0)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'item_id': self.item_id,
+            'codigo_item': self.codigo_item,
+            'nome_item': self.nome_item,
+            'quantidade': self.quantidade,
+            'unidade_medida': self.unidade_medida,
+            'valor_unitario': self.valor_unitario,
+            'valor_total': self.valor_total,
+            'link_compra': self.link_compra,
+            'quantidade_entregue': self.quantidade_entregue,
+        }
+
+# ============= ORDEM DE COMPRA =============
+class OrdemCompra(db.Model):
+    __tablename__ = 'ordens_compra'
+    id = db.Column(db.Integer, primary_key=True)
+    numero_oc = db.Column(db.String(100), unique=True, nullable=False)  # OC-2026-001
+    pedido_id = db.Column(db.Integer, db.ForeignKey('pedidos_compra.id'), nullable=False)
+
+    status = db.Column(db.String(50), default=StatusPedido.EMITIDO.value)
+    tipo_compra = db.Column(
+        db.String(20),
+        nullable=False,
+        default='fornecedor'
+    )
+
+    empresa_id = db.Column(db.Integer, db.ForeignKey('empresas.id'), nullable=False)
+    fornecedor_id = db.Column(db.Integer, db.ForeignKey('fornecedores.id'), nullable=True)
+
+    data_emissao = db.Column(db.DateTime, default=datetime.utcnow)
+    data_entrega_prevista = db.Column(db.DateTime)
+
+    valor_total = db.Column(db.Float)
+    condicao_pagamento = db.Column(db.String(100))
+
+    email_fornecedor = db.Column(db.String(100))
+    telefone_fornecedor = db.Column(db.String(20))
+
+    observacoes = db.Column(db.Text)
+    anexos = db.Column(db.JSON, default=[])
+
+    pdf_enviado = db.Column(db.Boolean, default=False)
+    data_envio_pdf = db.Column(db.DateTime)
+
+    token_portal = db.Column(db.String(64), unique=True, nullable=True,
+                             default=lambda: __import__('secrets').token_urlsafe(32))
+
+    # metadados dos documentos
+    nf_numero         = db.Column(db.String(100), nullable=True)
+    boleto_vencimento = db.Column(db.Date, nullable=True)
+    docs_status       = db.Column(db.String(20), default='AGUARDANDO')
+    docs_data         = db.Column(db.DateTime, nullable=True)
+
+    # URLs antigas (compat. com anexos gravados em disco antes do BLOB)
+    nf_arquivo_url     = db.Column(db.String(500), nullable=True)
+    boleto_arquivo_url = db.Column(db.String(500), nullable=True)
+
+    # BLOB novo (no banco)
+    nf_blob           = db.Column(db.LargeBinary(length=(2**32) - 1), nullable=True)
+    nf_filename       = db.Column(db.String(255), nullable=True)
+    nf_mimetype       = db.Column(db.String(100), nullable=True)
+    boleto_blob       = db.Column(db.LargeBinary(length=(2**32) - 1), nullable=True)
+    boleto_filename   = db.Column(db.String(255), nullable=True)
+    boleto_mimetype   = db.Column(db.String(100), nullable=True)
+
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    ativo = db.Column(db.Boolean, default=True)
+
+    empresa = db.relationship('Empresa', backref='ordens_compra', foreign_keys=[empresa_id])
+    fornecedor = db.relationship('Fornecedor', backref='ordens_compra', foreign_keys=[fornecedor_id])
+    itens = db.relationship('ItemOrdem', backref='ordem_ref', lazy=True, cascade="all, delete-orphan")
+
+    # 🆕 flags que consideram BLOB novo OU arquivo antigo em disco
+    @property
+    def tem_nf(self):
+        return bool(self.nf_blob) or bool(self.nf_arquivo_url)
+
+    @property
+    def tem_boleto(self):
+        return bool(self.boleto_blob) or bool(self.boleto_arquivo_url)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'numero_oc': self.numero_oc,
+            'numero_pc': self.pedido_ref.numero_pc if self.pedido_ref else None,
+            'status': self.status,
+            'tipo_compra': self.tipo_compra or 'fornecedor',
+            'compra_por_site': self.tipo_compra == 'site',
+            'projeto_id': (
+                getattr(self.pedido_ref, 'projeto_id', None)
+                if self.pedido_ref else None
+            ),
+            'projeto_codigo': (
+                getattr(
+                    getattr(self.pedido_ref, 'projeto', None),
+                    'codigo',
+                    None
+                )
+                if self.pedido_ref else None
+            ),
+            'projeto_nome': (
+                getattr(
+                    getattr(self.pedido_ref, 'projeto', None),
+                    'nome',
+                    None
+                )
+                if self.pedido_ref else None
+            ),
+            'projeto_link': (
+                f"/projetos/projecoes?projeto={self.pedido_ref.projeto_id}"
+                if (
+                    self.pedido_ref
+                    and getattr(self.pedido_ref, 'projeto_id', None)
+                )
+                else None
+            ),
+            'links_compra': [
+                item.link_compra
+                for item in self.itens
+                if getattr(item, 'link_compra', None)
+            ],
+            'pedido_id': self.pedido_id,
+            'empresa_id': self.empresa_id,
+            'empresa_nome': self.empresa.nome if self.empresa else None,
+            'fornecedor_id': self.fornecedor_id,
+            'fornecedor_nome': self.fornecedor.nome if self.fornecedor else None,
+            'data_emissao': self.data_emissao.isoformat() if self.data_emissao else None,
+            'data_entrega_prevista': self.data_entrega_prevista.isoformat() if self.data_entrega_prevista else None,
+            'valor_total': self.valor_total,
+            'condicao_pagamento': self.condicao_pagamento,
+            'email_fornecedor': self.email_fornecedor,
+            'telefone_fornecedor': self.telefone_fornecedor,
+            'observacoes': self.observacoes,
+            'pdf_enviado': self.pdf_enviado,
+            'data_envio_pdf': self.data_envio_pdf.isoformat() if self.data_envio_pdf else None,
+            'nf_anexada': self.tem_nf,
+            'nf_numero': self.nf_numero,
+            'nf_filename': self.nf_filename,
+            'boleto_anexado': self.tem_boleto,
+            'boleto_filename': self.boleto_filename,
+            'boleto_vencimento': self.boleto_vencimento.isoformat() if self.boleto_vencimento else None,
+            'docs_status': self.docs_status or 'AGUARDANDO',
+            'docs_data': self.docs_data.isoformat() if self.docs_data else None,
+            'itens': [item.to_dict() for item in self.itens],
+            'anexos': self.anexos or [],
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+        }
+
+    def to_dict_portal(self):
+        return {
+            'id': self.id,
+            'numero_oc': self.numero_oc,
+            'status': self.status,
+            'empresa_nome': self.empresa.nome if self.empresa else None,
+            'fornecedor_nome': self.fornecedor.nome if self.fornecedor else None,
+            'data_emissao': self.data_emissao.isoformat() if self.data_emissao else None,
+            'valor_total': self.valor_total,
+            'condicao_pagamento': self.condicao_pagamento,
+            'observacoes': self.observacoes,
+            'nf_anexada': self.tem_nf,
+            'nf_numero': self.nf_numero,
+            'nf_filename': self.nf_filename,
+            'boleto_anexado': self.tem_boleto,
+            'boleto_filename': self.boleto_filename,
+            'boleto_vencimento': self.boleto_vencimento.isoformat() if self.boleto_vencimento else None,
+            'docs_status': self.docs_status or 'AGUARDANDO',
+            'docs_data': self.docs_data.isoformat() if self.docs_data else None,
+            'itens': [item.to_dict() for item in self.itens],
+        }
+
+# ============= ITENS DA ORDEM =============
+class ItemOrdem(db.Model):
+    __tablename__ = 'itens_ordem'
+    id = db.Column(db.Integer, primary_key=True)
+    ordem_id = db.Column(db.Integer, db.ForeignKey('ordens_compra.id', ondelete='CASCADE'), nullable=False)
+    
+    codigo_item = db.Column(db.String(100))
+    nome_item = db.Column(db.String(255), nullable=False)
+    
+    quantidade = db.Column(db.Float, nullable=False)
+    unidade_medida = db.Column(db.String(20))
+    valor_unitario = db.Column(db.Float)
+    valor_total = db.Column(db.Float)
+    link_compra = db.Column(db.String(1000), nullable=True)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'codigo_item': self.codigo_item,
+            'nome_item': self.nome_item,
+            'quantidade': self.quantidade,
+            'unidade_medida': self.unidade_medida,
+            'valor_unitario': self.valor_unitario,
+            'valor_total': self.valor_total,
+            'link_compra': self.link_compra,
+        }

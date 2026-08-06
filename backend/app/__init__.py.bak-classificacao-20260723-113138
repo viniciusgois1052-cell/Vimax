@@ -1,0 +1,737 @@
+# -*- coding: utf-8 -*-
+
+import os
+import traceback
+
+from flask import Flask, jsonify, request, send_from_directory
+from flask_bcrypt import Bcrypt
+from flask_cors import CORS
+from flask_mail import Mail
+from flask_sqlalchemy import SQLAlchemy
+
+
+db = SQLAlchemy()
+bcrypt = Bcrypt()
+mail = Mail()
+
+
+def create_app(config_class=None):
+    """
+    Cria e configura a aplicação Flask.
+
+    Responsável por:
+    - Carregar configurações;
+    - Inicializar banco, bcrypt e e-mail;
+    - Configurar CORS;
+    - Proteger as rotas da API;
+    - Registrar os blueprints;
+    - Criar as tabelas que ainda não existem.
+    """
+
+    app = Flask(__name__)
+    app.url_map.strict_slashes = False
+
+    # ============================================================
+    # CONFIGURAÇÃO
+    # ============================================================
+
+    if config_class:
+        app.config.from_object(config_class)
+    else:
+        from .config.config import Config
+        app.config.from_object(Config)
+
+    # ============================================================
+    # EXTENSÕES
+    # ============================================================
+
+    db.init_app(app)
+    bcrypt.init_app(app)
+    mail.init_app(app)
+
+    # ============================================================
+    # CORS
+    # ============================================================
+
+    allowed_origins = [
+        "http://vimax.ad.digimaxdiagnostico.com.br:5173",
+        "http://vimax.ad.digimaxdiagnostico.com.br",
+        "http://192.168.2.70:5173",
+        "http://192.168.2.70",
+        "http://localhost:5173",
+        "http://localhost:3000",
+        os.getenv(
+            "PORTAL_FORNECEDOR_URL",
+            "https://kilowatt-proxy-kosher.ngrok-free.dev"
+        ),
+    ]
+
+    CORS(
+        app,
+        origins=allowed_origins,
+        allow_headers=[
+            "Content-Type",
+            "Authorization",
+            "X-API-Token",
+            "X-Cron-Token",
+            "ngrok-skip-browser-warning",
+        ],
+        methods=[
+            "GET",
+            "POST",
+            "PUT",
+            "DELETE",
+            "OPTIONS",
+            "PATCH",
+        ],
+        supports_credentials=True,
+        max_age=3600,
+    )
+
+    @app.after_request
+    def after_request(response):
+        """
+        Adiciona os cabeçalhos CORS e os cabeçalhos básicos
+        de segurança.
+        """
+
+        origin = request.headers.get("Origin", "")
+
+        if origin in allowed_origins:
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Vary"] = "Origin"
+
+        response.headers["Access-Control-Allow-Methods"] = (
+            "GET, POST, PUT, DELETE, OPTIONS, PATCH"
+        )
+
+        response.headers["Access-Control-Allow-Headers"] = (
+            "Content-Type, Authorization, X-API-Token, "
+            "X-Cron-Token, ngrok-skip-browser-warning"
+        )
+
+        response.headers["Access-Control-Max-Age"] = "3600"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Referrer-Policy"] = (
+            "strict-origin-when-cross-origin"
+        )
+
+        response.headers.pop("Server", None)
+
+        return response
+
+    # ============================================================
+    # AUTENTICAÇÃO GLOBAL
+    # ============================================================
+
+    public_prefixes = (
+        "/api/usuarios/login",
+        "/api/usuarios/logout",
+        "/api/public/",
+        "/api/cotacoes/portal/",
+        "/api/formularios-chamado/public",
+        "/api/config/logo/imagem",
+        "/api/oc/portal/",
+    )
+
+    public_exact = (
+        "/health",
+        "/",
+    )
+
+    @app.before_request
+    def require_auth():
+        """
+        Protege todas as rotas iniciadas por /api/.
+
+        O módulo de projetos também será protegido automaticamente,
+        pois utilizará o prefixo /api/projetos.
+        """
+
+        if request.method == "OPTIONS":
+            return None
+
+        path = request.path
+
+        if path in public_exact:
+            return None
+
+        for public_path in public_prefixes:
+            if path == public_path or path.startswith(public_path):
+                return None
+
+        if not path.startswith("/api/"):
+            return None
+
+
+        cron_paths = {
+            "/api/recorrencias/processar",
+            "/api/contadores-impressora/atualizar-todas",
+        }
+
+        if path in cron_paths:
+            import secrets
+
+            configured_cron_token = os.getenv("CRON_TOKEN", "")
+            received_cron_token = request.headers.get(
+                "X-Cron-Token",
+                ""
+            )
+
+            if (
+                not configured_cron_token
+                or not received_cron_token
+                or not secrets.compare_digest(
+                    received_cron_token,
+                    configured_cron_token
+                )
+            ):
+                return jsonify({
+                    "error": "Token de cron inválido"
+                }), 403
+
+            return None
+
+        from .models.usuario import Usuario
+
+        token = (
+            request.headers.get("X-API-Token")
+            or request.args.get("token")
+        )
+
+        if not token:
+            return jsonify({
+                "success": False,
+                "error": "Não autenticado"
+            }), 401
+
+        user = Usuario.query.filter_by(api_token=token).first()
+
+        if not user or not user.token_valido():
+            return jsonify({
+                "success": False,
+                "error": "Token inválido ou expirado"
+            }), 401
+
+        return None
+
+    # ============================================================
+    # UPLOADS
+    # ============================================================
+
+    uploads_dir = os.path.join(
+        app.root_path,
+        "static",
+        "uploads"
+    )
+
+    @app.route("/static/uploads/<path:filename>")
+    def uploaded_files(filename):
+        """
+        Serve arquivos enviados ao sistema.
+
+        Aceita o token pelo cabeçalho X-API-Token ou pelo parâmetro
+        ?token= para links abertos diretamente no navegador.
+        """
+
+        from .models.usuario import Usuario
+
+        token = (
+            request.headers.get("X-API-Token")
+            or request.args.get("token")
+        )
+
+        if not token:
+            return jsonify({
+                "error": "Não autenticado"
+            }), 401
+
+        user = Usuario.query.filter_by(api_token=token).first()
+
+        if not user or not user.token_valido():
+            return jsonify({
+                "error": "Token inválido"
+            }), 401
+
+        return send_from_directory(
+            uploads_dir,
+            filename
+        )
+
+    # ============================================================
+    # TRATAMENTO DE ERROS
+    # ============================================================
+
+    @app.errorhandler(404)
+    def not_found(error):
+        return jsonify({
+            "success": False,
+            "error": "Não encontrado"
+        }), 404
+
+    @app.errorhandler(405)
+    def method_not_allowed(error):
+        return jsonify({
+            "success": False,
+            "error": "Método não permitido"
+        }), 405
+
+    @app.errorhandler(Exception)
+    def handle_error(error):
+        """
+        Não envia detalhes internos do erro para o frontend.
+        O erro completo continua aparecendo no log do servidor.
+        """
+
+        app.logger.exception(
+            "Erro interno não tratado: %s",
+            error
+        )
+
+        return jsonify({
+            "success": False,
+            "error": "Erro interno do servidor"
+        }), 500
+
+    # ============================================================
+    # REGISTRO DOS BLUEPRINTS
+    # ============================================================
+
+    try:
+        print("=" * 60)
+        print("REGISTRANDO BLUEPRINTS...")
+        print("=" * 60)
+
+        # --------------------------------------------------------
+        # HELPDESK
+        # --------------------------------------------------------
+
+        from .routes.upload_routes import upload_bp
+        from .routes.categoria_chamado_routes import (
+            categoria_chamado_bp
+        )
+        from .routes.tipo_servico_routes import tipo_servico_bp
+        from .routes.tipo_infraestrutura_routes import (
+            tipo_infraestrutura_bp
+        )
+        from .routes.infraestrutura_routes import infraestrutura_bp
+        from .routes.formulario_chamado_routes import (
+            formulario_chamado_bp
+        )
+        from .routes.chamado_routes import chamado_bp
+
+        # --------------------------------------------------------
+        # GESTÃO DE ATIVOS
+        # --------------------------------------------------------
+
+        from .routes.empresa_routes import empresa_bp
+        from .routes.fornecedor_routes import fornecedor_bp
+        from .routes.localizacao_routes import localizacao_bp
+        from .routes.ativo_routes import ativo_bp
+        from .routes.contador_impressora_routes import (
+            contador_impressora_bp
+        )
+
+        # --------------------------------------------------------
+        # GESTÃO DE DOCUMENTOS
+        # --------------------------------------------------------
+
+        from .routes.contrato_routes import contrato_bp
+        from .routes.orcamento_routes import orcamento_bp
+        from .routes.cliente_routes import cliente_bp
+        from .routes.lembrete_routes import lembrete_bp
+        from .routes.recorrencia_routes import recorrencia_bp
+
+        # --------------------------------------------------------
+        # COMPRAS
+        # --------------------------------------------------------
+
+        from .routes.compra_routes import compra_bp
+        from .routes.cotacao_routes import cotacao_bp
+        from .routes.config_logo_routes import config_logo_bp
+        from .routes.oc_portal_routes import oc_portal_bp
+        from .routes.fornecedor_avaliacao_routes import fornecedor_avaliacao_bp
+
+        # --------------------------------------------------------
+        # PROJETOS
+        # --------------------------------------------------------
+
+        from .routes.projeto_routes import projeto_bp
+
+        # --------------------------------------------------------
+        # BI E RELATÓRIOS
+        # --------------------------------------------------------
+
+        from .routes.relatorio_routes import relatorio_bp
+
+        # --------------------------------------------------------
+        # CONFIGURAÇÕES
+        # --------------------------------------------------------
+
+        from .routes.usuario_routes import usuario_bp
+        from .routes.config_email_routes import config_email_bp
+        from .routes.log_routes import log_bp
+        from .routes.perfil_acesso_routes import perfil_acesso_bp
+        from .routes.mobilemed_routes import mobilemed_bp
+
+        # --------------------------------------------------------
+        # ROTAS PÚBLICAS
+        # --------------------------------------------------------
+
+        from .routes.public_routes import public_bp
+
+        # --------------------------------------------------------
+        # E-MAIL MARKETING
+        # --------------------------------------------------------
+
+        from .routes.marketing_contato_routes import (
+            marketing_contato_bp
+        )
+        from .routes.marketing_grupo_routes import (
+            marketing_grupo_bp
+        )
+        from .routes.marketing_smtp_routes import (
+            marketing_smtp_bp
+        )
+        from .routes.marketing_modelo_routes import (
+            marketing_modelo_bp
+        )
+        from .routes.marketing_campanha_routes import (
+            marketing_campanha_bp
+        )
+        from .routes.marketing_nota_routes import (
+            marketing_nota_bp
+        )
+
+        # --------------------------------------------------------
+        # CRM
+        # --------------------------------------------------------
+
+        from .routes.crm_routes import crm_bp
+        from .routes.crm_reminder_routes import crm_reminder_bp
+        from .routes.crm_task_routes import crm_task_bp
+        from .routes.crm_custom_columns import crm_custom_cols_bp
+
+        # --------------------------------------------------------
+        # REGISTROS — HELPDESK
+        # --------------------------------------------------------
+
+        app.register_blueprint(
+            upload_bp,
+            url_prefix="/api"
+        )
+
+        app.register_blueprint(
+            categoria_chamado_bp,
+            url_prefix="/api/categorias-chamado"
+        )
+
+        app.register_blueprint(
+            tipo_servico_bp,
+            url_prefix="/api/tipos-servico"
+        )
+
+        app.register_blueprint(
+            tipo_infraestrutura_bp,
+            url_prefix="/api/tipos-infraestrutura"
+        )
+
+        app.register_blueprint(
+            infraestrutura_bp,
+            url_prefix="/api/infraestruturas"
+        )
+
+        app.register_blueprint(
+            formulario_chamado_bp,
+            url_prefix="/api/formularios-chamado"
+        )
+
+        app.register_blueprint(
+            chamado_bp,
+            url_prefix="/api/chamados"
+        )
+
+        # --------------------------------------------------------
+        # REGISTROS — GESTÃO DE ATIVOS
+        # --------------------------------------------------------
+
+        app.register_blueprint(
+            empresa_bp,
+            url_prefix="/api/empresas"
+        )
+
+        app.register_blueprint(
+            fornecedor_bp,
+            url_prefix="/api/fornecedores"
+        )
+
+        app.register_blueprint(
+            localizacao_bp,
+            url_prefix="/api/localizacoes"
+        )
+
+        app.register_blueprint(
+            ativo_bp,
+            url_prefix="/api/ativos"
+        )
+
+        app.register_blueprint(
+            contador_impressora_bp,
+            url_prefix="/api/contadores-impressora"
+        )
+
+        # --------------------------------------------------------
+        # REGISTROS — GESTÃO DE DOCUMENTOS
+        # --------------------------------------------------------
+
+        app.register_blueprint(
+            contrato_bp,
+            url_prefix="/api/contratos"
+        )
+
+        app.register_blueprint(
+            orcamento_bp,
+            url_prefix="/api/orcamentos"
+        )
+
+        app.register_blueprint(
+            cliente_bp,
+            url_prefix="/api/clientes"
+        )
+
+        app.register_blueprint(
+            lembrete_bp,
+            url_prefix="/api/lembretes"
+        )
+
+        app.register_blueprint(
+            recorrencia_bp,
+            url_prefix="/api/recorrencias"
+        )
+
+        # --------------------------------------------------------
+        # REGISTROS — COMPRAS
+        # --------------------------------------------------------
+
+        app.register_blueprint(
+            compra_bp,
+            url_prefix="/api/compras"
+        )
+
+        app.register_blueprint(
+            cotacao_bp,
+            url_prefix="/api/cotacoes"
+        )
+
+        app.register_blueprint(
+            config_logo_bp,
+            url_prefix="/api/config/logo"
+        )
+
+        app.register_blueprint(
+            oc_portal_bp,
+            url_prefix="/api/oc"
+        )
+
+        app.register_blueprint(
+            fornecedor_avaliacao_bp,
+            url_prefix="/api/compras/classificacao-fornecedores"
+        )
+
+        # --------------------------------------------------------
+        # REGISTRO — PROJETOS
+        # --------------------------------------------------------
+
+        app.register_blueprint(
+            projeto_bp,
+            url_prefix="/api/projetos"
+        )
+
+        # Rotas resultantes:
+        #
+        # GET    /api/projetos
+        # POST   /api/projetos
+        # GET    /api/projetos/<id>
+        # PUT    /api/projetos/<id>
+        # DELETE /api/projetos/<id>
+        #
+        # GET    /api/projetos/<id>/tarefas
+        # POST   /api/projetos/<id>/tarefas
+        #
+        # GET    /api/projetos/grupos
+        # POST   /api/projetos/grupos
+
+        # --------------------------------------------------------
+        # REGISTROS — BI E RELATÓRIOS
+        # --------------------------------------------------------
+
+        app.register_blueprint(
+            relatorio_bp,
+            url_prefix="/api/relatorios"
+        )
+
+        # --------------------------------------------------------
+        # REGISTROS — CONFIGURAÇÕES
+        # --------------------------------------------------------
+
+        app.register_blueprint(
+            usuario_bp,
+            url_prefix="/api/usuarios"
+        )
+
+        app.register_blueprint(
+            config_email_bp,
+            url_prefix="/api/config/email"
+        )
+
+        app.register_blueprint(
+            log_bp,
+            url_prefix="/api/logs"
+        )
+
+        app.register_blueprint(
+            perfil_acesso_bp,
+            url_prefix="/api/perfis-acesso"
+        )
+
+        app.register_blueprint(
+            mobilemed_bp,
+            url_prefix="/api/mobilemed"
+        )
+
+        # --------------------------------------------------------
+        # REGISTROS — PÚBLICO
+        # --------------------------------------------------------
+
+        app.register_blueprint(
+            public_bp,
+            url_prefix="/api/public"
+        )
+
+        # --------------------------------------------------------
+        # REGISTROS — E-MAIL MARKETING
+        # --------------------------------------------------------
+
+        app.register_blueprint(
+            marketing_contato_bp,
+            url_prefix="/api/marketing/contatos"
+        )
+
+        app.register_blueprint(
+            marketing_grupo_bp,
+            url_prefix="/api/marketing/grupos"
+        )
+
+        app.register_blueprint(
+            marketing_smtp_bp,
+            url_prefix="/api/marketing/smtp"
+        )
+
+        app.register_blueprint(
+            marketing_modelo_bp,
+            url_prefix="/api/marketing/modelos"
+        )
+
+        app.register_blueprint(
+            marketing_campanha_bp,
+            url_prefix="/api/marketing/campanhas"
+        )
+
+        app.register_blueprint(
+            marketing_nota_bp,
+            url_prefix="/api/marketing/notas"
+        )
+
+        # --------------------------------------------------------
+        # REGISTROS — CRM
+        # --------------------------------------------------------
+
+        app.register_blueprint(
+            crm_bp,
+            url_prefix="/api/crm"
+        )
+
+        app.register_blueprint(
+            crm_reminder_bp,
+            url_prefix="/api/crm/reminders"
+        )
+
+        app.register_blueprint(
+            crm_task_bp,
+            url_prefix="/api/crm/tasks"
+        )
+
+        app.register_blueprint(
+            crm_custom_cols_bp)
+
+        print("Todos os blueprints registrados com sucesso!")
+        print("=" * 60)
+
+    except Exception as error:
+        print(
+            "Erro ao registrar blueprints: {}".format(error)
+        )
+        traceback.print_exc()
+        raise
+
+    # ============================================================
+    # CRIAÇÃO DAS TABELAS
+    # ============================================================
+
+    try:
+        print("=" * 60)
+        print("INICIALIZANDO BANCO DE DADOS...")
+        print("=" * 60)
+
+        with app.app_context():
+            # O import garante que todos os modelos do módulo
+            # Projetos sejam conhecidos pelo SQLAlchemy antes
+            # da execução do db.create_all().
+            from .models.projeto import (
+                Projeto,
+                ProjetoGrupo,
+                ProjetoTarefa,
+                ProjetoDependencia,
+                ProjetoRecurso,
+                ProjetoAlocacao,
+                ProjetoCalendario,
+                ProjetoLinhaBase,
+            )
+
+            db.create_all()
+
+            print(
+                "Tabelas do banco verificadas/criadas com sucesso!"
+            )
+            print("=" * 60)
+
+    except Exception as error:
+        print(
+            "Erro ao criar/verificar tabelas: {}".format(error)
+        )
+        traceback.print_exc()
+        raise
+
+    # ============================================================
+    # ROTAS BÁSICAS
+    # ============================================================
+
+    @app.route("/health")
+    def health_check():
+        return jsonify({
+            "status": "ok"
+        }), 200
+
+    @app.route("/")
+    def root():
+        return jsonify({
+            "status": "ok"
+        }), 200
+
+    print("\n" + "=" * 60)
+    print("APLICAÇÃO INICIADA COM SUCESSO!")
+    print("=" * 60 + "\n")
+
+    return app

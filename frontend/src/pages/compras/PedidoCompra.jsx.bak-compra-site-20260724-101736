@@ -1,0 +1,687 @@
+import React, { useState, useEffect } from 'react'
+import { X, Search, FileText, Eye, Download, AlertCircle, Check, Mail, Users, Send } from 'lucide-react'
+import { useAuth } from '../../context/AuthContext'
+
+export default function PedidoCompra() {
+  const { user, can } = useAuth()
+  const [pedidos, setPedidos] = useState([])
+  const [requisicoesProntas, setRequisicoesProntas] = useState([])
+  const [isDetailModalOpen, setIsDetailModalOpen] = useState(false)
+  const [isEmailModalOpen, setIsEmailModalOpen] = useState(false)
+  const [selectedPedido, setSelectedPedido] = useState(null)
+  const [emailParaEnviar, setEmailParaEnviar] = useState(null)
+  const [destinatariosEmail, setDestinatariosEmail] = useState('')
+  const [enviandoEmail, setEnviandoEmail] = useState(false)
+  const [searchTerm, setSearchTerm] = useState('')
+  const [statusFilter, setStatusFilter] = useState('todos')
+  const [fornecedorFilter, setFornecedorFilter] = useState('todos')
+  const [fornecedores, setFornecedores] = useState([])
+  const [error, setError] = useState('')
+  const [success, setSuccess] = useState('')
+
+  // Modal de seleção de fornecedores (envio a partir da requisição OU cotação de pedido)
+  const [isEnvioModalOpen, setIsEnvioModalOpen] = useState(false)
+  const [origemEnvio, setOrigemEnvio] = useState(null) // { tipo: 'requisicao'|'pedido', dados: {...} }
+  const [fornecedoresSelecionados, setFornecedoresSelecionados] = useState([])
+  const [dataLimiteCotacao, setDataLimiteCotacao] = useState('')
+  const [obsCotacao, setObsCotacao] = useState('')
+  const [enviando, setEnviando] = useState(false)
+  const [envioSucesso, setEnvioSucesso] = useState(null)
+
+  // Modal de visualização de requisição pronta
+  const [isReqViewOpen, setIsReqViewOpen] = useState(false)
+  const [reqView, setReqView] = useState(null)
+
+  const API_BASE = ""
+
+  useEffect(() => {
+    fetchPedidos()
+    fetchRequisicoesProntas()
+    fetchFornecedores()
+  }, [])
+
+  const authHeaders = (json = false) => ({
+    ...(json && { 'Content-Type': 'application/json' }),
+    ...(user?.api_token && { 'X-API-Token': user.api_token })
+  })
+
+  const fetchPedidos = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/compras/pedidos`, { headers: authHeaders() })
+      if (res.ok) setPedidos(await res.json())
+    } catch { setError('Erro ao carregar pedidos') }
+  }
+
+  const fetchRequisicoesProntas = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/compras/requisicoes/prontas-envio`, { headers: authHeaders() })
+      if (res.ok) setRequisicoesProntas(await res.json())
+    } catch { /* silencioso */ }
+  }
+
+  const fetchFornecedores = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/fornecedores?origem=compras`, { headers: authHeaders() })
+      if (res.ok) {
+        const data = await res.json()
+        setFornecedores(data.filter(f => f.origem === 'compras'))
+      }
+    } catch {}
+  }
+
+  const handleViewDetails = (pedido) => { setSelectedPedido(pedido); setIsDetailModalOpen(true) }
+
+  const handleAbrirEmailModal = (pedido) => {
+    setEmailParaEnviar(pedido)
+    setDestinatariosEmail(pedido.fornecedor?.email || '')
+    setIsEmailModalOpen(true)
+  }
+
+  const handleEnviarEmailPedido = async () => {
+    if (!destinatariosEmail) { setError('Email é obrigatório'); return }
+    setEnviandoEmail(true)
+    try {
+      const res = await fetch(`${API_BASE}/api/compras/pedidos/${emailParaEnviar.id}/enviar-email`, {
+        method: 'POST', headers: authHeaders(true), body: JSON.stringify({ destinatarios: [destinatariosEmail] })
+      })
+      if (res.ok) { setIsEmailModalOpen(false); setSuccess('Email enviado!'); fetchPedidos() }
+      else setError('Erro ao enviar email')
+    } catch { setError('Erro ao enviar email') }
+    finally { setEnviandoEmail(false) }
+  }
+
+  // PDF do PEDIDO
+  const handleGerarPDFPedido = async (id, numero) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/compras/pedidos/${id}/gerar-pdf`, { headers: authHeaders() })
+      if (res.ok) {
+        const blob = await res.blob()
+        const url = window.URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = `PC-${numero || id}.pdf`
+        document.body.appendChild(a)
+        a.click()
+        document.body.removeChild(a)
+        window.URL.revokeObjectURL(url)
+      } else setError('Erro ao gerar PDF')
+    } catch { setError('Erro ao gerar PDF') }
+  }
+
+  // PDF da REQUISIÇÃO (pronta para envio)
+  const handleGerarPDFRequisicao = async (id, numero) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/compras/requisicoes/${id}/gerar-pdf`, { headers: authHeaders() })
+      if (res.ok) {
+        const blob = await res.blob()
+        const url = window.URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = `RQ-${numero || id}.pdf`
+        document.body.appendChild(a)
+        a.click()
+        document.body.removeChild(a)
+        window.URL.revokeObjectURL(url)
+      } else setError('Erro ao gerar PDF')
+    } catch { setError('Erro ao gerar PDF') }
+  }
+
+  // Abre modal de fornecedores a partir de uma REQUISIÇÃO pronta
+  const abrirEnvioRequisicao = (rq) => {
+    setOrigemEnvio({ tipo: 'requisicao', dados: rq })
+    setFornecedoresSelecionados([])
+    setDataLimiteCotacao('')
+    setObsCotacao('')
+    setEnvioSucesso(null)
+    setIsEnvioModalOpen(true)
+  }
+
+  // Abre modal de fornecedores a partir de um PEDIDO já materializado (nova cotação)
+  const abrirEnvioPedido = (pedido) => {
+    setOrigemEnvio({ tipo: 'pedido', dados: pedido })
+    setFornecedoresSelecionados([])
+    setDataLimiteCotacao('')
+    setObsCotacao('')
+    setEnvioSucesso(null)
+    setIsEnvioModalOpen(true)
+  }
+
+  const toggleFornecedor = (id) => {
+    setFornecedoresSelecionados(prev =>
+      prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
+    )
+  }
+
+  const handleEnviar = async (e) => {
+    e.preventDefault()
+    if (fornecedoresSelecionados.length === 0) { setError('Selecione ao menos um fornecedor'); return }
+    setEnviando(true)
+    try {
+      let url, body
+      if (origemEnvio?.tipo === 'requisicao') {
+        // materializa o pedido + envia
+        url = `${API_BASE}/api/compras/requisicoes/${origemEnvio.dados.id}/enviar-fornecedores`
+        body = {
+          fornecedores_ids: fornecedoresSelecionados,
+          data_limite: dataLimiteCotacao || null,
+          observacoes: obsCotacao
+        }
+      } else {
+        // pedido já existe -> nova cotação
+        url = `${API_BASE}/api/cotacoes`
+        body = {
+          pedido_id: origemEnvio.dados.id,
+          fornecedores_ids: fornecedoresSelecionados,
+          data_limite: dataLimiteCotacao || null,
+          observacoes: obsCotacao
+        }
+      }
+      const r = await fetch(url, { method: 'POST', headers: authHeaders(true), body: JSON.stringify(body) })
+      const d = await r.json()
+      if (d.success) {
+        setEnvioSucesso(d)
+        setFornecedoresSelecionados([])
+        setDataLimiteCotacao('')
+        setObsCotacao('')
+        fetchPedidos()
+        fetchRequisicoesProntas()
+      } else {
+        setError(d.error || 'Erro ao enviar aos fornecedores')
+      }
+    } catch { setError('Erro ao enviar aos fornecedores') }
+    finally { setEnviando(false) }
+  }
+
+  const abrirReqView = (rq) => { setReqView(rq); setIsReqViewOpen(true) }
+
+  const filteredPedidos = pedidos.filter(pedido => {
+    const matchSearch = (pedido.numero_pc || '').toLowerCase().includes(searchTerm.toLowerCase())
+    const matchStatus = statusFilter === 'todos' || (pedido.status || '').toString().toUpperCase() === statusFilter.toUpperCase()
+    const matchFornecedor = fornecedorFilter === 'todos' || String(pedido.fornecedor_id) === String(fornecedorFilter)
+    return matchSearch && matchStatus && matchFornecedor
+  })
+
+  const getStatusColor = (status) => {
+    const s = (status || '').toString().toUpperCase()
+    const colors = {
+      'RASCUNHO': 'bg-gray-100 text-gray-700',
+      'PENDENTE': 'bg-yellow-100 text-yellow-700',
+      'EMITIDO': 'bg-blue-100 text-blue-700',
+      'APROVADA': 'bg-green-100 text-green-700',
+      'REJEITADA': 'bg-red-100 text-red-700',
+      'FINALIZADA': 'bg-blue-100 text-blue-700'
+    }
+    return colors[s] || 'bg-gray-100 text-gray-700'
+  }
+
+  const podeEnviar = can('compras', 'criar') || can('compras', 'editar')
+
+  return (
+    <div className="p-6 bg-gray-50 min-h-screen">
+      <div className="max-w-7xl mx-auto">
+
+        {error && (
+          <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg flex items-center justify-between">
+            <span className="text-red-700 font-bold flex items-center gap-2"><AlertCircle size={18} /> {error}</span>
+            <button onClick={() => setError('')} className="text-red-500 hover:text-red-700"><X size={18} /></button>
+          </div>
+        )}
+        {success && (
+          <div className="mb-4 p-4 bg-green-50 border border-green-200 rounded-lg flex items-center justify-between">
+            <span className="text-green-700 font-bold flex items-center gap-2"><Check size={18} /> {success}</span>
+            <button onClick={() => setSuccess('')} className="text-green-500 hover:text-green-700"><X size={18} /></button>
+          </div>
+        )}
+
+        {/* Header */}
+        <div className="flex justify-between items-center mb-6">
+          <div className="flex items-center gap-3">
+            <FileText className="text-indigo-600" size={32} />
+            <h1 className="text-3xl font-bold text-gray-800">Pedido de Compra (PC)</h1>
+          </div>
+        </div>
+
+        {/* SEÇÃO 1: REQUISIÇÕES PRONTAS PARA ENVIO */}
+        <div className="bg-white rounded-lg shadow-sm overflow-hidden border border-gray-200 mb-8">
+          <div className="px-6 py-4 border-b border-gray-200 bg-emerald-50 flex items-center gap-2">
+            <Send className="text-emerald-600" size={20} />
+            <h2 className="text-lg font-bold text-emerald-800">Requisições prontas para envio</h2>
+            <span className="ml-2 text-xs font-bold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-full">
+              {requisicoesProntas.length}
+            </span>
+          </div>
+          <table className="w-full">
+            <thead className="bg-gray-50 border-b border-gray-200">
+              <tr>
+                <th className="px-6 py-3 text-left text-sm font-bold text-gray-700">Nº RQ</th>
+                <th className="px-6 py-3 text-left text-sm font-bold text-gray-700">Empresa</th>
+                <th className="px-6 py-3 text-left text-sm font-bold text-gray-700">Data Necessária</th>
+                <th className="px-6 py-3 text-left text-sm font-bold text-gray-700">Valor Total</th>
+                <th className="px-6 py-3 text-left text-sm font-bold text-gray-700">Ações</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-200">
+              {requisicoesProntas.length > 0 ? requisicoesProntas.map((rq) => (
+                <tr key={rq.id} className="hover:bg-gray-50 transition-colors">
+                  <td className="px-6 py-4 text-sm font-bold text-indigo-600">{rq.numero_rq}</td>
+                  <td className="px-6 py-4 text-sm font-medium text-gray-900">{rq.empresa_nome}</td>
+                  <td className="px-6 py-4 text-sm text-gray-600">
+                    {rq.data_necessaria ? new Date(rq.data_necessaria).toLocaleDateString('pt-BR') : '-'}
+                  </td>
+                  <td className="px-6 py-4 text-sm font-bold text-green-600">R$ {rq.valor_total?.toFixed(2) || '0.00'}</td>
+                  <td className="px-6 py-4">
+                    <div className="flex gap-1">
+                      {podeEnviar && (
+                        <button onClick={() => abrirEnvioRequisicao(rq)} title="Selecionar fornecedor(es) e enviar"
+                          className="p-1.5 text-emerald-600 hover:bg-emerald-50 rounded-md transition-colors"><Send size={16} /></button>
+                      )}
+                      <button onClick={() => abrirReqView(rq)} title="Visualizar"
+                        className="p-1.5 text-indigo-600 hover:bg-indigo-50 rounded-md transition-colors"><Eye size={16} /></button>
+                      <button onClick={() => handleGerarPDFRequisicao(rq.id, rq.numero_rq)} title="Gerar PDF"
+                        className="p-1.5 text-gray-600 hover:bg-gray-100 rounded-md transition-colors"><Download size={16} /></button>
+                    </div>
+                  </td>
+                </tr>
+              )) : (
+                <tr><td colSpan="5" className="px-6 py-8 text-center text-gray-500">Nenhuma requisição aprovada aguardando envio</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        {/* SEÇÃO 2: PEDIDOS ENVIADOS */}
+        <div className="flex items-center gap-2 mb-3">
+          <FileText className="text-indigo-600" size={20} />
+          <h2 className="text-lg font-bold text-gray-800">Pedidos enviados</h2>
+        </div>
+
+        {/* Filtros */}
+        <div className="bg-white rounded-lg shadow-sm p-4 mb-6 border border-gray-200">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+            <div>
+              <label className="block text-sm font-bold text-gray-700 mb-2">Buscar por nº PC</label>
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
+                <input type="text" placeholder="PC-2026-001"
+                  className="w-full pl-10 pr-4 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none"
+                  value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
+              </div>
+            </div>
+            <div>
+              <label className="block text-sm font-bold text-gray-700 mb-2">Status</label>
+              <select className="w-full p-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none"
+                value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+                <option value="todos">Todos</option>
+                <option value="RASCUNHO">Rascunho</option>
+                <option value="EMITIDO">Emitido</option>
+                <option value="FINALIZADA">Finalizada</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm font-bold text-gray-700 mb-2">Fornecedor</label>
+              <select className="w-full p-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none"
+                value={fornecedorFilter} onChange={(e) => setFornecedorFilter(e.target.value)}>
+                <option value="todos">Todos</option>
+                {fornecedores.map(forn => <option key={forn.id} value={forn.id}>{forn.nome}</option>)}
+              </select>
+            </div>
+            <div className="flex items-end">
+              <button onClick={() => { setSearchTerm(''); setStatusFilter('todos'); setFornecedorFilter('todos') }}
+                className="w-full bg-gray-300 hover:bg-gray-400 text-gray-800 font-bold px-4 py-2 rounded-lg transition-all">
+                Limpar
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Tabela de pedidos */}
+        <div className="bg-white rounded-lg shadow-sm overflow-hidden border border-gray-200">
+          <table className="w-full">
+            <thead className="bg-gray-50 border-b border-gray-200">
+              <tr>
+                <th className="px-6 py-4 text-left text-sm font-bold text-gray-700">Nº PC</th>
+                <th className="px-6 py-4 text-left text-sm font-bold text-gray-700">Fornecedor</th>
+                <th className="px-6 py-4 text-left text-sm font-bold text-gray-700">Status</th>
+                <th className="px-6 py-4 text-left text-sm font-bold text-gray-700">Entrega Prevista</th>
+                <th className="px-6 py-4 text-left text-sm font-bold text-gray-700">Valor Total</th>
+                <th className="px-6 py-4 text-left text-sm font-bold text-gray-700">Ações</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-200">
+              {filteredPedidos.length > 0 ? filteredPedidos.map((pedido) => (
+                <tr key={pedido.id} className="hover:bg-gray-50 transition-colors">
+                  <td className="px-6 py-4 text-sm font-bold text-indigo-600">{pedido.numero_pc}</td>
+                  <td className="px-6 py-4 text-sm font-medium text-gray-900">{pedido.fornecedor_nome || '—'}</td>
+                  <td className="px-6 py-4">
+                    <span className={`px-3 py-1 rounded-full text-xs font-bold ${getStatusColor(pedido.status)}`}>{pedido.status}</span>
+                  </td>
+                  <td className="px-6 py-4 text-sm text-gray-600">
+                    {pedido.data_entrega_prevista ? new Date(pedido.data_entrega_prevista).toLocaleDateString('pt-BR') : '-'}
+                  </td>
+                  <td className="px-6 py-4 text-sm font-bold text-green-600">R$ {(pedido.valor_final ?? pedido.valor_total)?.toFixed(2) || '0.00'}</td>
+                  <td className="px-6 py-4">
+                    <div className="flex gap-1">
+                      <button onClick={() => handleViewDetails(pedido)} title="Visualizar"
+                        className="p-1.5 text-indigo-600 hover:bg-indigo-50 rounded-md transition-colors"><Eye size={16} /></button>
+                      <button onClick={() => handleGerarPDFPedido(pedido.id, pedido.numero_pc)} title="Gerar PDF"
+                        className="p-1.5 text-gray-600 hover:bg-gray-100 rounded-md transition-colors"><Download size={16} /></button>
+                      {podeEnviar && (
+                        <button onClick={() => abrirEnvioPedido(pedido)} title="Selecionar fornecedor(es) e enviar"
+                          className="p-1.5 text-purple-600 hover:bg-purple-50 rounded-md transition-colors"><Users size={16} /></button>
+                      )}
+                      <button onClick={() => handleAbrirEmailModal(pedido)} title="Enviar por Email"
+                        className="p-1.5 text-amber-600 hover:bg-amber-50 rounded-md transition-colors"><Mail size={16} /></button>
+                    </div>
+                  </td>
+                </tr>
+              )) : (
+                <tr><td colSpan="6" className="px-6 py-8 text-center text-gray-500">Nenhum pedido enviado</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* MODAL VISUALIZAR REQUISIÇÃO PRONTA */}
+      {isReqViewOpen && reqView && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4 overflow-y-auto">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl overflow-hidden my-8">
+            <div className="p-6 border-b border-gray-100 flex justify-between items-center bg-emerald-600 text-white">
+              <div>
+                <h2 className="text-2xl font-bold">Requisição pronta para envio</h2>
+                <p className="text-emerald-100 text-sm">Nº {reqView.numero_rq}</p>
+              </div>
+              <button onClick={() => setIsReqViewOpen(false)} className="p-1 hover:bg-white/10 rounded-full"><X size={28} /></button>
+            </div>
+            <div className="p-6 space-y-6 max-h-[70vh] overflow-y-auto">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="p-4 bg-gray-50 rounded-lg border border-gray-200">
+                  <p className="text-xs text-gray-600 font-bold uppercase">Empresa</p>
+                  <p className="text-lg font-bold text-gray-900">{reqView.empresa_nome}</p>
+                </div>
+                <div className="p-4 bg-gray-50 rounded-lg border border-gray-200">
+                  <p className="text-xs text-gray-600 font-bold uppercase">Data Necessária</p>
+                  <p className="text-lg font-bold text-gray-900">{reqView.data_necessaria ? new Date(reqView.data_necessaria).toLocaleDateString('pt-BR') : '-'}</p>
+                </div>
+                <div className="p-4 bg-gray-50 rounded-lg border border-gray-200">
+                  <p className="text-xs text-gray-600 font-bold uppercase">Valor Total</p>
+                  <p className="text-2xl font-bold text-green-600">R$ {reqView.valor_total?.toFixed(2) || '0.00'}</p>
+                </div>
+              </div>
+              {reqView.itens && reqView.itens.length > 0 && (
+                <div className="border-t pt-4">
+                  <h3 className="text-lg font-bold text-gray-800 mb-4">Itens</h3>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead className="bg-gray-100">
+                        <tr>
+                          <th className="px-4 py-2 text-left font-bold">Item</th>
+                          <th className="px-4 py-2 text-left font-bold">Qtd</th>
+                          <th className="px-4 py-2 text-left font-bold">V. Unit.</th>
+                          <th className="px-4 py-2 text-left font-bold">Subtotal</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y">
+                        {reqView.itens.map((item, idx) => (
+                          <tr key={idx} className="hover:bg-gray-50">
+                            <td className="px-4 py-2 font-medium">{item.nome_item || item.nome || item.item_nome}</td>
+                            <td className="px-4 py-2">{item.quantidade} {item.unidade_medida || 'UN'}</td>
+                            <td className="px-4 py-2">R$ {(item.valor_unitario || 0).toFixed(2)}</td>
+                            <td className="px-4 py-2 font-bold">R$ {((item.valor_total) ?? (item.quantidade * (item.valor_unitario || 0))).toFixed(2)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+              <div className="border-t pt-6 flex flex-col md:flex-row gap-3">
+                {podeEnviar && (
+                  <button onClick={() => { setIsReqViewOpen(false); abrirEnvioRequisicao(reqView) }}
+                    className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-4 py-3 rounded-lg transition-all flex items-center justify-center gap-2">
+                    <Send size={20} /> Selecionar fornecedor(es) e enviar
+                  </button>
+                )}
+                <button onClick={() => handleGerarPDFRequisicao(reqView.id, reqView.numero_rq)}
+                  className="flex-1 bg-gray-600 hover:bg-gray-700 text-white font-bold px-4 py-3 rounded-lg transition-all flex items-center justify-center gap-2">
+                  <Download size={20} /> Gerar PDF
+                </button>
+                <button onClick={() => setIsReqViewOpen(false)}
+                  className="flex-1 bg-gray-300 hover:bg-gray-400 text-gray-800 font-bold px-4 py-3 rounded-lg transition-all">
+                  Fechar
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL DETALHES DO PEDIDO */}
+      {isDetailModalOpen && selectedPedido && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4 overflow-y-auto">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl overflow-hidden my-8">
+            <div className="p-6 border-b border-gray-100 flex justify-between items-center bg-indigo-600 text-white">
+              <div>
+                <h2 className="text-2xl font-bold">Detalhes do Pedido</h2>
+                <p className="text-indigo-100 text-sm">Nº {selectedPedido.numero_pc}</p>
+              </div>
+              <button onClick={() => setIsDetailModalOpen(false)} className="p-1 hover:bg-white/10 rounded-full"><X size={28} /></button>
+            </div>
+            <div className="p-6 space-y-6 max-h-[70vh] overflow-y-auto">
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                <div className="p-4 bg-gray-50 rounded-lg border border-gray-200">
+                  <p className="text-xs text-gray-600 font-bold uppercase">Nº PC</p>
+                  <p className="text-2xl font-bold text-indigo-600">{selectedPedido.numero_pc}</p>
+                </div>
+                <div className="p-4 bg-gray-50 rounded-lg border border-gray-200">
+                  <p className="text-xs text-gray-600 font-bold uppercase">Status</p>
+                  <span className={`inline-block px-3 py-1 rounded-full text-xs font-bold ${getStatusColor(selectedPedido.status)}`}>{selectedPedido.status}</span>
+                </div>
+                <div className="p-4 bg-gray-50 rounded-lg border border-gray-200">
+                  <p className="text-xs text-gray-600 font-bold uppercase">Fornecedor</p>
+                  <p className="text-lg font-bold text-gray-900">{selectedPedido.fornecedor_nome || '—'}</p>
+                </div>
+                <div className="p-4 bg-gray-50 rounded-lg border border-gray-200">
+                  <p className="text-xs text-gray-600 font-bold uppercase">Valor Final</p>
+                  <p className="text-2xl font-bold text-green-600">R$ {(selectedPedido.valor_final ?? selectedPedido.valor_total)?.toFixed(2) || '0.00'}</p>
+                </div>
+              </div>
+              <div className="border-t pt-4">
+                <h3 className="text-lg font-bold text-gray-800 mb-4">Informações de Entrega</h3>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div>
+                    <p className="text-xs text-gray-600 font-bold uppercase mb-1">Data Prevista</p>
+                    <p className="text-lg font-bold text-gray-900">{selectedPedido.data_entrega_prevista ? new Date(selectedPedido.data_entrega_prevista).toLocaleDateString('pt-BR') : '-'}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-gray-600 font-bold uppercase mb-1">Local</p>
+                    <p className="text-lg font-bold text-gray-900">{selectedPedido.local_entrega || '-'}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-gray-600 font-bold uppercase mb-1">Condição Pagamento</p>
+                    <p className="text-lg font-bold text-gray-900">{selectedPedido.condicao_pagamento || '-'}</p>
+                  </div>
+                </div>
+              </div>
+              {selectedPedido.itens && selectedPedido.itens.length > 0 && (
+                <div className="border-t pt-4">
+                  <h3 className="text-lg font-bold text-gray-800 mb-4">ITENS</h3>
+                  <div className="space-y-2">
+                    {selectedPedido.itens.map((item, idx) => (
+                      <div key={idx} className="p-3 bg-gray-50 rounded-lg border border-gray-200">
+                        <p className="font-bold text-gray-900">{item.nome_item || item.nome || item.item_nome}</p>
+                        <p className="text-sm text-gray-600">
+                          {item.quantidade} {item.unidade_medida || 'UN'} x R$ {(item.valor_unitario || 0).toFixed(2)} = R$ {((item.valor_total) ?? (item.quantidade * (item.valor_unitario || 0))).toFixed(2)}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <div className="border-t pt-6 space-y-3">
+                <button onClick={() => handleGerarPDFPedido(selectedPedido.id, selectedPedido.numero_pc)}
+                  className="w-full bg-gray-600 hover:bg-gray-700 text-white font-bold px-4 py-3 rounded-lg transition-all flex items-center justify-center gap-2">
+                  <Download size={20} /> Gerar PDF
+                </button>
+                {podeEnviar && (
+                  <button onClick={() => { setIsDetailModalOpen(false); abrirEnvioPedido(selectedPedido) }}
+                    className="w-full bg-purple-600 hover:bg-purple-700 text-white font-bold px-4 py-3 rounded-lg transition-all flex items-center justify-center gap-2">
+                    <Users size={20} /> Selecionar fornecedor(es) e enviar
+                  </button>
+                )}
+                <button onClick={() => { setIsDetailModalOpen(false); handleAbrirEmailModal(selectedPedido) }}
+                  className="w-full bg-amber-600 hover:bg-amber-700 text-white font-bold px-4 py-3 rounded-lg transition-all flex items-center justify-center gap-2">
+                  <Mail size={20} /> Enviar por Email
+                </button>
+                <button onClick={() => setIsDetailModalOpen(false)}
+                  className="w-full bg-gray-300 hover:bg-gray-400 text-gray-800 font-bold px-4 py-3 rounded-lg transition-all">
+                  Fechar
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL EMAIL (PEDIDO) */}
+      {isEmailModalOpen && emailParaEnviar && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+            <div className="p-6 border-b border-gray-100 flex justify-between items-center bg-amber-600 text-white">
+              <h2 className="text-xl font-bold flex items-center gap-2"><Mail size={24} /> Enviar Pedido por Email</h2>
+              <button onClick={() => setIsEmailModalOpen(false)} className="p-1 hover:bg-white/10 rounded-full"><X size={28} /></button>
+            </div>
+            <div className="p-6 space-y-4">
+              <div className="bg-amber-50 p-4 rounded-lg border border-amber-200">
+                <p className="text-sm font-bold text-amber-700">📋 PC: {emailParaEnviar.numero_pc}</p>
+                <p className="text-sm font-bold text-amber-700">🏢 Fornecedor: {emailParaEnviar.fornecedor_nome || '—'}</p>
+                <p className="text-sm font-bold text-amber-700">💰 Valor: R$ {(emailParaEnviar.valor_final ?? emailParaEnviar.valor_total)?.toFixed(2) || '0.00'}</p>
+              </div>
+              <div>
+                <label className="block text-sm font-bold text-gray-700 mb-2">Email Destino *</label>
+                <input type="email" required className="w-full p-3 border rounded-lg outline-none focus:ring-2 focus:ring-amber-500"
+                  value={destinatariosEmail} onChange={(e) => setDestinatariosEmail(e.target.value)} placeholder="email@exemplo.com" />
+              </div>
+              <div className="flex gap-3">
+                <button onClick={() => setIsEmailModalOpen(false)} disabled={enviandoEmail}
+                  className="flex-1 px-4 py-2 text-gray-700 font-bold hover:bg-gray-100 rounded-lg">Cancelar</button>
+                <button onClick={handleEnviarEmailPedido} disabled={enviandoEmail || !destinatariosEmail}
+                  className="flex-1 px-4 py-2 bg-amber-600 text-white font-bold rounded-lg hover:bg-amber-700 disabled:opacity-50 flex items-center justify-center gap-2">
+                  <Mail size={18} /> {enviandoEmail ? 'Enviando...' : 'Enviar Email'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL SELEÇÃO DE FORNECEDORES / ENVIO */}
+      {isEnvioModalOpen && origemEnvio && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between p-5 border-b border-gray-200 bg-purple-600 text-white rounded-t-2xl">
+              <div>
+                <h2 className="text-lg font-bold">📋 Selecionar fornecedores</h2>
+                <p className="text-sm text-purple-200">
+                  {origemEnvio.tipo === 'requisicao'
+                    ? `RQ: ${origemEnvio.dados.numero_rq}`
+                    : `PC: ${origemEnvio.dados.numero_pc}`}
+                </p>
+              </div>
+              <button onClick={() => { setIsEnvioModalOpen(false); setEnvioSucesso(null) }}
+                className="p-1 hover:bg-white/10 rounded-full"><X size={24} /></button>
+            </div>
+
+            {envioSucesso ? (
+              <div className="p-6 text-center">
+                <div className="text-6xl mb-4">✅</div>
+                <h3 className="text-xl font-bold text-gray-900 mb-2">Enviado com sucesso!</h3>
+                {envioSucesso.pedido?.numero_pc && (
+                  <p className="text-gray-500 mb-1">Pedido gerado: <strong>{envioSucesso.pedido.numero_pc}</strong></p>
+                )}
+                {envioSucesso.cotacao?.numero_cotacao && (
+                  <p className="text-gray-500 mb-4">Cotação: <strong>{envioSucesso.cotacao.numero_cotacao}</strong></p>
+                )}
+                {envioSucesso.emails_enviados?.length > 0 && (
+                  <div className="bg-green-50 rounded-lg p-3 text-left mb-3">
+                    <p className="text-sm font-medium text-green-800 mb-1">📧 Emails enviados:</p>
+                    {envioSucesso.emails_enviados.map((n, i) => <p key={i} className="text-sm text-green-700">✓ {n}</p>)}
+                  </div>
+                )}
+                {envioSucesso.erros_email?.length > 0 && (
+                  <div className="bg-yellow-50 rounded-lg p-3 text-left mb-3">
+                    <p className="text-sm font-medium text-yellow-800 mb-1">⚠️ Avisos:</p>
+                    {envioSucesso.erros_email.map((e, i) => <p key={i} className="text-sm text-yellow-700">{e}</p>)}
+                  </div>
+                )}
+                <div className="flex gap-3 mt-4">
+                  <button onClick={() => { setIsEnvioModalOpen(false); setEnvioSucesso(null) }}
+                    className="flex-1 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200">Fechar</button>
+                  <a href="/compras/orcamentos"
+                    className="flex-1 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 text-center font-bold">
+                    Ver Orçamentos
+                  </a>
+                </div>
+              </div>
+            ) : (
+              <form onSubmit={handleEnviar} className="p-5 space-y-5">
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">
+                    Fornecedores <span className="text-red-500">*</span>
+                    <span className="ml-2 text-xs font-normal text-gray-400">({fornecedoresSelecionados.length} selecionados)</span>
+                  </label>
+                  <div className="border border-gray-200 rounded-lg max-h-48 overflow-y-auto divide-y divide-gray-100">
+                    {fornecedores.length === 0 ? (
+                      <p className="p-3 text-sm text-gray-400">Nenhum fornecedor cadastrado</p>
+                    ) : fornecedores.map(f => (
+                      <label key={f.id} className={`flex items-center gap-3 px-3 py-2.5 cursor-pointer hover:bg-purple-50 transition-colors ${fornecedoresSelecionados.includes(f.id) ? 'bg-purple-50' : ''}`}>
+                        <input type="checkbox" checked={fornecedoresSelecionados.includes(f.id)}
+                          onChange={() => toggleFornecedor(f.id)} className="w-4 h-4 text-purple-600 rounded" />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium text-gray-800 truncate">{f.nome}</p>
+                          {f.email
+                            ? <p className="text-xs text-gray-500 truncate">{f.email}</p>
+                            : <p className="text-xs text-red-400">⚠ Sem email cadastrado</p>}
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-1">Data Limite para Resposta</label>
+                  <input type="datetime-local" value={dataLimiteCotacao} onChange={e => setDataLimiteCotacao(e.target.value)}
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-purple-500" />
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-1">Observações</label>
+                  <textarea value={obsCotacao} onChange={e => setObsCotacao(e.target.value)} rows={3}
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-purple-500 resize-none"
+                    placeholder="Instruções adicionais para os fornecedores..." />
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">Itens que serão enviados</label>
+                  <div className="bg-gray-50 rounded-lg p-3 space-y-1 max-h-32 overflow-y-auto">
+                    {(origemEnvio.dados.itens || []).map((item, i) => (
+                      <div key={i} className="flex justify-between text-sm">
+                        <span className="text-gray-700">{item.nome_item || item.nome || item.item_nome}</span>
+                        <span className="text-gray-500">{item.quantidade} {item.unidade_medida || 'UN'}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <div className="flex gap-3 pt-2">
+                  <button type="button" onClick={() => setIsEnvioModalOpen(false)}
+                    className="flex-1 py-2.5 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50">Cancelar</button>
+                  <button type="submit" disabled={enviando || fornecedoresSelecionados.length === 0}
+                    className="flex-1 py-2.5 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 font-semibold">
+                    {enviando ? 'Enviando...' : `📧 Enviar para ${fornecedoresSelecionados.length} fornecedor(es)`}
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}

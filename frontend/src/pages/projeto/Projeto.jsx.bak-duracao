@@ -1,0 +1,884 @@
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  AlertTriangle, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, BarChart3,
+  CalendarDays, CheckCircle2, ChevronDown, ChevronRight, Clock3,
+  Download, Edit3, Eye, FolderKanban, GripVertical, Layers3,
+  Link2, Loader2, Milestone, Plus, Redo2, RefreshCw, Save, Search,
+  Trash2, Undo2, Upload, UserPlus, Users, X, ZoomIn, ZoomOut,
+} from 'lucide-react'
+import { useAuth } from '../../context/AuthContext'
+
+const API = '/api/projetos'
+const ROW_HEIGHT = 42
+const GRID_WIDTH = 1020
+const STATUS = {
+  planejamento: ['Planejamento', 'bg-slate-100 text-slate-700 border-slate-200'],
+  ativo: ['Em andamento', 'bg-blue-100 text-blue-700 border-blue-200'],
+  pausado: ['Pausado', 'bg-amber-100 text-amber-700 border-amber-200'],
+  concluido: ['Concluído', 'bg-emerald-100 text-emerald-700 border-emerald-200'],
+  cancelado: ['Cancelado', 'bg-red-100 text-red-700 border-red-200'],
+  arquivado: ['Arquivado', 'bg-gray-100 text-gray-600 border-gray-200'],
+}
+const ZOOMS = [
+  { key: 'dia', label: 'Dia', width: 36 },
+  { key: 'semana', label: 'Semana', width: 15 },
+  { key: 'mes', label: 'Mês', width: 6 },
+  { key: 'ano', label: 'Ano', width: 2 },
+]
+const DEFAULT_CALENDAR = { dias_uteis: [0, 1, 2, 3, 4], excecoes: [] }
+
+function token() {
+  try { return JSON.parse(localStorage.getItem('user'))?.api_token || null } catch { return null }
+}
+
+async function api(url, options = {}) {
+  const response = await fetch(url, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token() ? { 'X-API-Token': token() } : {}),
+      ...(options.headers || {}),
+    },
+  })
+  if (response.status === 204) return null
+  const data = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(data?.error || data?.message || 'Erro na comunicação com o servidor')
+  return data
+}
+
+const dateOnly = value => value ? String(value).slice(0, 10) : ''
+const dateObj = value => {
+  if (!value) return null
+  const date = new Date(`${dateOnly(value)}T12:00:00`)
+  return Number.isNaN(date.getTime()) ? null : date
+}
+const isoDate = date => date.toISOString().slice(0, 10)
+const addCalendarDays = (value, amount) => {
+  const date = dateObj(value) || new Date()
+  date.setDate(date.getDate() + amount)
+  return isoDate(date)
+}
+const diffDays = (a, b) => {
+  const start = dateObj(a); const finish = dateObj(b)
+  if (!start || !finish) return 0
+  return Math.round((finish - start) / 86400000)
+}
+const formatDate = value => dateObj(value)?.toLocaleDateString('pt-BR') || '—'
+const clamp = (value, min, max) => Math.min(max, Math.max(min, Number(value) || 0))
+const money = value => Number(value || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
+const deepCopy = value => JSON.parse(JSON.stringify(value))
+
+function isWorkingDay(value, calendar = DEFAULT_CALENDAR) {
+  const date = dateObj(value)
+  if (!date) return false
+  const exceptions = new Map((calendar.excecoes || []).map(item => [dateOnly(item.data), item.util]))
+  if (exceptions.has(dateOnly(value))) return exceptions.get(dateOnly(value)) !== false
+  // O backend segue datetime.weekday(): segunda=0 ... domingo=6.
+  const pythonWeekday = (date.getDay() + 6) % 7
+  return (calendar.dias_uteis || DEFAULT_CALENDAR.dias_uteis).includes(pythonWeekday)
+}
+
+function nextWorkingDay(value, calendar, direction = 1, includeCurrent = true) {
+  let result = dateOnly(value)
+  if (!includeCurrent) result = addCalendarDays(result, direction)
+  let guard = 0
+  while (!isWorkingDay(result, calendar) && guard < 3700) {
+    result = addCalendarDays(result, direction)
+    guard += 1
+  }
+  return result
+}
+
+function addWorkingDays(value, amount, calendar = DEFAULT_CALENDAR) {
+  let result = nextWorkingDay(value, calendar, amount < 0 ? -1 : 1, true)
+  const direction = amount < 0 ? -1 : 1
+  let remaining = Math.abs(Math.round(amount))
+  while (remaining > 0) {
+    result = nextWorkingDay(result, calendar, direction, false)
+    remaining -= 1
+  }
+  return result
+}
+
+function taskDuration(task) {
+  if (task.e_marco) return 0
+  if (task.duracao_dias != null) return Math.max(1, Math.round(Number(task.duracao_dias) || 1))
+  return Math.max(1, Math.round(Number(task.duracao_minutos || 480) / 480))
+}
+
+function scheduleTasks(source, calendar = DEFAULT_CALENDAR) {
+  const tasks = deepCopy(source)
+  const map = new Map(tasks.map(task => [Number(task.id), task]))
+  const leafTasks = tasks.filter(task => !task.e_resumo && !task.inativa)
+  const indegree = new Map(leafTasks.map(task => [Number(task.id), 0]))
+  const outgoing = new Map()
+
+  leafTasks.forEach(task => {
+    ;(task.predecessoras || []).forEach(link => {
+      const sourceId = Number(link.predecessora_id)
+      if (!map.has(sourceId)) return
+      indegree.set(Number(task.id), (indegree.get(Number(task.id)) || 0) + 1)
+      if (!outgoing.has(sourceId)) outgoing.set(sourceId, [])
+      outgoing.get(sourceId).push(Number(task.id))
+    })
+  })
+
+  const queue = leafTasks.filter(task => !indegree.get(Number(task.id))).map(task => Number(task.id))
+  const ordered = []
+  while (queue.length) {
+    const id = queue.shift(); ordered.push(id)
+    ;(outgoing.get(id) || []).forEach(target => {
+      indegree.set(target, indegree.get(target) - 1)
+      if (indegree.get(target) === 0) queue.push(target)
+    })
+  }
+  leafTasks.forEach(task => { if (!ordered.includes(Number(task.id))) ordered.push(Number(task.id)) })
+
+  ordered.forEach(id => {
+    const task = map.get(id)
+    if (!task || task.modo_agendamento === 'manual') return
+    let start = nextWorkingDay(task.data_inicio || new Date().toISOString().slice(0, 10), calendar)
+    const duration = taskDuration(task)
+
+    ;(task.predecessoras || []).forEach(link => {
+      const predecessor = map.get(Number(link.predecessora_id))
+      if (!predecessor) return
+      const lag = Math.round(Number(link.atraso_dias ?? (Number(link.atraso_minutos || 0) / 480)) || 0)
+      const type = String(link.tipo || 'FS').toUpperCase()
+      let requiredStart = start
+      if (type === 'FS') requiredStart = addWorkingDays(predecessor.data_fim || predecessor.data_inicio, lag + 1, calendar)
+      if (type === 'SS') requiredStart = addWorkingDays(predecessor.data_inicio, lag, calendar)
+      if (type === 'FF') {
+        const requiredFinish = addWorkingDays(predecessor.data_fim || predecessor.data_inicio, lag, calendar)
+        requiredStart = addWorkingDays(requiredFinish, -(Math.max(1, duration) - 1), calendar)
+      }
+      if (type === 'SF') {
+        const requiredFinish = addWorkingDays(predecessor.data_inicio, lag, calendar)
+        requiredStart = addWorkingDays(requiredFinish, -(Math.max(1, duration) - 1), calendar)
+      }
+      if (dateObj(requiredStart) > dateObj(start)) start = requiredStart
+    })
+
+    task.data_inicio = start
+    task.data_fim = task.e_marco ? start : addWorkingDays(start, duration - 1, calendar)
+    task.duracao_dias = duration
+    task.duracao_minutos = duration * 480
+  })
+
+  const children = new Map()
+  tasks.forEach(task => {
+    const parent = task.parent_id == null ? null : Number(task.parent_id)
+    if (!children.has(parent)) children.set(parent, [])
+    children.get(parent).push(task)
+  })
+  const rollup = task => {
+    const items = children.get(Number(task.id)) || []
+    items.forEach(rollup)
+    if (!items.length) return
+    task.e_resumo = true
+    const starts = items.map(item => dateOnly(item.data_inicio)).filter(Boolean).sort()
+    const finishes = items.map(item => dateOnly(item.data_fim)).filter(Boolean).sort()
+    if (starts.length) task.data_inicio = starts[0]
+    if (finishes.length) task.data_fim = finishes[finishes.length - 1]
+    const weight = items.reduce((sum, item) => sum + Math.max(taskDuration(item), 1), 0)
+    task.percentual_concluido = weight ? items.reduce((sum, item) => sum + Math.max(taskDuration(item), 1) * Number(item.percentual_concluido || 0), 0) / weight : 0
+  }
+  ;(children.get(null) || []).forEach(rollup)
+
+  tasks.forEach(task => { task.caminho_critico = false })
+  const projectFinish = leafTasks.map(task => dateOnly(map.get(Number(task.id))?.data_fim)).filter(Boolean).sort().pop()
+  const criticalStack = tasks.filter(task => !task.e_resumo && dateOnly(task.data_fim) === projectFinish).map(task => Number(task.id))
+  const seen = new Set()
+  while (criticalStack.length) {
+    const id = criticalStack.pop()
+    if (seen.has(id)) continue
+    seen.add(id)
+    const task = map.get(id)
+    if (!task) continue
+    task.caminho_critico = true
+    ;(task.predecessoras || []).forEach(link => criticalStack.push(Number(link.predecessora_id)))
+  }
+  tasks.filter(task => task.e_resumo).forEach(task => {
+    task.caminho_critico = (children.get(Number(task.id)) || []).some(child => child.caminho_critico)
+  })
+  return tasks.sort((a, b) => Number(a.ordem || 0) - Number(b.ordem || 0))
+}
+
+function StatusBadge({ status }) {
+  const item = STATUS[status] || STATUS.planejamento
+  return <span className={`inline-flex rounded-full border px-2.5 py-1 text-[11px] font-bold ${item[1]}`}>{item[0]}</span>
+}
+
+function Toast({ value, close }) {
+  if (!value) return null
+  return <div className={`fixed right-5 top-5 z-[300] flex items-center gap-3 rounded-xl px-5 py-3 text-sm font-bold text-white shadow-2xl ${value.type === 'error' ? 'bg-red-600' : 'bg-emerald-600'}`}>
+    {value.type === 'error' ? <AlertTriangle size={17}/> : <CheckCircle2 size={17}/>} {value.message}
+    <button onClick={close}><X size={15}/></button>
+  </div>
+}
+
+function Modal({ open, title, children, close, wide = false }) {
+  if (!open) return null
+  return <div className="fixed inset-0 z-[250] flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm">
+    <div className={`max-h-[92vh] w-full overflow-y-auto rounded-2xl bg-white shadow-2xl ${wide ? 'max-w-5xl' : 'max-w-2xl'}`}>
+      <div className="sticky top-0 z-10 flex items-center justify-between border-b bg-white px-6 py-4">
+        <h2 className="text-lg font-black text-slate-800">{title}</h2>
+        <button className="rounded-lg p-2 text-slate-400 hover:bg-slate-100" onClick={close}><X size={18}/></button>
+      </div>
+      {children}
+    </div>
+  </div>
+}
+
+function ProjectForm({ project, companies, groups, users, saving, save, cancel }) {
+  const [form, setForm] = useState({
+    nome: project?.nome || '', codigo: project?.codigo || '', descricao: project?.descricao || '',
+    status: project?.status || 'planejamento', prioridade: project?.prioridade || 'normal',
+    grupo_id: project?.grupo_id || '', empresa_principal_id: project?.empresa_principal_id || '',
+    empresas_ids: project?.empresas?.map(item => item.id) || [], gerente_id: project?.gerente_id || '',
+    data_inicio: dateOnly(project?.data_inicio) || new Date().toISOString().slice(0, 10),
+    data_fim_prevista: dateOnly(project?.data_fim_prevista), data_limite: dateOnly(project?.data_limite),
+    orcamento: project?.orcamento || 0, modo_agendamento: project?.modo_agendamento || 'automatico', publico: !!project?.publico,
+  })
+  const set = (key, value) => setForm(previous => ({ ...previous, [key]: value }))
+  const submit = event => {
+    event.preventDefault()
+    save({
+      ...form,
+      grupo_id: form.grupo_id ? Number(form.grupo_id) : null,
+      empresa_principal_id: form.empresa_principal_id ? Number(form.empresa_principal_id) : null,
+      gerente_id: form.gerente_id ? Number(form.gerente_id) : null,
+      empresas_ids: form.empresas_ids.map(Number),
+      orcamento: Number(form.orcamento || 0),
+    })
+  }
+  const input = 'w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100'
+  const Field = ({ label, children, span = false }) => <label className={span ? 'md:col-span-2' : ''}><span className="mb-1 block text-[11px] font-black uppercase text-slate-500">{label}</span>{children}</label>
+
+  return <form className="grid grid-cols-1 gap-4 p-6 md:grid-cols-2" onSubmit={submit}>
+    <Field label="Nome do projeto" span><input className={input} required autoFocus value={form.nome} onChange={event => set('nome', event.target.value)}/></Field>
+    <Field label="Código"><input className={input} placeholder="Automático" value={form.codigo} onChange={event => set('codigo', event.target.value)}/></Field>
+    <Field label="Grupo / portfólio"><select className={input} value={form.grupo_id} onChange={event => set('grupo_id', event.target.value)}><option value="">Sem grupo</option>{groups.map(item => <option key={item.id} value={item.id}>{item.nome}</option>)}</select></Field>
+    <Field label="Empresa principal"><select className={input} value={form.empresa_principal_id} onChange={event => set('empresa_principal_id', event.target.value)}><option value="">Selecione</option>{companies.map(item => <option key={item.id} value={item.id}>{item.nome}</option>)}</select></Field>
+    <Field label="Empresas participantes"><select className={`${input} min-h-28`} multiple value={form.empresas_ids.map(String)} onChange={event => set('empresas_ids', Array.from(event.target.selectedOptions).map(option => Number(option.value)))}>{companies.map(item => <option key={item.id} value={item.id}>{item.nome}</option>)}</select></Field>
+    <Field label="Gerente"><select className={input} value={form.gerente_id} onChange={event => set('gerente_id', event.target.value)}><option value="">Sem gerente</option>{users.map(item => <option key={item.id} value={item.id}>{item.nome_completo || item.username}</option>)}</select></Field>
+    <Field label="Status"><select className={input} value={form.status} onChange={event => set('status', event.target.value)}>{Object.entries(STATUS).map(([key, item]) => <option key={key} value={key}>{item[0]}</option>)}</select></Field>
+    <Field label="Prioridade"><select className={input} value={form.prioridade} onChange={event => set('prioridade', event.target.value)}><option value="baixa">Baixa</option><option value="normal">Normal</option><option value="alta">Alta</option><option value="urgente">Urgente</option></select></Field>
+    <Field label="Agendamento"><select className={input} value={form.modo_agendamento} onChange={event => set('modo_agendamento', event.target.value)}><option value="automatico">Automático</option><option value="manual">Manual</option></select></Field>
+    <Field label="Início"><input className={input} type="date" value={form.data_inicio} onChange={event => set('data_inicio', event.target.value)}/></Field>
+    <Field label="Término previsto"><input className={input} type="date" value={form.data_fim_prevista} onChange={event => set('data_fim_prevista', event.target.value)}/></Field>
+    <Field label="Prazo"><input className={input} type="date" value={form.data_limite} onChange={event => set('data_limite', event.target.value)}/></Field>
+    <Field label="Orçamento"><input className={input} type="number" min="0" step="0.01" value={form.orcamento} onChange={event => set('orcamento', event.target.value)}/></Field>
+    <Field label="Descrição" span><textarea className={`${input} resize-none`} rows="3" value={form.descricao} onChange={event => set('descricao', event.target.value)}/></Field>
+    <label className="flex items-center gap-3 rounded-xl border p-3"><input type="checkbox" checked={form.publico} onChange={event => set('publico', event.target.checked)}/><span><b className="block text-sm">Projeto público</b><small className="text-slate-400">Visível para usuários autenticados</small></span></label>
+    <div className="flex items-end justify-end gap-3 md:col-span-2"><button type="button" className="rounded-xl border px-5 py-2.5 text-sm font-bold" onClick={cancel}>Cancelar</button><button disabled={saving} className="flex items-center gap-2 rounded-xl bg-black px-6 py-2.5 text-sm font-bold text-white disabled:opacity-50">{saving ? <Loader2 className="animate-spin" size={16}/> : <Save size={16}/>} Salvar</button></div>
+  </form>
+}
+
+function Portfolio({ projects, dashboard, companies, groups, loading, create, createGroup, edit, open, remove, permissions }) {
+  const [search, setSearch] = useState('')
+  const [status, setStatus] = useState('')
+  const [company, setCompany] = useState('')
+  const [group, setGroup] = useState('')
+  const visible = useMemo(() => projects.filter(project => {
+    const text = search.toLowerCase()
+    return (!text || project.nome?.toLowerCase().includes(text) || project.codigo?.toLowerCase().includes(text))
+      && (!status || project.status === status)
+      && (!group || Number(project.grupo_id) === Number(group))
+      && (!company || Number(project.empresa_principal_id) === Number(company) || project.empresas?.some(item => Number(item.id) === Number(company)))
+  }), [projects, search, status, company, group])
+
+  const cards = [
+    ['Projetos', dashboard?.total ?? projects.length, FolderKanban, 'bg-blue-50 text-blue-600'],
+    ['Em andamento', dashboard?.por_status?.ativo || 0, Clock3, 'bg-indigo-50 text-indigo-600'],
+    ['Atrasados', dashboard?.atrasados || 0, AlertTriangle, 'bg-red-50 text-red-600'],
+    ['Concluídos', dashboard?.concluidos || 0, CheckCircle2, 'bg-emerald-50 text-emerald-600'],
+    ['Progresso médio', `${Math.round(dashboard?.progresso_medio || 0)}%`, BarChart3, 'bg-violet-50 text-violet-600'],
+  ]
+  return <div className="min-h-screen bg-slate-50 p-4 md:p-6">
+    <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
+      <div className="flex items-center gap-3"><div className="flex h-11 w-11 items-center justify-center rounded-xl bg-black text-white"><FolderKanban/></div><div><h1 className="text-2xl font-black text-slate-800">Gestão de Projetos</h1><p className="text-xs text-slate-500">Cronogramas, tarefas, recursos e Gantt</p></div></div>
+      <div className="flex gap-2"><button disabled={!permissions.create} onClick={createGroup} className="flex items-center gap-2 rounded-xl border bg-white px-4 py-2.5 text-sm font-bold disabled:opacity-40"><Layers3 size={16}/> Novo grupo</button><button disabled={!permissions.create} onClick={create} className="flex items-center gap-2 rounded-xl bg-black px-5 py-2.5 text-sm font-bold text-white disabled:opacity-40"><Plus size={17}/> Novo projeto</button></div>
+    </div>
+    <div className="mb-5 grid grid-cols-2 gap-3 lg:grid-cols-5">{cards.map(([label, value, Icon, color]) => <div key={label} className="rounded-2xl border bg-white p-4 shadow-sm"><div className={`mb-2 flex h-9 w-9 items-center justify-center rounded-xl ${color}`}><Icon size={18}/></div><b className="block text-2xl text-slate-800">{value}</b><span className="text-xs text-slate-500">{label}</span></div>)}</div>
+    <div className="mb-4 grid grid-cols-1 gap-3 rounded-2xl border bg-white p-4 md:grid-cols-4">
+      <div className="relative"><Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={15}/><input className="w-full rounded-xl border py-2 pl-9 pr-3 text-sm outline-none" placeholder="Pesquisar projeto" value={search} onChange={event => setSearch(event.target.value)}/></div>
+      <select className="rounded-xl border bg-white px-3 py-2 text-sm" value={status} onChange={event => setStatus(event.target.value)}><option value="">Todos os status</option>{Object.entries(STATUS).map(([key, item]) => <option key={key} value={key}>{item[0]}</option>)}</select>
+      <select className="rounded-xl border bg-white px-3 py-2 text-sm" value={company} onChange={event => setCompany(event.target.value)}><option value="">Todas as empresas</option>{companies.map(item => <option key={item.id} value={item.id}>{item.nome}</option>)}</select>
+      <select className="rounded-xl border bg-white px-3 py-2 text-sm" value={group} onChange={event => setGroup(event.target.value)}><option value="">Todos os grupos</option>{groups.map(item => <option key={item.id} value={item.id}>{item.nome}</option>)}</select>
+    </div>
+    <div className="overflow-hidden rounded-2xl border bg-white shadow-sm">
+      <div className="grid grid-cols-[110px_1fr_200px_160px_150px_110px] border-b bg-slate-50 px-4 py-3 text-[10px] font-black uppercase text-slate-500"><span>Código</span><span>Projeto</span><span>Empresa / grupo</span><span>Período</span><span>Progresso</span><span className="text-right">Ações</span></div>
+      {loading ? <div className="flex justify-center gap-2 py-16 text-slate-400"><Loader2 className="animate-spin"/> Carregando...</div> : visible.length === 0 ? <div className="py-16 text-center text-slate-400"><FolderKanban className="mx-auto mb-2 opacity-30" size={42}/><b>Nenhum projeto encontrado</b></div> : visible.map(project => <div key={project.id} className="grid grid-cols-[110px_1fr_200px_160px_150px_110px] items-center border-b px-4 py-3 text-sm hover:bg-blue-50/40" onDoubleClick={() => open(project)}>
+        <span className="font-mono text-xs font-bold text-blue-600">{project.codigo}</span>
+        <div className="min-w-0"><button onClick={() => open(project)} className="truncate text-left font-black text-slate-800 hover:text-blue-600">{project.nome}</button><div className="mt-1"><StatusBadge status={project.status}/></div></div>
+        <div className="min-w-0 text-xs"><b className="block truncate">{project.empresa_principal_nome || 'Sem empresa'}</b><span className="text-slate-400">{project.grupo?.nome || 'Sem grupo'}</span></div>
+        <span className="text-xs">{formatDate(project.data_inicio)}<br/><span className="text-slate-400">até {formatDate(project.data_fim_prevista)}</span></span>
+        <div><div className="mb-1 flex justify-between text-[10px]"><b>{Math.round(project.percentual_concluido || 0)}%</b><span>{project.quantidade_tarefas || 0} tarefas</span></div><div className="h-2 overflow-hidden rounded-full bg-slate-100"><div className="h-full bg-blue-600" style={{ width: `${clamp(project.percentual_concluido, 0, 100)}%` }}/></div></div>
+        <div className="flex justify-end gap-1"><button title="Abrir" className="rounded-lg p-2 text-blue-600 hover:bg-blue-100" onClick={() => open(project)}><Eye size={15}/></button><button disabled={!permissions.edit} title="Editar" className="rounded-lg p-2 text-amber-600 hover:bg-amber-100 disabled:opacity-30" onClick={() => edit(project)}><Edit3 size={15}/></button><button disabled={!permissions.delete} title="Arquivar" className="rounded-lg p-2 text-red-500 hover:bg-red-100 disabled:opacity-30" onClick={() => remove(project)}><Trash2 size={15}/></button></div>
+      </div>)}
+    </div>
+  </div>
+}
+
+function GanttBar({ task, timelineStart, dayWidth, selected, baseline, select, change, editable }) {
+  const originalStart = dateOnly(task.data_inicio)
+  const originalFinish = dateOnly(task.data_fim || task.data_inicio)
+  const [preview, setPreview] = useState(null)
+  const [drag, setDrag] = useState(null)
+  const previewRef = useRef(null)
+  const start = preview?.start || originalStart
+  const finish = preview?.finish || originalFinish
+  const left = Math.max(0, diffDays(timelineStart, start) * dayWidth)
+  const duration = Math.max(1, diffDays(start, finish) + 1)
+  const width = Math.max(task.e_marco ? 15 : dayWidth, duration * dayWidth)
+
+  useEffect(() => {
+    if (!drag) return undefined
+    const move = event => {
+      const delta = Math.round((event.clientX - drag.x) / dayWidth)
+      let next = { start: drag.start, finish: drag.finish }
+      if (drag.mode === 'move') next = { start: addCalendarDays(drag.start, delta), finish: addCalendarDays(drag.finish, delta) }
+      if (drag.mode === 'start') {
+        const value = addCalendarDays(drag.start, delta)
+        next.start = dateObj(value) <= dateObj(drag.finish) ? value : drag.finish
+      }
+      if (drag.mode === 'finish') {
+        const value = addCalendarDays(drag.finish, delta)
+        next.finish = dateObj(value) >= dateObj(drag.start) ? value : drag.start
+      }
+      previewRef.current = next
+      setPreview(next)
+    }
+    const up = () => {
+      const value = previewRef.current
+      if (value) change({ data_inicio: value.start, data_fim: value.finish, duracao_dias: task.e_marco ? 0 : Math.max(1, diffDays(value.start, value.finish) + 1) })
+      previewRef.current = null; setPreview(null); setDrag(null)
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+    return () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up) }
+  }, [drag, dayWidth, change, task.e_marco])
+
+  const down = (event, mode) => {
+    if (!editable || (task.e_resumo && mode !== 'move')) return
+    event.preventDefault(); event.stopPropagation(); select()
+    setDrag({ mode, x: event.clientX, start: originalStart, finish: originalFinish })
+  }
+  if (!originalStart) return null
+  const baselineStart = dateOnly(baseline?.data_inicio)
+  const baselineFinish = dateOnly(baseline?.data_fim || baseline?.data_inicio)
+  const baselineLeft = baselineStart ? Math.max(0, diffDays(timelineStart, baselineStart) * dayWidth) : 0
+  const baselineWidth = baselineStart ? Math.max(dayWidth, (diffDays(baselineStart, baselineFinish) + 1) * dayWidth) : 0
+
+  return <>
+    {baselineStart && <div className="absolute bottom-1 h-1.5 rounded bg-slate-400/70" style={{ left: baselineLeft, width: baselineWidth }}/>} 
+    {task.e_marco ? <button title={`${task.nome}: ${formatDate(start)}`} onPointerDown={event => down(event, 'move')} className={`absolute top-1/2 h-4 w-4 -translate-y-1/2 rotate-45 border-2 border-white shadow ${task.caminho_critico ? 'bg-red-600' : 'bg-violet-600'} ${selected ? 'ring-2 ring-blue-400' : ''}`} style={{ left }}/> :
+      <div title={`${task.nome}: ${formatDate(start)} até ${formatDate(finish)}`} onPointerDown={event => down(event, 'move')} onClick={select} className={`absolute top-1/2 h-5 -translate-y-1/2 cursor-grab overflow-hidden rounded shadow-sm active:cursor-grabbing ${task.e_resumo ? 'bg-slate-800' : task.caminho_critico ? 'bg-red-500' : 'bg-blue-500'} ${selected ? 'ring-2 ring-blue-300' : ''}`} style={{ left, width }}>
+        {!task.e_resumo && <div className="absolute inset-y-0 left-0 bg-emerald-500" style={{ width: `${clamp(task.percentual_concluido, 0, 100)}%` }}/>} 
+        {!task.e_resumo && <><div onPointerDown={event => down(event, 'start')} className="absolute inset-y-0 left-0 z-10 w-2 cursor-ew-resize hover:bg-white/40"/><div onPointerDown={event => down(event, 'finish')} className="absolute inset-y-0 right-0 z-10 w-2 cursor-ew-resize hover:bg-white/40"/></>}
+        {width > 70 && <span className="absolute inset-0 z-[5] flex items-center justify-center truncate px-2 text-[10px] font-bold text-white">{Math.round(task.percentual_concluido || 0)}%</span>}
+      </div>}
+  </>
+}
+
+function DependencyLayer({ tasks, timelineStart, dayWidth, width }) {
+  const row = new Map(tasks.map((task, index) => [Number(task.id), index]))
+  const taskMap = new Map(tasks.map(task => [Number(task.id), task]))
+  const paths = []
+  tasks.forEach((target, targetIndex) => {
+    ;(target.predecessoras || []).forEach(link => {
+      const source = taskMap.get(Number(link.predecessora_id))
+      const sourceIndex = row.get(Number(link.predecessora_id))
+      if (!source || sourceIndex == null) return
+      const type = String(link.tipo || 'FS').toUpperCase()
+      const sourceDate = type === 'SS' || type === 'SF' ? source.data_inicio : (source.data_fim || source.data_inicio)
+      const targetDate = type === 'FF' || type === 'SF' ? (target.data_fim || target.data_inicio) : target.data_inicio
+      const x1 = diffDays(timelineStart, sourceDate) * dayWidth + (type === 'SS' || type === 'SF' ? 0 : dayWidth)
+      const x2 = diffDays(timelineStart, targetDate) * dayWidth + (type === 'FF' || type === 'SF' ? dayWidth : 0)
+      const y1 = sourceIndex * ROW_HEIGHT + ROW_HEIGHT / 2
+      const y2 = targetIndex * ROW_HEIGHT + ROW_HEIGHT / 2
+      const middle = Math.max(x1 + 12, (x1 + x2) / 2)
+      paths.push(<path key={`${target.id}-${link.id || link.predecessora_id}`} d={`M ${x1} ${y1} H ${middle} V ${y2} H ${x2}`} fill="none" stroke={source.caminho_critico && target.caminho_critico ? '#ef4444' : '#64748b'} strokeWidth="1.4" markerEnd="url(#project-arrow)"/>)
+    })
+  })
+  return <svg className="pointer-events-none absolute left-0 top-0 z-[8]" width={width} height={tasks.length * ROW_HEIGHT}>
+    <defs><marker id="project-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/></marker></defs>
+    {paths}
+  </svg>
+}
+
+function DependencyModal({ project, task, tasks, reload, close, notify }) {
+  const [form, setForm] = useState({ predecessora_id: '', tipo: 'FS', atraso_dias: 0 })
+  const add = async event => {
+    event.preventDefault()
+    try {
+      await api(`${API}/${project.id}/dependencias`, { method: 'POST', body: JSON.stringify({ predecessora_id: Number(form.predecessora_id), sucessora_id: task.id, tipo: form.tipo, atraso_minutos: Number(form.atraso_dias || 0) * 480 }) })
+      notify('Dependência criada'); await reload(); setForm({ predecessora_id: '', tipo: 'FS', atraso_dias: 0 })
+    } catch (error) { notify(error.message, 'error') }
+  }
+  const remove = async link => {
+    try { await api(`${API}/${project.id}/dependencias/${link.id}`, { method: 'DELETE' }); await reload(); notify('Dependência removida') } catch (error) { notify(error.message, 'error') }
+  }
+  return <Modal open title={`Dependências — ${task.nome}`} close={close}>
+    <div className="p-6"><div className="mb-5 space-y-2">{(task.predecessoras || []).length === 0 ? <p className="rounded-xl bg-slate-50 p-4 text-sm text-slate-400">Nenhuma predecessora.</p> : task.predecessoras.map(link => <div key={link.id} className="flex items-center justify-between rounded-xl border p-3 text-sm"><div><b>{link.predecessora_nome || `Tarefa ${link.predecessora_id}`}</b><span className="ml-3 rounded bg-blue-50 px-2 py-1 text-xs font-bold text-blue-700">{link.tipo}</span><span className="ml-2 text-xs text-slate-400">{link.atraso_dias || 0} dia(s)</span></div><button onClick={() => remove(link)} className="rounded-lg p-2 text-red-500 hover:bg-red-50"><Trash2 size={15}/></button></div>)}</div>
+      <form onSubmit={add} className="grid grid-cols-[1fr_100px_100px_auto] gap-3 border-t pt-5"><select required className="rounded-xl border px-3 py-2 text-sm" value={form.predecessora_id} onChange={event => setForm({ ...form, predecessora_id: event.target.value })}><option value="">Selecione a predecessora</option>{tasks.filter(item => item.id !== task.id && !item.e_resumo).map(item => <option key={item.id} value={item.id}>{item.wbs} — {item.nome}</option>)}</select><select className="rounded-xl border px-3 py-2 text-sm" value={form.tipo} onChange={event => setForm({ ...form, tipo: event.target.value })}><option>FS</option><option>SS</option><option>FF</option><option>SF</option></select><input title="Atraso em dias" className="rounded-xl border px-3 py-2 text-sm" type="number" value={form.atraso_dias} onChange={event => setForm({ ...form, atraso_dias: event.target.value })}/><button className="rounded-xl bg-black px-4 py-2 text-sm font-bold text-white"><Plus size={16}/></button></form>
+      <div className="mt-4 grid grid-cols-2 gap-2 text-xs text-slate-500"><span><b>FS:</b> término → início</span><span><b>SS:</b> início → início</span><span><b>FF:</b> término → término</span><span><b>SF:</b> início → término</span></div>
+    </div>
+  </Modal>
+}
+
+function ResourcesModal({ project, task, resources, reload, close, notify }) {
+  const [form, setForm] = useState({ nome: '', tipo: 'trabalho', custo_hora: 0, capacidade_percentual: 100 })
+  const assigned = new Map((task?.alocacoes || []).map(item => [Number(item.recurso_id), item]))
+  const add = async event => {
+    event.preventDefault()
+    try { await api(`${API}/${project.id}/recursos`, { method: 'POST', body: JSON.stringify(form) }); setForm({ nome: '', tipo: 'trabalho', custo_hora: 0, capacidade_percentual: 100 }); await reload(); notify('Recurso criado') } catch (error) { notify(error.message, 'error') }
+  }
+  const toggle = async resource => {
+    if (!task) return notify('Selecione uma tarefa para alocar recursos', 'error')
+    const assignment = assigned.get(Number(resource.id))
+    try {
+      if (assignment) await api(`${API}/${project.id}/alocacoes/${assignment.id}`, { method: 'DELETE' })
+      else await api(`${API}/${project.id}/alocacoes`, { method: 'POST', body: JSON.stringify({ tarefa_id: task.id, recurso_id: resource.id, unidades_percentual: 100, trabalho_minutos: task.trabalho_minutos || task.duracao_minutos || 480 }) })
+      await reload(); notify(assignment ? 'Recurso removido da tarefa' : 'Recurso alocado')
+    } catch (error) { notify(error.message, 'error') }
+  }
+  const remove = async resource => {
+    if (!window.confirm(`Excluir o recurso "${resource.nome}"?`)) return
+    try { await api(`${API}/${project.id}/recursos/${resource.id}`, { method: 'DELETE' }); await reload(); notify('Recurso excluído') } catch (error) { notify(error.message, 'error') }
+  }
+  return <Modal open wide title={`Recursos${task ? ` — alocação em ${task.nome}` : ''}`} close={close}><div className="grid gap-6 p-6 md:grid-cols-[1fr_340px]">
+    <div><h3 className="mb-3 text-sm font-black text-slate-700">Recursos do projeto</h3><div className="space-y-2">{resources.length === 0 ? <p className="rounded-xl bg-slate-50 p-4 text-sm text-slate-400">Nenhum recurso cadastrado.</p> : resources.map(resource => <div key={resource.id} className="flex items-center gap-3 rounded-xl border p-3"><button disabled={!task} onClick={() => toggle(resource)} className={`flex h-6 w-6 items-center justify-center rounded border ${assigned.has(Number(resource.id)) ? 'border-blue-600 bg-blue-600 text-white' : 'bg-white'}`}>{assigned.has(Number(resource.id)) && <CheckCircle2 size={14}/>}</button><div className="min-w-0 flex-1"><b className="block truncate text-sm">{resource.nome}</b><span className="text-xs text-slate-400">{resource.tipo} · {resource.capacidade_percentual}% · {money(resource.custo_hora)}/h</span></div><button onClick={() => remove(resource)} className="rounded-lg p-2 text-red-500 hover:bg-red-50"><Trash2 size={15}/></button></div>)}</div></div>
+    <form onSubmit={add} className="space-y-3 rounded-2xl bg-slate-50 p-4"><h3 className="font-black">Novo recurso</h3><input required className="w-full rounded-xl border bg-white px-3 py-2 text-sm" placeholder="Nome" value={form.nome} onChange={event => setForm({ ...form, nome: event.target.value })}/><select className="w-full rounded-xl border bg-white px-3 py-2 text-sm" value={form.tipo} onChange={event => setForm({ ...form, tipo: event.target.value })}><option value="trabalho">Trabalho</option><option value="material">Material</option><option value="custo">Custo</option></select><label className="block text-xs font-bold">Capacidade (%)<input className="mt-1 w-full rounded-xl border px-3 py-2" type="number" value={form.capacidade_percentual} onChange={event => setForm({ ...form, capacidade_percentual: Number(event.target.value) })}/></label><label className="block text-xs font-bold">Custo/hora<input className="mt-1 w-full rounded-xl border px-3 py-2" type="number" step="0.01" value={form.custo_hora} onChange={event => setForm({ ...form, custo_hora: Number(event.target.value) })}/></label><button className="flex w-full items-center justify-center gap-2 rounded-xl bg-black py-2.5 text-sm font-bold text-white"><UserPlus size={16}/> Adicionar</button></form>
+  </div></Modal>
+}
+
+function CalendarModal({ project, calendars, reload, close, notify }) {
+  const current = calendars.find(item => item.padrao) || calendars[0]
+  const [form, setForm] = useState(() => current ? deepCopy(current) : { nome: 'Calendário padrão', padrao: true, minutos_por_dia: 480, minutos_por_semana: 2400, dias_uteis: [0, 1, 2, 3, 4], horarios: {}, excecoes: [] })
+  const [exception, setException] = useState({ data: '', nome: '', util: false })
+  const save = async () => {
+    try {
+      const result = await api(current ? `${API}/${project.id}/calendarios/${current.id}` : `${API}/${project.id}/calendarios`, { method: current ? 'PUT' : 'POST', body: JSON.stringify(form) })
+      await reload(); notify('Calendário salvo'); return result
+    } catch (error) { notify(error.message, 'error') }
+  }
+  const toggleDay = day => setForm(previous => ({ ...previous, dias_uteis: previous.dias_uteis.includes(day) ? previous.dias_uteis.filter(item => item !== day) : [...previous.dias_uteis, day].sort() }))
+  const addException = () => {
+    if (!exception.data) return
+    setForm(previous => ({ ...previous, excecoes: [...(previous.excecoes || []).filter(item => item.data !== exception.data), exception] }))
+    setException({ data: '', nome: '', util: false })
+  }
+  return <Modal open title="Calendário do projeto" close={close}><div className="space-y-6 p-6"><div className="grid grid-cols-2 gap-3"><label className="text-xs font-bold">Nome<input className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" value={form.nome} onChange={event => setForm({ ...form, nome: event.target.value })}/></label><label className="text-xs font-bold">Minutos por dia<input className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" type="number" value={form.minutos_por_dia} onChange={event => setForm({ ...form, minutos_por_dia: Number(event.target.value) })}/></label></div>
+    <div><b className="mb-2 block text-sm">Dias úteis</b><div className="flex gap-2">{['Seg','Ter','Qua','Qui','Sex','Sáb','Dom'].map((label, day) => <button key={day} onClick={() => toggleDay(day)} className={`rounded-xl border px-3 py-2 text-xs font-bold ${form.dias_uteis.includes(day) ? 'border-blue-600 bg-blue-600 text-white' : 'bg-white text-slate-500'}`}>{label}</button>)}</div></div>
+    <div><b className="mb-2 block text-sm">Feriados e exceções</b><div className="grid grid-cols-[140px_1fr_110px_auto] gap-2"><input type="date" className="rounded-xl border px-3 py-2 text-sm" value={exception.data} onChange={event => setException({ ...exception, data: event.target.value })}/><input className="rounded-xl border px-3 py-2 text-sm" placeholder="Descrição" value={exception.nome} onChange={event => setException({ ...exception, nome: event.target.value })}/><select className="rounded-xl border px-3 py-2 text-sm" value={String(exception.util)} onChange={event => setException({ ...exception, util: event.target.value === 'true' })}><option value="false">Não útil</option><option value="true">Útil</option></select><button onClick={addException} className="rounded-xl bg-slate-800 px-3 text-white"><Plus size={16}/></button></div><div className="mt-3 space-y-1">{(form.excecoes || []).map(item => <div key={item.data} className="flex justify-between rounded-lg bg-slate-50 px-3 py-2 text-xs"><span><b>{formatDate(item.data)}</b> — {item.nome || (item.util ? 'Dia útil' : 'Não útil')}</span><button onClick={() => setForm({ ...form, excecoes: form.excecoes.filter(value => value.data !== item.data) })} className="text-red-500"><Trash2 size={13}/></button></div>)}</div></div>
+    <div className="flex justify-end"><button onClick={save} className="flex items-center gap-2 rounded-xl bg-black px-5 py-2.5 text-sm font-bold text-white"><Save size={16}/> Salvar calendário</button></div>
+  </div></Modal>
+}
+
+function BaselineModal({ project, baselines, select, selectedId, reload, close, notify }) {
+  const create = async () => {
+    const name = window.prompt('Nome da linha de base:', `Linha de base ${new Date().toLocaleDateString('pt-BR')}`)
+    if (!name) return
+    try { await api(`${API}/${project.id}/linhas-base`, { method: 'POST', body: JSON.stringify({ nome: name }) }); await reload(); notify('Linha de base criada') } catch (error) { notify(error.message, 'error') }
+  }
+  const remove = async item => {
+    try { await api(`${API}/${project.id}/linhas-base/${item.id}`, { method: 'DELETE' }); if (selectedId === item.id) select(null); await reload(); notify('Linha de base excluída') } catch (error) { notify(error.message, 'error') }
+  }
+  return <Modal open title="Linhas de base" close={close}><div className="p-6"><button onClick={create} className="mb-4 flex items-center gap-2 rounded-xl bg-black px-4 py-2 text-sm font-bold text-white"><Plus size={16}/> Nova linha de base</button><div className="space-y-2">{baselines.length === 0 ? <p className="rounded-xl bg-slate-50 p-4 text-sm text-slate-400">Nenhuma linha de base.</p> : baselines.map(item => <div key={item.id} className={`flex items-center justify-between rounded-xl border p-3 ${selectedId === item.id ? 'border-blue-500 bg-blue-50' : ''}`}><button className="flex-1 text-left" onClick={() => select(selectedId === item.id ? null : item.id)}><b className="block text-sm">{item.nome}</b><span className="text-xs text-slate-400">{new Date(item.criado_em).toLocaleString('pt-BR')}</span></button><button onClick={() => remove(item)} className="rounded-lg p-2 text-red-500"><Trash2 size={15}/></button></div>)}</div></div></Modal>
+}
+
+function Workspace({ initialProject, permissions, back, notify }) {
+  const [project, setProject] = useState(initialProject)
+  const [tasks, setTasks] = useState(initialProject.tarefas || [])
+  const [resources, setResources] = useState(initialProject.recursos || [])
+  const [calendars, setCalendars] = useState(initialProject.calendarios || [])
+  const [baselines, setBaselines] = useState(initialProject.linhas_base || [])
+  const [selectedId, setSelectedId] = useState(null)
+  const [collapsed, setCollapsed] = useState(new Set())
+  const [search, setSearch] = useState('')
+  const [zoomIndex, setZoomIndex] = useState(1)
+  const [loading, setLoading] = useState(false)
+  const [history, setHistory] = useState([])
+  const [future, setFuture] = useState([])
+  const [dependencyOpen, setDependencyOpen] = useState(false)
+  const [resourcesOpen, setResourcesOpen] = useState(false)
+  const [calendarOpen, setCalendarOpen] = useState(false)
+  const [baselineOpen, setBaselineOpen] = useState(false)
+  const [selectedBaselineId, setSelectedBaselineId] = useState(null)
+  const [baselineData, setBaselineData] = useState(null)
+  const importRef = useRef(null)
+  const zoom = ZOOMS[zoomIndex]
+  const dayWidth = zoom.width
+  const selectedTask = tasks.find(item => Number(item.id) === Number(selectedId)) || null
+  const calendar = calendars.find(item => item.padrao) || calendars[0] || DEFAULT_CALENDAR
+
+  const reload = useCallback(async () => {
+    setLoading(true)
+    try {
+      const value = await api(`${API}/${initialProject.id}`)
+      setProject(value); setTasks(value.tarefas || []); setResources(value.recursos || []); setCalendars(value.calendarios || []); setBaselines(value.linhas_base || [])
+    } catch (error) { notify(error.message, 'error') } finally { setLoading(false) }
+  }, [initialProject.id, notify])
+
+  useEffect(() => { reload() }, [reload])
+  useEffect(() => {
+    if (!selectedBaselineId) { setBaselineData(null); return }
+    api(`${API}/${project.id}/linhas-base/${selectedBaselineId}`).then(value => setBaselineData(value.dados)).catch(error => notify(error.message, 'error'))
+  }, [selectedBaselineId, project.id, notify])
+
+  const map = useMemo(() => new Map(tasks.map(item => [Number(item.id), item])), [tasks])
+  const visibleTasks = useMemo(() => tasks.filter(task => {
+    if (search && !`${task.wbs || ''} ${task.nome || ''}`.toLowerCase().includes(search.toLowerCase())) return false
+    let parent = task.parent_id == null ? null : Number(task.parent_id)
+    while (parent) {
+      if (collapsed.has(parent)) return false
+      parent = map.get(parent)?.parent_id == null ? null : Number(map.get(parent)?.parent_id)
+    }
+    return true
+  }), [tasks, search, collapsed, map])
+
+  const baselineMap = useMemo(() => new Map((baselineData?.tarefas || []).map(item => [Number(item.id), item])), [baselineData])
+  const range = useMemo(() => {
+    const starts = tasks.map(item => dateOnly(item.data_inicio)).filter(Boolean).sort()
+    const finishes = tasks.map(item => dateOnly(item.data_fim || item.data_inicio)).filter(Boolean).sort()
+    const start = addCalendarDays(starts[0] || dateOnly(project.data_inicio) || new Date().toISOString().slice(0, 10), -14)
+    let finish = addCalendarDays(finishes.pop() || dateOnly(project.data_fim_prevista) || start, 45)
+    if (diffDays(start, finish) < 90) finish = addCalendarDays(start, 90)
+    if (diffDays(start, finish) > 1460) finish = addCalendarDays(start, 1460)
+    return { start, finish, days: diffDays(start, finish) + 1 }
+  }, [tasks, project.data_inicio, project.data_fim_prevista])
+  const timelineWidth = range.days * dayWidth
+  const days = useMemo(() => Array.from({ length: range.days }, (_, index) => addCalendarDays(range.start, index)), [range])
+
+  const saveBatch = useCallback(async (nextTasks, message = 'Alterações salvas', remember = true) => {
+    if (!permissions.edit) return
+    if (remember) { setHistory(previous => [...previous.slice(-29), deepCopy(tasks)]); setFuture([]) }
+    setTasks(nextTasks)
+    try {
+      await api(`${API}/${project.id}/tarefas/lote`, { method: 'PUT', body: JSON.stringify({ tarefas: nextTasks.map(item => ({
+        id: item.id, nome: item.nome, parent_id: item.parent_id, ordem: item.ordem,
+        data_inicio: dateOnly(item.data_inicio), data_fim: dateOnly(item.data_fim),
+        duracao_dias: item.e_marco ? 0 : taskDuration(item), percentual_concluido: item.percentual_concluido,
+        e_marco: item.e_marco, inativa: item.inativa, caminho_critico: item.caminho_critico,
+        modo_agendamento: item.modo_agendamento, prioridade: item.prioridade,
+      })) }) })
+      notify(message)
+    } catch (error) { notify(error.message, 'error'); await reload() }
+  }, [permissions.edit, tasks, project.id, notify, reload])
+
+  const updateTask = useCallback((id, patch, autoschedule = false) => {
+    let next = tasks.map(item => Number(item.id) === Number(id) ? { ...item, ...patch } : item)
+    if (autoschedule) next = scheduleTasks(next, calendar)
+    saveBatch(next)
+  }, [tasks, calendar, saveBatch])
+
+  const shiftSummary = useCallback((summaryId, anchorField, targetDate) => {
+    const summary = tasks.find(item => Number(item.id) === Number(summaryId))
+    const currentAnchor = dateOnly(anchorField === 'data_fim' ? summary?.data_fim : summary?.data_inicio)
+    const target = dateOnly(targetDate)
+    if (!summary || !currentAnchor || !target) return
+    const delta = diffDays(currentAnchor, target)
+    if (!delta) return
+
+    const childrenByParent = new Map()
+    tasks.forEach(item => {
+      const parentId = item.parent_id == null ? null : Number(item.parent_id)
+      if (!childrenByParent.has(parentId)) childrenByParent.set(parentId, [])
+      childrenByParent.get(parentId).push(Number(item.id))
+    })
+
+    const descendantIds = new Set()
+    const stack = [...(childrenByParent.get(Number(summaryId)) || [])]
+    while (stack.length) {
+      const id = stack.pop()
+      if (descendantIds.has(id)) continue
+      descendantIds.add(id)
+      stack.push(...(childrenByParent.get(id) || []))
+    }
+    if (!descendantIds.size) return
+
+    const direction = delta < 0 ? -1 : 1
+    const moved = tasks.map(item => {
+      if (!descendantIds.has(Number(item.id))) return item
+      const start = dateOnly(item.data_inicio)
+      const finish = dateOnly(item.data_fim || item.data_inicio)
+      const shiftedStart = start ? nextWorkingDay(addCalendarDays(start, delta), calendar, direction, true) : start
+      const shiftedFinish = finish ? nextWorkingDay(addCalendarDays(finish, delta), calendar, direction, true) : finish
+      return {
+        ...item,
+        data_inicio: shiftedStart,
+        data_fim: item.e_marco ? shiftedStart : shiftedFinish,
+      }
+    })
+
+    saveBatch(scheduleTasks(moved, calendar), `Grupo "${summary.nome}" movido`)
+  }, [tasks, calendar, saveBatch])
+
+  const undo = () => {
+    if (!history.length) return
+    const previous = history[history.length - 1]
+    setFuture(items => [deepCopy(tasks), ...items].slice(0, 30))
+    setHistory(items => items.slice(0, -1)); saveBatch(previous, 'Alteração desfeita', false)
+  }
+  const redo = () => {
+    if (!future.length) return
+    const next = future[0]
+    setHistory(items => [...items, deepCopy(tasks)].slice(-30)); setFuture(items => items.slice(1)); saveBatch(next, 'Alteração refeita', false)
+  }
+  const recalculate = () => saveBatch(scheduleTasks(tasks, calendar), 'Cronograma recalculado')
+
+  const createTask = async parentId => {
+    try {
+      const task = await api(`${API}/${project.id}/tarefas`, { method: 'POST', body: JSON.stringify({ nome: 'Nova tarefa', parent_id: parentId || null, data_inicio: dateOnly(project.data_inicio) || new Date().toISOString().slice(0, 10), duracao_dias: 1, percentual_concluido: 0 }) })
+      await reload(); setSelectedId(task.id)
+    } catch (error) { notify(error.message, 'error') }
+  }
+  const deleteTask = async task => {
+    if (!window.confirm(`Excluir a tarefa "${task.nome}"?`)) return
+    try { await api(`${API}/${project.id}/tarefas/${task.id}`, { method: 'DELETE' }); setSelectedId(null); await reload(); notify('Tarefa excluída') } catch (error) { notify(error.message, 'error') }
+  }
+  const reorder = async next => {
+    try { await api(`${API}/${project.id}/tarefas/reordenar`, { method: 'POST', body: JSON.stringify({ tarefas: next.map((item, index) => ({ id: item.id, parent_id: item.parent_id, ordem: index + 1 })) }) }); await reload() } catch (error) { notify(error.message, 'error') }
+  }
+  const move = direction => {
+    const index = tasks.findIndex(item => Number(item.id) === Number(selectedId)); if (index < 0) return
+    const target = direction === 'up' ? index - 1 : index + 1; if (target < 0 || target >= tasks.length) return
+    const next = [...tasks]; const [item] = next.splice(index, 1); next.splice(target, 0, item); reorder(next)
+  }
+  const indent = async () => {
+    const index = tasks.findIndex(item => Number(item.id) === Number(selectedId)); if (index <= 0) return
+    await api(`${API}/${project.id}/tarefas/${selectedId}`, { method: 'PUT', body: JSON.stringify({ parent_id: tasks[index - 1].id }) }); await reload()
+  }
+  const outdent = async () => {
+    if (!selectedTask?.parent_id) return
+    const parent = map.get(Number(selectedTask.parent_id))
+    await api(`${API}/${project.id}/tarefas/${selectedId}`, { method: 'PUT', body: JSON.stringify({ parent_id: parent?.parent_id || null }) }); await reload()
+  }
+
+  const exportJson = () => {
+    const blob = new Blob([JSON.stringify(project, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob); const anchor = document.createElement('a'); anchor.href = url; anchor.download = `${project.codigo || 'projeto'}.json`; anchor.click(); URL.revokeObjectURL(url)
+  }
+
+  const importXml = async event => {
+    const file = event.target.files?.[0]; event.target.value = ''
+    if (!file) return
+    if (!file.name.toLowerCase().endsWith('.xml')) return notify('Exporte o arquivo do Microsoft Project como XML antes de importar.', 'error')
+    setLoading(true)
+    try {
+      const xml = new DOMParser().parseFromString(await file.text(), 'application/xml')
+      if (xml.querySelector('parsererror')) throw new Error('XML inválido')
+      const text = (node, name) => node.getElementsByTagNameNS('*', name)[0]?.textContent || ''
+      const nodes = Array.from(xml.getElementsByTagNameNS('*', 'Task')).filter(node => text(node, 'UID') !== '0')
+      const idMap = new Map(); const levelStack = new Map(); const imported = []
+      for (const node of nodes) {
+        const oldId = Number(text(node, 'ID') || text(node, 'UID')); const level = Number(text(node, 'OutlineLevel') || 1)
+        const durationHours = Number((text(node, 'Duration').match(/PT(?:(\d+)H)?(?:(\d+)M)?/) || [])[1] || 0) + Number((text(node, 'Duration').match(/PT(?:(\d+)H)?(?:(\d+)M)?/) || [])[2] || 0) / 60
+        const payload = { nome: text(node, 'Name') || `Tarefa ${oldId}`, parent_id: level > 1 ? levelStack.get(level - 1) || null : null, data_inicio: dateOnly(text(node, 'Start')), data_fim: dateOnly(text(node, 'Finish')), duracao_dias: Math.max(text(node, 'Milestone') === '1' ? 0 : 1, Math.round(durationHours / 8)), percentual_concluido: Number(text(node, 'PercentComplete') || 0), e_marco: text(node, 'Milestone') === '1' }
+        const created = await api(`${API}/${project.id}/tarefas`, { method: 'POST', body: JSON.stringify(payload) })
+        idMap.set(oldId, created.id); levelStack.set(level, created.id); imported.push({ node, created })
+        Array.from(levelStack.keys()).filter(key => key > level).forEach(key => levelStack.delete(key))
+      }
+      for (const { node, created } of imported) {
+        for (const link of Array.from(node.getElementsByTagNameNS('*', 'PredecessorLink'))) {
+          const predecessorOld = Number(text(link, 'PredecessorUID')); const predecessorId = idMap.get(predecessorOld)
+          if (!predecessorId) continue
+          const typeMap = { 0: 'FF', 1: 'FS', 2: 'SF', 3: 'SS' }
+          await api(`${API}/${project.id}/dependencias`, { method: 'POST', body: JSON.stringify({ predecessora_id: predecessorId, sucessora_id: created.id, tipo: typeMap[Number(text(link, 'Type') || 1)] || 'FS', atraso_minutos: 0 }) })
+        }
+      }
+      await reload(); notify(`${imported.length} tarefas importadas`)
+    } catch (error) { notify(error.message, 'error') } finally { setLoading(false) }
+  }
+
+  const toggleCollapse = id => setCollapsed(previous => { const next = new Set(previous); next.has(id) ? next.delete(id) : next.add(id); return next })
+  const todayX = diffDays(range.start, new Date().toISOString().slice(0, 10)) * dayWidth
+  const column = 'border-r px-1'
+
+  return <div className="flex h-screen min-h-0 flex-col bg-slate-50">
+    <div className="z-40 border-b bg-white shadow-sm">
+      <div className="flex flex-wrap items-center gap-2 px-3 py-2">
+        <button onClick={back} className="flex items-center gap-1 rounded-lg border px-3 py-2 text-xs font-bold"><ArrowLeft size={15}/> Projetos</button>
+        <div className="min-w-0 flex-1"><div className="flex items-center gap-2"><FolderKanban className="text-blue-600" size={20}/><h1 className="truncate text-base font-black">{project.nome}</h1><StatusBadge status={project.status}/></div><p className="text-[10px] text-slate-400">{project.codigo} · {project.empresa_principal_nome || 'Sem empresa'}</p></div>
+        <input ref={importRef} className="hidden" type="file" accept=".xml" onChange={importXml}/>
+        <button onClick={() => importRef.current?.click()} className="flex items-center gap-1 rounded-lg border px-3 py-2 text-xs font-bold"><Upload size={15}/> Importar XML</button>
+        <button onClick={exportJson} className="flex items-center gap-1 rounded-lg border px-3 py-2 text-xs font-bold"><Download size={15}/> Exportar</button>
+        <button onClick={() => setCalendarOpen(true)} className="rounded-lg border p-2" title="Calendário"><CalendarDays size={16}/></button>
+        <button onClick={() => setBaselineOpen(true)} className="rounded-lg border p-2" title="Linha de base"><Layers3 size={16}/></button>
+        <button onClick={() => setResourcesOpen(true)} className="rounded-lg border p-2" title="Recursos"><Users size={16}/></button>
+        <button onClick={recalculate} disabled={!permissions.edit} className="flex items-center gap-1 rounded-lg bg-black px-3 py-2 text-xs font-bold text-white disabled:opacity-40"><RefreshCw size={15}/> Recalcular</button>
+      </div>
+      <div className="flex flex-wrap items-center gap-1 border-t bg-slate-50 px-3 py-1.5">
+        <button disabled={!permissions.edit} onClick={() => createTask(null)} className="flex items-center gap-1 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-bold text-white disabled:opacity-40"><Plus size={14}/> Tarefa</button>
+        <button disabled={!permissions.edit || !selectedId} onClick={() => createTask(selectedId)} className="flex items-center gap-1 rounded-lg border bg-white px-3 py-1.5 text-xs font-bold disabled:opacity-40"><Plus size={14}/> Subtarefa</button>
+        <button disabled={!selectedId} onClick={() => setDependencyOpen(true)} className="flex items-center gap-1 rounded-lg border bg-white px-3 py-1.5 text-xs font-bold disabled:opacity-40"><Link2 size={14}/> Dependência</button>
+        <button disabled={!selectedId} onClick={() => setResourcesOpen(true)} className="flex items-center gap-1 rounded-lg border bg-white px-3 py-1.5 text-xs font-bold disabled:opacity-40"><UserPlus size={14}/> Alocar</button>
+        <span className="mx-1 h-6 w-px bg-slate-300"/>
+        <button disabled={!history.length} onClick={undo} className="rounded-lg border bg-white p-2 disabled:opacity-30" title="Desfazer"><Undo2 size={14}/></button><button disabled={!future.length} onClick={redo} className="rounded-lg border bg-white p-2 disabled:opacity-30" title="Refazer"><Redo2 size={14}/></button>
+        <button disabled={!selectedId} onClick={() => move('up')} className="rounded-lg border bg-white p-2 disabled:opacity-30"><ArrowUp size={14}/></button><button disabled={!selectedId} onClick={() => move('down')} className="rounded-lg border bg-white p-2 disabled:opacity-30"><ArrowDown size={14}/></button><button disabled={!selectedId} onClick={outdent} className="rounded-lg border bg-white p-2 disabled:opacity-30"><ArrowLeft size={14}/></button><button disabled={!selectedId} onClick={indent} className="rounded-lg border bg-white p-2 disabled:opacity-30"><ArrowRight size={14}/></button>
+        <div className="ml-2 flex items-center rounded-lg border bg-white p-1"><button disabled={zoomIndex === 0} onClick={() => setZoomIndex(index => Math.max(0, index - 1))} className="p-1 disabled:opacity-30"><ZoomIn size={14}/></button><span className="w-14 text-center text-[10px] font-bold">{zoom.label}</span><button disabled={zoomIndex === ZOOMS.length - 1} onClick={() => setZoomIndex(index => Math.min(ZOOMS.length - 1, index + 1))} className="p-1 disabled:opacity-30"><ZoomOut size={14}/></button></div>
+        <div className="relative ml-auto"><Search className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400" size={13}/><input value={search} onChange={event => setSearch(event.target.value)} placeholder="Localizar tarefa" className="w-52 rounded-lg border bg-white py-1.5 pl-8 pr-2 text-xs outline-none"/></div>
+      </div>
+    </div>
+
+    <div className="min-h-0 flex-1 overflow-auto bg-white">
+      <div style={{ minWidth: GRID_WIDTH + timelineWidth }}>
+        <div className="sticky top-0 z-30 flex h-16 border-b bg-white">
+          <div className="sticky left-0 z-30 flex shrink-0 border-r bg-slate-100 text-[9px] font-black uppercase text-slate-500" style={{ width: GRID_WIDTH }}>
+            <div className={`${column} flex w-14 items-center justify-center`}>WBS</div><div className={`${column} flex w-9 items-center justify-center`}>I</div><div className={`${column} flex w-[300px] items-center`}>Nome da tarefa</div><div className={`${column} flex w-20 items-center`}>Duração</div><div className={`${column} flex w-28 items-center`}>Início</div><div className={`${column} flex w-28 items-center`}>Término</div><div className={`${column} flex w-24 items-center`}>Predecessoras</div><div className={`${column} flex w-36 items-center`}>Recursos</div><div className={`${column} flex w-20 items-center`}>% concl.</div><div className="flex w-16 items-center justify-center">Ações</div>
+          </div>
+          <div className="relative flex h-16 shrink-0" style={{ width: timelineWidth }}>
+            {days.map(day => { const date = dateObj(day); const weekend = !isWorkingDay(day, calendar); const show = zoom.key === 'dia' || (zoom.key === 'semana' && date.getDay() === 1) || (zoom.key === 'mes' && date.getDate() === 1) || (zoom.key === 'ano' && date.getMonth() === 0 && date.getDate() === 1); return <div key={day} className={`relative h-16 shrink-0 border-r ${weekend ? 'bg-slate-50' : ''}`} style={{ width: dayWidth }}>{show && <span className="absolute left-1 top-2 whitespace-nowrap text-[9px] font-bold text-slate-500">{zoom.key === 'ano' ? date.getFullYear() : zoom.key === 'mes' ? date.toLocaleDateString('pt-BR', { month: 'short', year: '2-digit' }) : date.toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' })}</span>}{zoom.key === 'dia' && <span className="absolute bottom-2 left-1/2 -translate-x-1/2 text-[9px] text-slate-400">{['D','S','T','Q','Q','S','S'][date.getDay()]}</span>}</div> })}
+            {todayX >= 0 && todayX <= timelineWidth && <div className="absolute inset-y-0 z-20 w-0.5 bg-red-500" style={{ left: todayX }}><span className="absolute left-1 top-0 rounded bg-red-500 px-1 text-[8px] font-bold text-white">Hoje</span></div>}
+          </div>
+        </div>
+        <div className="relative">
+          {visibleTasks.map(task => {
+            const selected = Number(selectedId) === Number(task.id); const children = tasks.some(item => Number(item.parent_id) === Number(task.id)); const resourcesText = (task.alocacoes || []).map(item => item.recurso_nome).filter(Boolean).join(', ')
+            return <div key={task.id} className={`flex border-b ${selected ? 'bg-blue-50' : 'bg-white hover:bg-slate-50'}`} style={{ height: ROW_HEIGHT }} onClick={() => setSelectedId(task.id)} onDoubleClick={() => setDependencyOpen(true)}>
+              <div className={`sticky left-0 z-20 flex shrink-0 border-r ${selected ? 'bg-blue-50' : 'bg-white'}`} style={{ width: GRID_WIDTH }}>
+                <div className={`${column} flex w-14 items-center justify-center text-[9px] text-slate-400`}>{task.wbs || task.id}</div>
+                <div className={`${column} flex w-9 items-center justify-center`}>{task.caminho_critico ? <AlertTriangle className="text-red-500" size={12}/> : task.e_marco ? <Milestone className="text-violet-500" size={12}/> : null}</div>
+                <div className={`${column} flex w-[300px] items-center`}><GripVertical className="shrink-0 text-slate-300" size={12}/><span className="shrink-0" style={{ width: Number(task.nivel || 0) * 16 }}/>{children ? <button onClick={event => { event.stopPropagation(); toggleCollapse(Number(task.id)) }} className="mr-1">{collapsed.has(Number(task.id)) ? <ChevronRight size={13}/> : <ChevronDown size={13}/>}</button> : <span className="mr-1 w-[13px]"/>}<input disabled={!permissions.edit} defaultValue={task.nome} onClick={event => event.stopPropagation()} onBlur={event => { const name = event.target.value.trim(); if (name && name !== task.nome) updateTask(task.id, { nome: name }) }} className={`min-w-0 flex-1 bg-transparent text-xs outline-none ${task.e_resumo ? 'font-black' : 'font-medium'}`}/></div>
+                <div className={`${column} flex w-20 items-center justify-center`}><input disabled={!permissions.edit || task.e_resumo} type="number" min="0" step="0.5" value={task.e_marco ? 0 : taskDuration(task)} onChange={event => updateTask(task.id, { duracao_dias: Number(event.target.value), duracao_minutos: Number(event.target.value) * 480 }, true)} className="w-12 bg-transparent text-right text-[10px] outline-none"/><span className="text-[9px] text-slate-400">d</span></div>
+                <div className={`${column} flex w-28 items-center`}><input title={task.e_resumo ? 'Alterar move todas as subtarefas do grupo' : 'Data de início'} disabled={!permissions.edit} type="date" value={dateOnly(task.data_inicio)} onChange={event => task.e_resumo ? shiftSummary(task.id, 'data_inicio', event.target.value) : updateTask(task.id, { data_inicio: event.target.value }, true)} className={`w-full bg-transparent text-[10px] outline-none ${task.e_resumo ? 'cursor-pointer font-bold text-blue-700' : ''}`}/></div>
+                <div className={`${column} flex w-28 items-center`}><input title={task.e_resumo ? 'Alterar move todas as subtarefas do grupo' : 'Data de término'} disabled={!permissions.edit} type="date" value={dateOnly(task.data_fim)} onChange={event => task.e_resumo ? shiftSummary(task.id, 'data_fim', event.target.value) : updateTask(task.id, { data_fim: event.target.value })} className={`w-full bg-transparent text-[10px] outline-none ${task.e_resumo ? 'cursor-pointer font-bold text-blue-700' : ''}`}/></div>
+                <button onClick={event => { event.stopPropagation(); setSelectedId(task.id); setDependencyOpen(true) }} className={`${column} w-24 truncate text-left text-[10px] text-slate-500 hover:bg-blue-50`}>{(task.predecessoras || []).map(item => `${item.predecessora_id}${item.tipo}`).join(', ') || '—'}</button>
+                <button onClick={event => { event.stopPropagation(); setSelectedId(task.id); setResourcesOpen(true) }} className={`${column} w-36 truncate text-left text-[10px] text-slate-500 hover:bg-blue-50`}>{resourcesText || '—'}</button>
+                <div className={`${column} flex w-20 items-center justify-center`}><input disabled={!permissions.edit || task.e_resumo} type="number" min="0" max="100" value={Math.round(task.percentual_concluido || 0)} onChange={event => updateTask(task.id, { percentual_concluido: clamp(event.target.value, 0, 100) })} className="w-10 bg-transparent text-right text-[10px] outline-none"/><span className="text-[9px] text-slate-400">%</span></div>
+                <div className="flex w-16 items-center justify-center gap-1"><button disabled={!permissions.edit} title="Subtarefa" onClick={event => { event.stopPropagation(); createTask(task.id) }} className="rounded p-1 text-blue-600 hover:bg-blue-100 disabled:opacity-30"><Plus size={13}/></button><button disabled={!permissions.delete} title="Excluir" onClick={event => { event.stopPropagation(); deleteTask(task) }} className="rounded p-1 text-red-500 hover:bg-red-100 disabled:opacity-30"><Trash2 size={13}/></button></div>
+              </div>
+              <div className="relative shrink-0" style={{ width: timelineWidth }}>
+                {days.map(day => <div key={day} className={`absolute inset-y-0 border-r ${!isWorkingDay(day, calendar) ? 'bg-slate-50/80' : ''}`} style={{ left: diffDays(range.start, day) * dayWidth, width: dayWidth }}/>) }
+                {todayX >= 0 && todayX <= timelineWidth && <div className="absolute inset-y-0 z-[7] w-0.5 bg-red-400" style={{ left: todayX }}/>} 
+                <GanttBar task={task} timelineStart={range.start} dayWidth={dayWidth} selected={selected} baseline={baselineMap.get(Number(task.id))} select={() => setSelectedId(task.id)} change={patch => task.e_resumo ? shiftSummary(task.id, 'data_inicio', patch.data_inicio) : updateTask(task.id, patch, true)} editable={permissions.edit}/>
+              </div>
+            </div>
+          })}
+          <div className="absolute left-[1020px] top-0" style={{ width: timelineWidth, height: visibleTasks.length * ROW_HEIGHT }}><DependencyLayer tasks={visibleTasks} timelineStart={range.start} dayWidth={dayWidth} width={timelineWidth}/></div>
+        </div>
+      </div>
+    </div>
+    <div className="flex flex-wrap items-center gap-5 border-t bg-white px-4 py-2 text-[10px] text-slate-500"><span><b>{tasks.length}</b> tarefas</span><span>Progresso: <b>{Math.round(project.percentual_concluido || 0)}%</b></span><span>{formatDate(project.data_inicio)} → <b>{formatDate(project.data_fim_prevista)}</b></span><span>Planejado: <b>{money(project.custo_planejado)}</b></span><span>Real: <b>{money(project.custo_real)}</b></span>{loading && <span className="ml-auto flex items-center gap-1"><Loader2 className="animate-spin" size={12}/> Atualizando</span>}</div>
+
+    {dependencyOpen && selectedTask && <DependencyModal project={project} task={selectedTask} tasks={tasks} reload={reload} close={() => setDependencyOpen(false)} notify={notify}/>} 
+    {resourcesOpen && <ResourcesModal project={project} task={selectedTask} resources={resources} reload={reload} close={() => setResourcesOpen(false)} notify={notify}/>} 
+    {calendarOpen && <CalendarModal project={project} calendars={calendars} reload={reload} close={() => setCalendarOpen(false)} notify={notify}/>} 
+    {baselineOpen && <BaselineModal project={project} baselines={baselines} selectedId={selectedBaselineId} select={setSelectedBaselineId} reload={reload} close={() => setBaselineOpen(false)} notify={notify}/>} 
+  </div>
+}
+
+const arrayResult = (value, keys = []) => {
+  if (Array.isArray(value)) return value
+  for (const key of keys) if (Array.isArray(value?.[key])) return value[key]
+  return []
+}
+
+const projectResult = value => value?.projeto || value?.data || value
+
+export default function Projeto() {
+  const auth = useAuth()
+  const user = auth?.user || null
+  const [projects, setProjects] = useState([])
+  const [companies, setCompanies] = useState([])
+  const [groups, setGroups] = useState([])
+  const [users, setUsers] = useState([])
+  const [dashboard, setDashboard] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [activeProject, setActiveProject] = useState(null)
+  const [editingProject, setEditingProject] = useState(null)
+  const [formOpen, setFormOpen] = useState(false)
+  const [toast, setToast] = useState(null)
+
+  const notify = useCallback((message, type = 'success') => {
+    setToast({ message, type })
+    window.setTimeout(() => setToast(null), 3500)
+  }, [])
+
+  const role = String(user?.role || user?.tipo || user?.tipo_usuario || '').toLowerCase()
+  const profile = user?.perfil_acesso || user?.perfil || null
+  const projectPermission = useCallback(action => {
+    if (['admin', 'super_admin', 'superadmin'].includes(role)) return true
+    const key = `projetos_${action}`
+    if (profile && Object.prototype.hasOwnProperty.call(profile, key)) return !!profile[key]
+    // Até os novos campos entrarem no perfil, o módulo permanece visível;
+    // o backend continua sendo a autoridade final para cada alteração.
+    return action === 'ver'
+  }, [profile, role])
+
+  const permissions = useMemo(() => ({
+    view: projectPermission('ver'),
+    create: projectPermission('criar'),
+    edit: projectPermission('editar'),
+    delete: projectPermission('excluir'),
+  }), [projectPermission])
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    const results = await Promise.allSettled([
+      api(API),
+      api(`${API}/dashboard`),
+      api(`${API}/grupos`),
+      api('/api/empresas'),
+      api('/api/usuarios'),
+    ])
+    if (results[0].status === 'fulfilled') setProjects(arrayResult(results[0].value, ['projetos', 'items', 'data']))
+    else notify(results[0].reason?.message || 'Não foi possível carregar os projetos', 'error')
+    if (results[1].status === 'fulfilled') setDashboard(results[1].value?.dashboard || results[1].value)
+    if (results[2].status === 'fulfilled') setGroups(arrayResult(results[2].value, ['grupos', 'items', 'data']))
+    if (results[3].status === 'fulfilled') setCompanies(arrayResult(results[3].value, ['empresas', 'items', 'data']))
+    if (results[4].status === 'fulfilled') setUsers(arrayResult(results[4].value, ['usuarios', 'users', 'items', 'data']))
+    setLoading(false)
+  }, [notify])
+
+  useEffect(() => { if (permissions.view) load() }, [load, permissions.view])
+
+  const openProject = async project => {
+    try {
+      const full = projectResult(await api(`${API}/${project.id}`))
+      setActiveProject(full)
+    } catch (error) { notify(error.message, 'error') }
+  }
+
+  const openCreate = () => { setEditingProject(null); setFormOpen(true) }
+  const openEdit = project => { setEditingProject(project); setFormOpen(true) }
+
+  const saveProject = async payload => {
+    setSaving(true)
+    try {
+      const method = editingProject ? 'PUT' : 'POST'
+      const url = editingProject ? `${API}/${editingProject.id}` : API
+      const result = projectResult(await api(url, { method, body: JSON.stringify(payload) }))
+      setFormOpen(false); setEditingProject(null)
+      await load(); notify(editingProject ? 'Projeto atualizado' : 'Projeto criado')
+      if (!editingProject && result?.id) await openProject(result)
+    } catch (error) { notify(error.message, 'error') } finally { setSaving(false) }
+  }
+
+  const removeProject = async project => {
+    if (!window.confirm(`Excluir o projeto "${project.nome}"? Esta operação não pode ser desfeita.`)) return
+    try { await api(`${API}/${project.id}`, { method: 'DELETE' }); await load(); notify('Projeto excluído') } catch (error) { notify(error.message, 'error') }
+  }
+
+  const createGroup = async () => {
+    const nome = window.prompt('Nome do novo grupo / portfólio:')
+    if (!nome?.trim()) return
+    try { await api(`${API}/grupos`, { method: 'POST', body: JSON.stringify({ nome: nome.trim() }) }); await load(); notify('Grupo criado') } catch (error) { notify(error.message, 'error') }
+  }
+
+  if (!permissions.view) return <div className="flex min-h-[60vh] items-center justify-center p-6"><div className="max-w-md rounded-2xl border bg-white p-8 text-center shadow-sm"><AlertTriangle className="mx-auto mb-3 text-amber-500" size={36}/><h1 className="text-xl font-black">Acesso não autorizado</h1><p className="mt-2 text-sm text-slate-500">Seu perfil não possui permissão para visualizar projetos.</p></div></div>
+
+  return <>
+    {activeProject
+      ? <Workspace initialProject={activeProject} permissions={permissions} back={() => { setActiveProject(null); load() }} notify={notify}/>
+      : <Portfolio projects={projects} dashboard={dashboard} companies={companies} groups={groups} loading={loading} create={openCreate} createGroup={createGroup} edit={openEdit} open={openProject} remove={removeProject} permissions={permissions}/>
+    }
+    <Modal open={formOpen} wide title={editingProject ? 'Editar projeto' : 'Novo projeto'} close={() => { setFormOpen(false); setEditingProject(null) }}>
+      <ProjectForm key={editingProject?.id || 'new'} project={editingProject} companies={companies} groups={groups} users={users} saving={saving} save={saveProject} cancel={() => { setFormOpen(false); setEditingProject(null) }}/>
+    </Modal>
+    <Toast value={toast} close={() => setToast(null)}/>
+  </>
+}

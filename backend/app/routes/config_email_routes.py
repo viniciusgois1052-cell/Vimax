@@ -1,6 +1,8 @@
 from flask import Blueprint, request, jsonify
+from ..utils.auth import get_current_user_from_request
 from ..models.config_email import ConfigEmail
 from .. import db
+from ..utils.logging import create_log
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -9,11 +11,23 @@ import traceback
 
 config_email_bp = Blueprint('config_email_bp', __name__)
 
+def _sanitize_email_config_payload(data):
+    data = dict(data or {})
+    if 'mail_password' in data and data.get('mail_password'):
+        data['mail_password'] = '***'
+    return data
+
+
 @config_email_bp.route('', methods=['GET'])
 def get_config_email():
     """Retorna as configurações de email atuais (sem a senha)"""
     try:
         config = ConfigEmail.query.first()
+        before = None
+        try:
+            before = config.to_dict() if config else None
+        except Exception:
+            before = None
         if config:
             return jsonify(config.to_dict()), 200
         return jsonify({
@@ -37,8 +51,9 @@ def get_config_email():
 @config_email_bp.route('', methods=['PUT', 'POST'])
 def save_config_email():
     """Salva as configurações de email"""
+    user = get_current_user_from_request(request)
     try:
-        data = request.get_json()
+        data = request.get_json() or {}
         
         if not data:
             return jsonify({
@@ -47,6 +62,11 @@ def save_config_email():
             }), 400
         
         config = ConfigEmail.query.first()
+        before = None
+        try:
+            before = config.to_dict() if config else None
+        except Exception:
+            before = None
         
         if not config:
             config = ConfigEmail()
@@ -93,8 +113,9 @@ def save_config_email():
 @config_email_bp.route('/test-email', methods=['POST'])
 def test_email():
     """Envia um email de teste para validar as configurações"""
+    user = get_current_user_from_request(request)
     try:
-        data = request.get_json()
+        data = request.get_json() or {}
         recipient = data.get('recipient')
         
         if not recipient:
@@ -105,6 +126,11 @@ def test_email():
         
         # Obtém as configurações de email
         config = ConfigEmail.query.first()
+        before = None
+        try:
+            before = config.to_dict() if config else None
+        except Exception:
+            before = None
         if not config or not config.mail_server:
             return jsonify({
                 'success': False,
@@ -171,6 +197,12 @@ Sistema Vimax CMMS
             server.send_message(msg)
             server.quit()
             
+            try:
+                create_log(user=user, action='test_email', entity='config_email', entity_id=getattr(config, 'id', None),
+                           details={'recipient': recipient, 'result': 'success'}, req=request)
+            except Exception:
+                pass
+
             return jsonify({
                 'success': True,
                 'message': f'Email de teste enviado com sucesso para {recipient}!'
@@ -203,11 +235,19 @@ Sistema Vimax CMMS
 @config_email_bp.route('/trigger-contract-alerts', methods=['POST'])
 def trigger_contract_alerts():
     """Dispara manualmente os alertas de vencimento de contrato"""
+    user = get_current_user_from_request(request)
     try:
         from ..jobs.contract_alerts import check_contract_expirations
         from flask import current_app
         
         check_contract_expirations(current_app)
+
+        try:
+            create_log(user=user, action='trigger_contract_alerts', entity='contrato', entity_id=None,
+                       details={'triggered': True}, req=request)
+        except Exception:
+            pass
+
         return jsonify({
             'success': True,
             'message': 'Verificação de vencimento de contratos disparada com sucesso!'

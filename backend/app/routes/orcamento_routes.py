@@ -4,8 +4,10 @@ from ..models.localizacao import Localizacao
 from ..models.usuario import Usuario
 from ..utils.filters import apply_entity_filter
 from .. import db
+from ..utils.logging import create_log
 from datetime import datetime
 import traceback
+from ..utils.auth import get_current_user_from_request
 
 orcamento_bp = Blueprint('orcamento_bp', __name__)
 
@@ -51,6 +53,17 @@ def get_orcamentos():
             query = query.filter(Orcamento.localizacao_id == int(localizacao_id))
         except ValueError:
             pass
+
+    fornecedor_id = request.args.get('fornecedor_id')
+    if fornecedor_id:
+        try:
+            query = query.filter(Orcamento.fornecedor_id == int(fornecedor_id))
+        except ValueError:
+            pass
+
+    status_filter = request.args.get('status')
+    if status_filter:
+        query = query.filter(Orcamento.status == status_filter)
 
     orcamentos = query.all()
     return jsonify([o.to_dict() for o in orcamentos])
@@ -111,7 +124,14 @@ def create_orcamento():
 
 @orcamento_bp.route('/<int:id>', methods=['PUT'])
 def update_orcamento(id):
+    user = get_current_user_from_request(request)
     orcamento = Orcamento.query.get_or_404(id)
+
+    before = None
+    try:
+        before = orcamento.to_dict()
+    except Exception:
+        before = None
     data = request.get_json() or {}
     try:
         # Aceita tanto 'numero' quanto 'titulo'
@@ -149,6 +169,13 @@ def update_orcamento(id):
                 orcamento.anexos.append(anexo)
 
         db.session.commit()
+
+        try:
+            create_log(user=user, action='update_orcamento', entity='orcamento', entity_id=id,
+                       details={'before': before, 'after_payload': data}, req=request)
+        except Exception:
+            pass
+
         return jsonify(orcamento.to_dict())
     except Exception as e:
         db.session.rollback()
@@ -158,7 +185,20 @@ def update_orcamento(id):
 
 @orcamento_bp.route('/<int:id>', methods=['DELETE'])
 def delete_orcamento(id):
+    user = get_current_user_from_request(request)
     orcamento = Orcamento.query.get_or_404(id)
+
+    snapshot = None
+    try:
+        snapshot = orcamento.to_dict()
+    except Exception:
+        snapshot = None
     db.session.delete(orcamento)
     db.session.commit()
+
+    try:
+        create_log(user=user, action='delete_orcamento', entity='orcamento', entity_id=id,
+                   details={'deleted': snapshot}, req=request)
+    except Exception:
+        pass
     return '', 204

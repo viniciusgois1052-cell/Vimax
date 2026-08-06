@@ -1,0 +1,1647 @@
+# -*- coding: utf-8 -*-
+from flask import Blueprint, request, jsonify, current_app
+from ..models.compra import (
+    GrupoItem, Item, RequisicaoCompra, ItemRequisicao,
+    PedidoCompra, ItemPedido, OrdemCompra, ItemOrdem,
+    StatusRequisicao, StatusPedido
+)
+from ..models.usuario import Usuario
+from ..models.empresa import Empresa
+from ..models.fornecedor import Fornecedor
+from ..utils.filters import apply_entity_filter
+from ..utils.auth import get_current_user_from_request
+from ..utils.logging import create_log
+from ..utils.email_service import EmailService
+from ..utils.pdf_service import PDFService
+from .. import db
+from datetime import datetime
+import traceback
+import secrets
+import os
+from app.services.notification_service import (
+    enviar_email_rq_para_pc,
+    enviar_email_pc_para_oc,
+    enviar_email_oc_criada_comprador,
+    enviar_email_oc_aprovada_comprador
+)
+
+
+compra_bp = Blueprint('compra_bp', __name__)
+
+def parse_datetime(value):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except Exception:
+        return None
+
+def to_int(value):
+    try:
+        return int(value) if value is not None and value != '' else None
+    except Exception:
+        return None
+
+def to_float(value):
+    try:
+        return float(value) if value is not None and value != '' else None
+    except Exception:
+        return None
+
+def gerar_numero_sequencial(prefixo, modelo):
+    """Gera número sequencial: RQ-2026-001, PC-2026-001, OC-2026-001"""
+    ano = datetime.now().year
+    ultimo = db.session.query(modelo).filter(modelo.ativo == True).order_by(modelo.id.desc()).first()
+    numero = 1 if not ultimo else int(getattr(ultimo, f'numero_{prefixo.lower()}').split('-')[-1]) + 1
+    return f"{prefixo}-{ano}-{numero:03d}"
+
+def _status_aprovada(status):
+    """Reconhece 'Aprovada' (valor do enum) e 'APROVADA' (grafia legada), case-insensitive."""
+    if not status:
+        return False
+    return str(status).strip().upper() in ('APROVADA', StatusRequisicao.APROVADA.value.upper())
+
+def _cors_options():
+    from flask import Response
+    resp = Response()
+    resp.headers['Access-Control-Allow-Origin'] = '*'
+    resp.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS, PATCH'
+    resp.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-API-Token'
+    return resp, 200
+
+# ============================================================================
+# GRUPOS DE ITENS
+# ============================================================================
+
+@compra_bp.route('/grupos', methods=['GET'])
+def get_grupos():
+    """GET /api/compras/grupos - Listar grupos de itens"""
+    try:
+        grupos = GrupoItem.query.filter(GrupoItem.ativo == True).all()
+        return jsonify([g.to_dict() for g in grupos])
+    except Exception as e:
+        current_app.logger.exception("Erro ao listar grupos")
+        return jsonify({"error": str(e)}), 500
+
+@compra_bp.route('/grupos/<int:id>', methods=['GET'])
+def get_grupo(id):
+    """GET /api/compras/grupos/<id> - Obter grupo específico"""
+    try:
+        grupo = GrupoItem.query.get_or_404(id)
+        return jsonify(grupo.to_dict())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 404
+
+@compra_bp.route('/grupos', methods=['POST'])
+def create_grupo():
+    """POST /api/compras/grupos - Criar novo grupo"""
+    user = get_current_user_from_request(request)
+    data = request.get_json() or {}
+    
+    if not data.get('nome'):
+        return jsonify({"error": "Nome é obrigatório"}), 400
+    
+    try:
+        novo_grupo = GrupoItem(
+            nome=data.get('nome'),
+            descricao=data.get('descricao'),
+            codigo=data.get('codigo')
+        )
+        db.session.add(novo_grupo)
+        db.session.commit()
+        
+        try:
+            create_log(user=user, action='create_grupo_item', entity='grupo_item', entity_id=novo_grupo.id,
+                      details={'nome': novo_grupo.nome}, req=request)
+        except:
+            pass
+        
+        return jsonify(novo_grupo.to_dict()), 201
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.exception("Erro ao criar grupo")
+        return jsonify({"error": str(e)}), 500
+
+@compra_bp.route('/grupos/<int:id>', methods=['PUT'])
+def update_grupo(id):
+    """PUT /api/compras/grupos/<id> - Atualizar grupo"""
+    user = get_current_user_from_request(request)
+    grupo = GrupoItem.query.get_or_404(id)
+    data = request.get_json() or {}
+    
+    try:
+        if 'nome' in data:
+            grupo.nome = data.get('nome')
+        if 'descricao' in data:
+            grupo.descricao = data.get('descricao')
+        if 'codigo' in data:
+            grupo.codigo = data.get('codigo')
+        
+        db.session.commit()
+        
+        try:
+            create_log(user=user, action='update_grupo_item', entity='grupo_item', entity_id=id,
+                      details={'after': data}, req=request)
+        except:
+            pass
+        
+        return jsonify(grupo.to_dict())
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.exception("Erro ao atualizar grupo")
+        return jsonify({"error": str(e)}), 500
+
+@compra_bp.route('/grupos/<int:id>', methods=['DELETE'])
+def delete_grupo(id):
+    """DELETE /api/compras/grupos/<id> - Deletar grupo"""
+    user = get_current_user_from_request(request)
+    grupo = GrupoItem.query.get_or_404(id)
+    
+    try:
+        grupo.ativo = False
+        db.session.commit()
+        
+        try:
+            create_log(user=user, action='delete_grupo_item', entity='grupo_item', entity_id=id, req=request)
+        except:
+            pass
+        
+        return '', 204
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 500
+
+# ============================================================================
+# ITENS DO CATÁLOGO
+# ============================================================================
+
+@compra_bp.route('/itens', methods=['GET'])
+def get_itens():
+    """GET /api/compras/itens - Listar itens do catálogo"""
+    try:
+        grupo_id = request.args.get('grupo_id')
+        itens = Item.query.filter(Item.ativo == True)
+        
+        if grupo_id:
+            itens = itens.filter(Item.grupo_id == int(grupo_id))
+        
+        return jsonify([i.to_dict() for i in itens.all()])
+    except Exception as e:
+        current_app.logger.exception("Erro ao listar itens")
+        return jsonify({"error": str(e)}), 500
+
+@compra_bp.route('/itens/<int:id>', methods=['GET'])
+def get_item(id):
+    """GET /api/compras/itens/<id> - Obter item específico"""
+    try:
+        item = Item.query.get_or_404(id)
+        return jsonify(item.to_dict())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 404
+
+@compra_bp.route('/itens', methods=['POST'])
+def create_item():
+    """POST /api/compras/itens - Criar novo item"""
+    user = get_current_user_from_request(request)
+    data = request.get_json() or {}
+    
+    if not data.get('codigo') or not data.get('nome') or not data.get('grupo_id'):
+        return jsonify({"error": "Código, Nome e Grupo são obrigatórios"}), 400
+    
+    try:
+        novo_item = Item(
+            codigo=data.get('codigo'),
+            nome=data.get('nome'),
+            descricao=data.get('descricao'),
+            grupo_id=to_int(data.get('grupo_id')),
+            unidade_medida=data.get('unidade_medida', 'UN'),
+            preco_unitario=to_float(data.get('preco_unitario')),
+            especificacoes=data.get('especificacoes')
+        )
+        db.session.add(novo_item)
+        db.session.commit()
+        
+        try:
+            create_log(user=user, action='create_item', entity='item', entity_id=novo_item.id,
+                      details={'codigo': novo_item.codigo, 'nome': novo_item.nome}, req=request)
+        except:
+            pass
+        
+        return jsonify(novo_item.to_dict()), 201
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.exception("Erro ao criar item")
+        return jsonify({"error": str(e)}), 500
+
+@compra_bp.route('/itens/<int:id>', methods=['PUT'])
+def update_item(id):
+    """PUT /api/compras/itens/<id> - Atualizar item"""
+    user = get_current_user_from_request(request)
+    item = Item.query.get_or_404(id)
+    data = request.get_json() or {}
+    
+    try:
+        if 'nome' in data:
+            item.nome = data.get('nome')
+        if 'descricao' in data:
+            item.descricao = data.get('descricao')
+        if 'grupo_id' in data:
+            item.grupo_id = to_int(data.get('grupo_id'))
+        if 'unidade_medida' in data:
+            item.unidade_medida = data.get('unidade_medida')
+        if 'preco_unitario' in data:
+            item.preco_unitario = to_float(data.get('preco_unitario'))
+        if 'especificacoes' in data:
+            item.especificacoes = data.get('especificacoes')
+        
+        db.session.commit()
+        
+        try:
+            create_log(user=user, action='update_item', entity='item', entity_id=id,
+                      details={'after': data}, req=request)
+        except:
+            pass
+        
+        return jsonify(item.to_dict())
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.exception("Erro ao atualizar item")
+        return jsonify({"error": str(e)}), 500
+
+@compra_bp.route('/itens/<int:id>', methods=['DELETE'])
+def delete_item(id):
+    """DELETE /api/compras/itens/<id> - Deletar item"""
+    user = get_current_user_from_request(request)
+    item = Item.query.get_or_404(id)
+    
+    try:
+        item.ativo = False
+        db.session.commit()
+        
+        try:
+            create_log(user=user, action='delete_item', entity='item', entity_id=id, req=request)
+        except:
+            pass
+        
+        return '', 204
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 500
+
+# ============================================================================
+# REQUISIÇÃO DE COMPRA (RQ)
+# ============================================================================
+
+@compra_bp.route('/requisicoes', methods=['GET'])
+def get_requisicoes():
+    """GET /api/compras/requisicoes - Listar requisições"""
+    try:
+        empresa_id = request.args.get('empresa_id')
+        status = request.args.get('status')
+        api_token = request.headers.get('X-API-Token')
+        
+        user = None
+        if api_token:
+            user = Usuario.query.filter_by(api_token=api_token).first()
+        
+        query = RequisicaoCompra.query.filter(RequisicaoCompra.ativo == True)
+        query = apply_entity_filter(query, RequisicaoCompra, empresa_id, user)
+        
+        if status:
+            query = query.filter(RequisicaoCompra.status == status)
+        
+        requisicoes = query.order_by(RequisicaoCompra.created_at.desc()).all()
+        return jsonify([r.to_dict() for r in requisicoes])
+    except Exception as e:
+        current_app.logger.exception("Erro ao listar requisições")
+        return jsonify({"error": str(e)}), 500
+
+@compra_bp.route('/requisicoes/prontas-envio', methods=['GET'])
+def get_requisicoes_prontas_envio():
+    """
+    GET /api/compras/requisicoes/prontas-envio
+    Requisições APROVADAS que ainda NÃO possuem um Pedido de Compra vinculado.
+    """
+    try:
+        empresa_id = request.args.get('empresa_id')
+        api_token = request.headers.get('X-API-Token')
+
+        user = None
+        if api_token:
+            user = Usuario.query.filter_by(api_token=api_token).first()
+
+        query = RequisicaoCompra.query.filter(RequisicaoCompra.ativo == True)
+        query = apply_entity_filter(query, RequisicaoCompra, empresa_id, user)
+        requisicoes = query.order_by(RequisicaoCompra.created_at.desc()).all()
+
+        # ids de requisições que já viraram pedido (ativo)
+        pedidos_ativos = PedidoCompra.query.filter(PedidoCompra.ativo == True).all()
+        req_com_pedido = {p.requisicao_id for p in pedidos_ativos if p.requisicao_id}
+
+        prontas = [
+            r.to_dict() for r in requisicoes
+            if _status_aprovada(r.status) and r.id not in req_com_pedido
+        ]
+        return jsonify(prontas)
+    except Exception as e:
+        current_app.logger.exception("Erro ao listar requisições prontas para envio")
+        return jsonify({"error": str(e)}), 500
+
+@compra_bp.route('/requisicoes/<int:id>', methods=['GET'])
+def get_requisicao(id):
+    """GET /api/compras/requisicoes/<id> - Obter requisição específica"""
+    try:
+        requisicao = RequisicaoCompra.query.get_or_404(id)
+        return jsonify(requisicao.to_dict())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 404
+
+@compra_bp.route('/requisicoes', methods=['POST'])
+def create_requisicao():
+    """POST /api/compras/requisicoes - Criar nova requisição"""
+    user = get_current_user_from_request(request)
+    data = request.get_json() or {}
+    
+    if not data.get('empresa_id'):
+        return jsonify({"error": "Empresa é obrigatória"}), 400
+    
+    try:
+        numero_rq = gerar_numero_sequencial('RQ', RequisicaoCompra)
+        
+        nova_requisicao = RequisicaoCompra(
+            numero_rq=numero_rq,
+            status=data.get('status', StatusRequisicao.RASCUNHO.value),
+            empresa_id=to_int(data.get('empresa_id')),
+            usuario_solicitante_id=user.id if user else to_int(data.get('usuario_solicitante_id')),
+            data_necessaria=parse_datetime(data.get('data_necessaria')),
+            descricao=data.get('descricao'),
+            observacoes=data.get('observacoes'),
+            justificativa=data.get('justificativa'),
+            anexos=data.get('anexos', [])
+        )
+        
+        # Adicionar itens
+        itens_data = data.get('itens', [])
+        for item_data in itens_data:
+            # Buscar dados do item pelo item_id se nome_item não vier no payload
+            item_ref = None
+            if item_data.get('item_id'):
+                item_ref = Item.query.get(to_int(item_data['item_id']))
+
+            nome_item     = item_data.get('nome_item')     or (item_ref.nome           if item_ref else None)
+            codigo_item   = item_data.get('codigo_item')   or (item_ref.codigo         if item_ref else None)
+            descricao     = item_data.get('descricao')     or (item_ref.descricao      if item_ref else None)
+            unidade       = item_data.get('unidade_medida') or (item_ref.unidade_medida if item_ref else 'UN') or 'UN'
+            valor_unit    = to_float(item_data.get('valor_unitario')) or to_float(item_ref.preco_unitario if item_ref else 0)
+
+            item = ItemRequisicao(
+                nome_item=nome_item,
+                descricao=descricao,
+                quantidade=to_float(item_data.get('quantidade', 1)),
+                unidade_medida=unidade,
+                valor_unitario=valor_unit,
+                item_id=to_int(item_data.get('item_id')),
+                codigo_item=codigo_item,
+                especificacoes=item_data.get('especificacoes') or item_data.get('observacao', '')
+            )
+            item.valor_total = (item.quantidade or 0) * (item.valor_unitario or 0)
+            nova_requisicao.itens.append(item)
+        
+        db.session.add(nova_requisicao)
+        db.session.commit()
+        
+        try:
+            create_log(user=user, action='create_requisicao', entity='requisicao', entity_id=nova_requisicao.id,
+                      details={'numero_rq': numero_rq}, req=request)
+        except:
+            pass
+        
+        return jsonify(nova_requisicao.to_dict()), 201
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.exception("Erro ao criar requisição")
+        return jsonify({"error": str(e)}), 500
+
+@compra_bp.route('/requisicoes/<int:id>', methods=['PUT'])
+def update_requisicao(id):
+    """Atualizar requisição existente"""
+    try:
+        requisicao = RequisicaoCompra.query.get_or_404(id)
+        data = request.get_json()
+
+        # Atualizar campos básicos
+        if 'empresa_id' in data:
+            requisicao.empresa_id = data['empresa_id']
+        if 'data_necessaria' in data:
+            requisicao.data_necessaria = data['data_necessaria']
+        if 'observacao' in data:
+            requisicao.observacao = data['observacao']
+
+        # Se houver itens para atualizar, remover os antigos e adicionar os novos
+        if 'itens' in data:
+            # DELETAR itens antigos
+            ItemRequisicao.query.filter_by(requisicao_id=id).delete()
+            
+            # ADICIONAR novos itens
+            for item_data in data['itens']:
+                item = Item.query.get(item_data['item_id'])
+                if item:
+                    novo_item = ItemRequisicao(
+                        requisicao_id=id,
+                        item_id=item.id,
+                        codigo_item=item.codigo,
+                        nome_item=item.nome,
+                        descricao=item.descricao,
+                        quantidade=float(item_data.get('quantidade', 0)),
+                        unidade_medida=item.unidade_medida or 'UN',
+                        valor_unitario=float(item.preco_unitario or 0),
+                        valor_total=float(item_data.get('quantidade', 0)) * float(item.preco_unitario or 0),
+                        especificacoes=item_data.get('observacao', '')
+                    )
+                    db.session.add(novo_item)
+
+        # Recalcular valor total da requisição
+        itens = ItemRequisicao.query.filter_by(requisicao_id=id).all()
+        requisicao.valor_total = sum(item.valor_total for item in itens)
+
+        db.session.commit()
+
+        return jsonify({
+            'success': True,
+            'message': 'Requisição atualizada com sucesso',
+            'id': requisicao.id
+        }), 200
+
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.error(f'Erro ao atualizar requisição: {str(e)}')
+        return jsonify({
+            'success': False,
+            'error': 'Erro ao atualizar requisição: ' + str(e)
+        }), 500
+
+
+@compra_bp.route('/requisicoes/<int:id>/aprovar', methods=['POST'])
+def aprovar_requisicao(id):
+    """POST /api/compras/requisicoes/<id>/aprovar - Aprovar requisição"""
+    user = get_current_user_from_request(request)
+    requisicao = RequisicaoCompra.query.get_or_404(id)
+    
+    try:
+        requisicao.status = StatusRequisicao.APROVADA.value
+        requisicao.data_aprovacao = datetime.utcnow()
+        requisicao.usuario_aprovador_id = user.id if user else None
+        
+        db.session.commit()
+        
+        # 🆕 Enviar email de aprovação
+        try:
+            corpo_html = EmailService.template_requisicao_aprovada(requisicao)
+            EmailService.send_email(
+                destinatarios=requisicao.solicitante.email,
+                assunto=f'✓ Requisição Aprovada: {requisicao.numero_rq}',
+                corpo_html=corpo_html
+            )
+        except Exception as email_err:
+            current_app.logger.error(f"Erro ao enviar email de aprovação: {str(email_err)}")
+        
+        try:
+            create_log(user=user, action='aprovar_requisicao', entity='requisicao', entity_id=id, req=request)
+        except:
+            pass
+        
+        return jsonify(requisicao.to_dict())
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.exception("Erro ao aprovar requisição")
+        return jsonify({"error": str(e)}), 500
+
+@compra_bp.route('/requisicoes/<int:id>/rejeitar', methods=['POST'])
+def rejeitar_requisicao(id):
+    """POST /api/compras/requisicoes/<id>/rejeitar - Rejeitar requisição"""
+    user = get_current_user_from_request(request)
+    requisicao = RequisicaoCompra.query.get_or_404(id)
+    data = request.get_json() or {}
+    
+    try:
+        requisicao.status = StatusRequisicao.REJEITADA.value
+        requisicao.data_aprovacao = datetime.utcnow()
+        requisicao.usuario_aprovador_id = user.id if user else None
+        requisicao.motivo_rejeicao = data.get('motivo_rejeicao')
+        
+        db.session.commit()
+        
+        # 🆕 Enviar email de rejeição
+        try:
+            corpo_html = EmailService.template_requisicao_rejeitada(requisicao)
+            EmailService.send_email(
+                destinatarios=requisicao.solicitante.email,
+                assunto=f'✗ Requisição Rejeitada: {requisicao.numero_rq}',
+                corpo_html=corpo_html
+            )
+        except Exception as email_err:
+            current_app.logger.error(f"Erro ao enviar email de rejeição: {str(email_err)}")
+        
+        try:
+            create_log(user=user, action='rejeitar_requisicao', entity='requisicao', entity_id=id,
+                      details={'motivo': requisicao.motivo_rejeicao}, req=request)
+        except:
+            pass
+        
+        return jsonify(requisicao.to_dict())
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.exception("Erro ao rejeitar requisição")
+        return jsonify({"error": str(e)}), 500
+
+@compra_bp.route('/requisicoes/<int:id>/enviar-email', methods=['POST'])
+def enviar_email_requisicao(id):
+    """POST /api/compras/requisicoes/<id>/enviar-email - Enviar RQ por email"""
+    user = get_current_user_from_request(request)
+    requisicao = RequisicaoCompra.query.get_or_404(id)
+    data = request.get_json() or {}
+
+    try:
+        # Gerar PDF
+        pdf_bytes = PDFService.gerar_pdf_requisicao(requisicao)
+
+        # Preparar email
+        destinatarios = data.get('destinatarios', [requisicao.solicitante.email])
+        if isinstance(destinatarios, str):
+            destinatarios = [destinatarios]
+
+        corpo_html = EmailService.template_requisicao_criada(requisicao, requisicao.solicitante)
+
+        anexos = [{
+            'filename': f'requisicao_{requisicao.numero_rq}.pdf',
+            'data': pdf_bytes,
+            'mimetype': 'application/pdf'
+        }]
+
+        # Enviar email
+        resultado = EmailService.send_email(
+            destinatarios=destinatarios,
+            assunto=f'Requisição de Compra {requisicao.numero_rq} - {requisicao.empresa.nome}',
+            corpo_html=corpo_html,
+            anexos=anexos
+        )
+
+        if resultado['success']:
+            try:
+                create_log(user=user, action='enviar_email_requisicao', entity='requisicao', entity_id=id,
+                          details={'destinatarios': destinatarios}, req=request)
+            except:
+                pass
+
+        return jsonify(resultado)
+    except Exception as e:
+        current_app.logger.exception("Erro ao enviar email da requisição")
+        return jsonify({"error": str(e)}), 500
+
+@compra_bp.route('/requisicoes/<int:id>', methods=['DELETE'])
+def delete_requisicao(id):
+    """DELETE /api/compras/requisicoes/<id> - Deletar requisição"""
+    user = get_current_user_from_request(request)
+    requisicao = RequisicaoCompra.query.get_or_404(id)
+    
+    try:
+        requisicao.ativo = False
+        db.session.commit()
+        
+        try:
+            create_log(user=user, action='delete_requisicao', entity='requisicao', entity_id=id, req=request)
+        except:
+            pass
+        
+        return '', 204
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 500
+
+# ============================================================================
+# PEDIDO DE COMPRA (PC)
+# ============================================================================
+
+@compra_bp.route('/pedidos', methods=['GET'])
+def get_pedidos():
+    """GET /api/compras/pedidos - Listar pedidos"""
+    try:
+        empresa_id = request.args.get('empresa_id')
+        status = request.args.get('status')
+        api_token = request.headers.get('X-API-Token')
+        
+        user = None
+        if api_token:
+            user = Usuario.query.filter_by(api_token=api_token).first()
+        
+        query = PedidoCompra.query.filter(PedidoCompra.ativo == True)
+        query = apply_entity_filter(query, PedidoCompra, empresa_id, user)
+        
+        if status:
+            query = query.filter(PedidoCompra.status == status)
+        
+        pedidos = query.order_by(PedidoCompra.created_at.desc()).all()
+        return jsonify([p.to_dict() for p in pedidos])
+    except Exception as e:
+        current_app.logger.exception("Erro ao listar pedidos")
+        return jsonify({"error": str(e)}), 500
+
+@compra_bp.route('/pedidos/<int:id>', methods=['GET'])
+def get_pedido(id):
+    """GET /api/compras/pedidos/<id> - Obter pedido específico"""
+    try:
+        pedido = PedidoCompra.query.get_or_404(id)
+        return jsonify(pedido.to_dict())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 404
+
+@compra_bp.route('/pedidos', methods=['POST'])
+def create_pedido():
+    """POST /api/compras/pedidos - Criar novo pedido"""
+    user = get_current_user_from_request(request)
+    data = request.get_json() or {}
+    
+    if not data.get('empresa_id'):
+        return jsonify({"error": "Empresa é obrigatória"}), 400
+    
+    try:
+        numero_pc = gerar_numero_sequencial('PC', PedidoCompra)
+        
+        novo_pedido = PedidoCompra(
+            numero_pc=numero_pc,
+            status=data.get('status', StatusPedido.RASCUNHO.value),
+            tipo_compra=(
+                'site'
+                if data.get('tipo_compra') == 'site'
+                else 'fornecedor'
+            ),
+            requisicao_id=to_int(data.get('requisicao_id')),
+            empresa_id=to_int(data.get('empresa_id')),
+            fornecedor_id=to_int(data.get('fornecedor_id')),
+            usuario_comprador_id=user.id if user else to_int(data.get('usuario_comprador_id')),
+            data_entrega_prevista=parse_datetime(data.get('data_entrega_prevista')),
+            valor_total=to_float(data.get('valor_total', 0)),
+            desconto=to_float(data.get('desconto', 0)),
+            condicao_pagamento=data.get('condicao_pagamento'),
+            local_entrega=data.get('local_entrega'),
+            observacoes=data.get('observacoes'),
+            anexos=data.get('anexos', [])
+        )
+        
+        novo_pedido.valor_final = (novo_pedido.valor_total or 0) - (novo_pedido.desconto or 0)
+        
+        # Adicionar itens
+        itens_data = data.get('itens', [])
+        for item_data in itens_data:
+            item = ItemPedido(
+                codigo_item=item_data.get('codigo_item'),
+                nome_item=item_data.get('nome_item'),
+                quantidade=to_float(item_data.get('quantidade', 1)),
+                unidade_medida=item_data.get('unidade_medida', 'UN'),
+                valor_unitario=to_float(item_data.get('valor_unitario')),
+                item_id=to_int(item_data.get('item_id')),
+                link_compra=item_data.get('link_compra')
+            )
+            item.valor_total = (item.quantidade or 0) * (item.valor_unitario or 0)
+            novo_pedido.itens.append(item)
+        
+        db.session.add(novo_pedido)
+        db.session.commit()
+        
+        # 🆕 Enviar email de novo pedido
+        try:
+            corpo_html = EmailService.template_pedido_emitido(novo_pedido)
+            EmailService.send_email(
+                destinatarios=novo_pedido.comprador.email,
+                assunto=f'📦 Pedido de Compra Criado: {numero_pc}',
+                corpo_html=corpo_html
+            )
+        except Exception as email_err:
+            current_app.logger.error(f"Erro ao enviar email do pedido: {str(email_err)}")
+        
+        try:
+            create_log(user=user, action='create_pedido', entity='pedido', entity_id=novo_pedido.id,
+                      details={'numero_pc': numero_pc}, req=request)
+        except:
+            pass
+        
+        return jsonify(novo_pedido.to_dict()), 201
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.exception("Erro ao criar pedido")
+        return jsonify({"error": str(e)}), 500
+
+@compra_bp.route('/pedidos/<int:id>', methods=['PUT'])
+def update_pedido(id):
+    """PUT /api/compras/pedidos/<id> - Atualizar pedido"""
+    user = get_current_user_from_request(request)
+    pedido = PedidoCompra.query.get_or_404(id)
+    data = request.get_json() or {}
+    
+    try:
+        if 'status' in data:
+            pedido.status = data.get('status')
+        if 'tipo_compra' in data:
+            pedido.tipo_compra = (
+                'site'
+                if data.get('tipo_compra') == 'site'
+                else 'fornecedor'
+            )
+
+            if pedido.tipo_compra == 'site':
+                pedido.fornecedor_id = None
+
+        if 'fornecedor_id' in data:
+            pedido.fornecedor_id = to_int(data.get('fornecedor_id'))
+
+        if 'data_entrega_prevista' in data:
+            pedido.data_entrega_prevista = parse_datetime(data.get('data_entrega_prevista'))
+        if 'valor_total' in data:
+            pedido.valor_total = to_float(data.get('valor_total'))
+        if 'desconto' in data:
+            pedido.desconto = to_float(data.get('desconto'))
+        if 'condicao_pagamento' in data:
+            pedido.condicao_pagamento = data.get('condicao_pagamento')
+        if 'local_entrega' in data:
+            pedido.local_entrega = data.get('local_entrega')
+        if 'observacoes' in data:
+            pedido.observacoes = data.get('observacoes')
+        if 'anexos' in data:
+            pedido.anexos = data.get('anexos')
+        
+        pedido.valor_final = (pedido.valor_total or 0) - (pedido.desconto or 0)
+        
+        # Atualizar itens se fornecidos
+        if 'itens' in data:
+            ItemPedido.query.filter_by(pedido_id=pedido.id).delete()
+            for item_data in data.get('itens', []):
+                item = ItemPedido(
+                    pedido_id=pedido.id,
+                    codigo_item=item_data.get('codigo_item'),
+                    nome_item=item_data.get('nome_item'),
+                    quantidade=to_float(item_data.get('quantidade', 1)),
+                    unidade_medida=item_data.get('unidade_medida', 'UN'),
+                    valor_unitario=to_float(item_data.get('valor_unitario')),
+                    item_id=to_int(item_data.get('item_id')),
+                    link_compra=item_data.get('link_compra')
+                )
+                item.valor_total = (item.quantidade or 0) * (item.valor_unitario or 0)
+                pedido.itens.append(item)
+        
+        db.session.commit()
+        
+        try:
+            create_log(user=user, action='update_pedido', entity='pedido', entity_id=id,
+                      details={'after': data}, req=request)
+        except:
+            pass
+        
+        return jsonify(pedido.to_dict())
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.exception("Erro ao atualizar pedido")
+        return jsonify({"error": str(e)}), 500
+
+@compra_bp.route('/pedidos/<int:id>/enviar-email', methods=['POST'])
+def enviar_email_pedido(id):
+    """POST /api/compras/pedidos/<id>/enviar-email - Enviar PC por email"""
+    user = get_current_user_from_request(request)
+    pedido = PedidoCompra.query.get_or_404(id)
+    data = request.get_json() or {}
+
+    try:
+        # Gerar PDF
+        pdf_bytes = PDFService.gerar_pdf_pedido(pedido)
+
+        # Preparar email
+        destinatarios = data.get('destinatarios', [pedido.comprador.email])
+        if isinstance(destinatarios, str):
+            destinatarios = [destinatarios]
+
+        corpo_html = EmailService.template_pedido_emitido(pedido)
+
+        anexos = [{
+            'filename': f'pedido_{pedido.numero_pc}.pdf',
+            'data': pdf_bytes,
+            'mimetype': 'application/pdf'
+        }]
+
+        # Enviar email
+        resultado = EmailService.send_email(
+            destinatarios=destinatarios,
+            assunto=f'📦 Pedido de Compra {pedido.numero_pc} - {pedido.fornecedor.nome}',
+            corpo_html=corpo_html,
+            anexos=anexos
+        )
+
+        if resultado['success']:
+            try:
+                create_log(user=user, action='enviar_email_pedido', entity='pedido', entity_id=id,
+                          details={'destinatarios': destinatarios}, req=request)
+            except:
+                pass
+
+        return jsonify(resultado)
+    except Exception as e:
+        current_app.logger.exception("Erro ao enviar email do pedido")
+        return jsonify({"error": str(e)}), 500
+
+@compra_bp.route('/pedidos/<int:id>', methods=['DELETE'])
+def delete_pedido(id):
+    """DELETE /api/compras/pedidos/<id> - Deletar pedido"""
+    user = get_current_user_from_request(request)
+    pedido = PedidoCompra.query.get_or_404(id)
+    
+    try:
+        pedido.ativo = False
+        db.session.commit()
+        
+        try:
+            create_log(user=user, action='delete_pedido', entity='pedido', entity_id=id, req=request)
+        except:
+            pass
+        
+        return '', 204
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 500
+
+# ============================================================================
+# ORDEM DE COMPRA (OC)
+# ============================================================================
+
+@compra_bp.route('/ordens', methods=['GET'])
+def get_ordens():
+    """GET /api/compras/ordens - Listar ordens"""
+    try:
+        empresa_id = request.args.get('empresa_id')
+        status = request.args.get('status')
+        api_token = request.headers.get('X-API-Token')
+        
+        user = None
+        if api_token:
+            user = Usuario.query.filter_by(api_token=api_token).first()
+        
+        query = OrdemCompra.query.filter(OrdemCompra.ativo == True)
+        query = apply_entity_filter(query, OrdemCompra, empresa_id, user)
+        
+        if status:
+            query = query.filter(OrdemCompra.status == status)
+        
+        ordens = query.order_by(OrdemCompra.created_at.desc()).all()
+        return jsonify([o.to_dict() for o in ordens])
+    except Exception as e:
+        current_app.logger.exception("Erro ao listar ordens")
+        return jsonify({"error": str(e)}), 500
+
+@compra_bp.route('/ordens/<int:id>', methods=['GET'])
+def get_ordem(id):
+    """GET /api/compras/ordens/<id> - Obter ordem específica"""
+    try:
+        ordem = OrdemCompra.query.get_or_404(id)
+        return jsonify(ordem.to_dict())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 404
+
+@compra_bp.route('/ordens', methods=['POST'])
+def create_ordem():
+    """POST /api/compras/ordens - Criar nova ordem"""
+    user = get_current_user_from_request(request)
+    data = request.get_json() or {}
+    
+    if not data.get('pedido_id') or not data.get('fornecedor_id'):
+        return jsonify({"error": "Pedido e Fornecedor são obrigatórios"}), 400
+    
+    try:
+        numero_oc = gerar_numero_sequencial('OC', OrdemCompra)
+        
+        pedido = PedidoCompra.query.get(to_int(data.get('pedido_id')))
+        if not pedido:
+            return jsonify({"error": "Pedido não encontrado"}), 404
+        
+        nova_ordem = OrdemCompra(
+            numero_oc=numero_oc,
+            pedido_id=pedido.id,
+            empresa_id=pedido.empresa_id,
+            fornecedor_id=to_int(data.get('fornecedor_id')),
+            status=data.get('status', StatusPedido.EMITIDO.value),
+            data_entrega_prevista=parse_datetime(data.get('data_entrega_prevista')) or pedido.data_entrega_prevista,
+            valor_total=pedido.valor_final,
+            condicao_pagamento=data.get('condicao_pagamento') or pedido.condicao_pagamento,
+            email_fornecedor=data.get('email_fornecedor'),
+            telefone_fornecedor=data.get('telefone_fornecedor'),
+            observacoes=data.get('observacoes'),
+            anexos=data.get('anexos', [])
+        )
+        
+        # Copiar itens do pedido
+        for item_pedido in pedido.itens:
+            item_ordem = ItemOrdem(
+                codigo_item=item_pedido.codigo_item,
+                nome_item=item_pedido.nome_item,
+                quantidade=item_pedido.quantidade,
+                unidade_medida=item_pedido.unidade_medida,
+                valor_unitario=item_pedido.valor_unitario,
+                valor_total=item_pedido.valor_total
+            )
+            nova_ordem.itens.append(item_ordem)
+        
+        db.session.add(nova_ordem)
+        db.session.commit()
+        
+        try:
+            create_log(user=user, action='create_ordem', entity='ordem', entity_id=nova_ordem.id,
+                      details={'numero_oc': numero_oc}, req=request)
+        except:
+            pass
+        
+        return jsonify(nova_ordem.to_dict()), 201
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.exception("Erro ao criar ordem")
+        return jsonify({"error": str(e)}), 500
+
+@compra_bp.route('/ordens/<int:id>', methods=['PUT'])
+def update_ordem(id):
+    """PUT /api/compras/ordens/<id> - Atualizar ordem"""
+    user = get_current_user_from_request(request)
+    ordem = OrdemCompra.query.get_or_404(id)
+    data = request.get_json() or {}
+    
+    try:
+        if 'status' in data:
+            ordem.status = data.get('status')
+        if 'data_entrega_prevista' in data:
+            ordem.data_entrega_prevista = parse_datetime(data.get('data_entrega_prevista'))
+        if 'email_fornecedor' in data:
+            ordem.email_fornecedor = data.get('email_fornecedor')
+        if 'telefone_fornecedor' in data:
+            ordem.telefone_fornecedor = data.get('telefone_fornecedor')
+        if 'observacoes' in data:
+            ordem.observacoes = data.get('observacoes')
+        if 'anexos' in data:
+            ordem.anexos = data.get('anexos')
+        
+        db.session.commit()
+        
+        try:
+            create_log(user=user, action='update_ordem', entity='ordem', entity_id=id,
+                      details={'after': data}, req=request)
+        except:
+            pass
+        
+        return jsonify(ordem.to_dict())
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.exception("Erro ao atualizar ordem")
+        return jsonify({"error": str(e)}), 500
+
+@compra_bp.route('/ordens/<int:id>/enviar-para-fornecedor', methods=['POST'])
+def enviar_ordem_fornecedor(id):
+    """POST /api/compras/ordens/<id>/enviar-para-fornecedor - Enviar OC para fornecedor"""
+    user = get_current_user_from_request(request)
+    ordem = OrdemCompra.query.get_or_404(id)
+    data = request.get_json() or {}
+
+    try:
+        email_fornecedor = data.get('email_fornecedor') or ordem.email_fornecedor
+        mensagem_custom = data.get('mensagem', '')
+
+        if not email_fornecedor:
+            return jsonify({"error": "Email do fornecedor não fornecido"}), 400
+
+        # 🆕 Garante que a OC tenha token_portal (para OCs antigas sem token)
+        if not ordem.token_portal:
+            ordem.token_portal = secrets.token_urlsafe(32)
+            db.session.commit()
+
+        # Gerar PDF
+        pdf_bytes = PDFService.gerar_pdf_ordem(ordem)
+
+        # Preparar email
+        corpo_html = EmailService.template_ordem_enviada(ordem)
+
+        if mensagem_custom:
+            corpo_html += f"<p style='margin-top: 20px; border-top: 1px solid #ccc; padding-top: 20px;'><strong>Mensagem adicional:</strong><br>{mensagem_custom}</p>"
+
+        # 🆕 Link do portal para o fornecedor anexar NF e Boleto (usa token_portal + senha da cotação)
+        portal_url = os.environ.get('PORTAL_FORNECEDOR_URL', 'https://kilowatt-proxy-kosher.ngrok-free.dev')
+        # remove sufixo de rota caso a env venha como .../portal-fornecedor
+        portal_base = portal_url.replace('/portal-fornecedor', '').rstrip('/')
+        link_oc = f"{portal_base}/oc/{ordem.token_portal}"
+        corpo_html += f"""
+        <div style='margin-top:24px;padding:16px;background:#ecfdf5;border-left:4px solid #10b981;border-radius:6px;font-family:Arial,sans-serif'>
+          <p style='margin:0 0 8px;font-weight:bold;color:#065f46'>📎 Após a entrega, anexe a Nota Fiscal e o Boleto:</p>
+          <a href='{link_oc}' style='display:inline-block;padding:12px 24px;background:#10b981;color:white;text-decoration:none;border-radius:6px;font-weight:bold'>
+            Anexar NF e Boleto →
+          </a>
+          <p style='margin:8px 0 0;font-size:12px;color:#6b7280'>Use a mesma senha do portal do fornecedor (válida por 72h). Se expirou, avise o comprador para reenviar.</p>
+        </div>"""
+
+        anexos = [{
+            'filename': f'ordem_{ordem.numero_oc}.pdf',
+            'data': pdf_bytes,
+            'mimetype': 'application/pdf'
+        }]
+
+        # Enviar email
+        resultado = EmailService.send_email(
+            destinatarios=email_fornecedor,
+            assunto=f'📮 Ordem de Compra {ordem.numero_oc} - {ordem.empresa.nome}',
+            corpo_html=corpo_html,
+            anexos=anexos
+        )
+
+        if resultado['success']:
+            # Marcar como enviado
+            ordem.pdf_enviado = True
+            ordem.data_envio_pdf = datetime.utcnow()
+            db.session.commit()
+
+            try:
+                create_log(user=user, action='enviar_ordem_fornecedor', entity='ordem', entity_id=id,
+                          details={'email': email_fornecedor}, req=request)
+            except:
+                pass
+
+        return jsonify(resultado)
+    except Exception as e:
+        current_app.logger.exception("Erro ao enviar ordem para fornecedor")
+        return jsonify({"error": str(e)}), 500
+
+@compra_bp.route('/ordens/<int:id>/download-pdf', methods=['GET'])
+def download_pdf_ordem(id):
+    """GET /api/compras/ordens/<id>/download-pdf - Baixar PDF da ordem"""
+    try:
+        ordem = OrdemCompra.query.get_or_404(id)
+        pdf_bytes = PDFService.gerar_pdf_ordem(ordem)
+
+        return {
+            'pdf': pdf_bytes.hex(),
+            'filename': f'ordem_{ordem.numero_oc}.pdf'
+        }, 200, {'Content-Type': 'application/json'}
+    except Exception as e:
+        current_app.logger.exception("Erro ao gerar PDF")
+        return jsonify({"error": str(e)}), 500
+
+@compra_bp.route('/ordens/<int:id>', methods=['DELETE'])
+def delete_ordem(id):
+    """DELETE /api/compras/ordens/<id> - Deletar ordem"""
+    user = get_current_user_from_request(request)
+    ordem = OrdemCompra.query.get_or_404(id)
+    
+    try:
+        ordem.ativo = False
+        db.session.commit()
+        
+        try:
+            create_log(user=user, action='delete_ordem', entity='ordem', entity_id=id, req=request)
+        except:
+            pass
+        
+        return '', 204
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 500
+
+# ============================================================================
+# UTILITÁRIOS & RELATÓRIOS
+# ============================================================================
+
+@compra_bp.route('/dashboard', methods=['GET'])
+def get_dashboard():
+    """GET /api/compras/dashboard - Dados do dashboard"""
+    try:
+        total_requisicoes = RequisicaoCompra.query.filter(RequisicaoCompra.ativo == True).count()
+        requisicoes_pendentes = RequisicaoCompra.query.filter(
+            RequisicaoCompra.ativo == True,
+            RequisicaoCompra.status == StatusRequisicao.PENDENTE_APROVACAO.value
+        ).count()
+        
+        total_pedidos = PedidoCompra.query.filter(PedidoCompra.ativo == True).count()
+        total_ordens = OrdemCompra.query.filter(OrdemCompra.ativo == True).count()
+        
+        valor_total_requisicoes = db.session.query(
+            db.func.sum(ItemRequisicao.valor_total)
+        ).join(RequisicaoCompra).filter(
+            RequisicaoCompra.ativo == True
+        ).scalar() or 0
+        
+        valor_total_pedidos = db.session.query(
+            db.func.sum(PedidoCompra.valor_final)
+        ).filter(
+            PedidoCompra.ativo == True
+        ).scalar() or 0
+
+        return jsonify({
+            'total_requisicoes': total_requisicoes,
+            'requisicoes_pendentes': requisicoes_pendentes,
+            'total_pedidos': total_pedidos,
+            'total_ordens': total_ordens,
+            'valor_total_requisicoes': float(valor_total_requisicoes),
+            'valor_total_pedidos': float(valor_total_pedidos)
+        })
+    except Exception as e:
+        current_app.logger.exception("Erro ao gerar dashboard")
+        return jsonify({"error": str(e)}), 500
+
+# ============================================================================
+# ROTAS FALTANTES - ADICIONADAS PELO FIX
+# ============================================================================
+
+@compra_bp.route('/requisicoes/<int:id>/gerar-pdf', methods=['GET', 'OPTIONS'])
+def gerar_pdf_requisicao(id):
+    if request.method == 'OPTIONS':
+        return _cors_options()
+    try:
+        from flask import send_file
+        import io
+        requisicao = RequisicaoCompra.query.get_or_404(id)
+        pdf_bytes = PDFService.gerar_pdf_requisicao(requisicao)
+        return send_file(io.BytesIO(pdf_bytes), mimetype='application/pdf', as_attachment=True, download_name=f'RQ-{requisicao.numero_rq}.pdf')
+    except Exception as e:
+        current_app.logger.exception("Erro ao gerar PDF da requisicao")
+        return jsonify({"error": str(e)}), 500
+
+
+@compra_bp.route('/pedidos/<int:id>/aprovar', methods=['POST', 'OPTIONS'])
+def aprovar_pedido(id):
+    if request.method == 'OPTIONS':
+        return _cors_options()
+    user = get_current_user_from_request(request)
+    pedido = PedidoCompra.query.get_or_404(id)
+    try:
+        pedido.status = 'APROVADA'
+        pedido.data_aprovacao = datetime.utcnow()
+        pedido.usuario_aprovador_id = user.id if user else None
+        db.session.commit()
+        try:
+            create_log(user=user, action='aprovar_pedido', entity='pedido', entity_id=id, req=request)
+        except:
+            pass
+        return jsonify(pedido.to_dict())
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 500
+
+
+@compra_bp.route('/pedidos/<int:id>/rejeitar', methods=['POST', 'OPTIONS'])
+def rejeitar_pedido(id):
+    if request.method == 'OPTIONS':
+        return _cors_options()
+    user = get_current_user_from_request(request)
+    pedido = PedidoCompra.query.get_or_404(id)
+    data = request.get_json() or {}
+    try:
+        pedido.status = 'REJEITADA'
+        pedido.motivo_rejeicao = data.get('motivo_rejeicao', '')
+        db.session.commit()
+        try:
+            create_log(user=user, action='rejeitar_pedido', entity='pedido', entity_id=id, req=request)
+        except:
+            pass
+        return jsonify(pedido.to_dict())
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 500
+
+
+@compra_bp.route('/pedidos/<int:id>/gerar-pdf', methods=['GET', 'OPTIONS'])
+def gerar_pdf_pedido(id):
+    if request.method == 'OPTIONS':
+        return _cors_options()
+    try:
+        from flask import send_file
+        import io
+        pedido = PedidoCompra.query.get_or_404(id)
+        pdf_bytes = PDFService.gerar_pdf_pedido(pedido)
+        return send_file(io.BytesIO(pdf_bytes), mimetype='application/pdf', as_attachment=True, download_name=f'PC-{pedido.numero_pc}.pdf')
+    except Exception as e:
+        current_app.logger.exception("Erro ao gerar PDF do pedido")
+        return jsonify({"error": str(e)}), 500
+
+
+@compra_bp.route('/ordens/<int:id>/enviar-email', methods=['POST', 'OPTIONS'])
+def enviar_email_ordem(id):
+    if request.method == 'OPTIONS':
+        return _cors_options()
+    return enviar_ordem_fornecedor(id)
+
+
+@compra_bp.route('/requisicoes/<int:id>/converter-pedido', methods=['POST', 'OPTIONS'])
+def converter_requisicao_pedido(id):
+    if request.method == 'OPTIONS':
+        return _cors_options()
+    user = get_current_user_from_request(request)
+    requisicao = RequisicaoCompra.query.get_or_404(id)
+    if not _status_aprovada(requisicao.status):
+        return jsonify({"error": "Apenas requisições APROVADAS podem ser convertidas"}), 400
+    try:
+        novo_pedido = _materializar_pedido_de_requisicao(requisicao, user)
+        db.session.commit()
+        try:
+            create_log(user=user, action='converter_requisicao_pedido', entity='requisicao', entity_id=id, details={'numero_pc': novo_pedido.numero_pc}, req=request)
+        except:
+            pass
+        return jsonify({"success": True, "message": f"Convertida para {novo_pedido.numero_pc}", "pedido": novo_pedido.to_dict()}), 201
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 500
+
+
+def _materializar_pedido_de_requisicao(requisicao, user, tipo_compra='fornecedor'):
+    """
+    Cria (materializa) um PedidoCompra a partir de uma RequisicaoCompra aprovada,
+    copiando os itens. NÃO faz commit — quem chama decide o commit.
+    Retorna o novo PedidoCompra (já adicionado à sessão).
+    """
+    numero_pc = gerar_numero_sequencial('PC', PedidoCompra)
+    valor_total = requisicao.valor_total if hasattr(requisicao, 'valor_total') and requisicao.valor_total else \
+        sum((it.valor_total or 0) for it in requisicao.itens)
+
+    novo_pedido = PedidoCompra(
+        numero_pc=numero_pc,
+        status=StatusPedido.RASCUNHO.value,
+        requisicao_id=requisicao.id,
+        empresa_id=requisicao.empresa_id,
+        fornecedor_id=None,
+        tipo_compra=tipo_compra,
+        usuario_comprador_id=user.id if user else None,
+        data_entrega_prevista=requisicao.data_necessaria,
+        valor_total=valor_total or 0,
+        valor_final=valor_total or 0,
+        observacoes=requisicao.observacoes
+    )
+    for item_rq in requisicao.itens:
+        item_pc = ItemPedido(
+            codigo_item=item_rq.codigo_item,
+            nome_item=item_rq.nome_item,
+            quantidade=item_rq.quantidade,
+            unidade_medida=item_rq.unidade_medida,
+            valor_unitario=item_rq.valor_unitario,
+            valor_total=item_rq.valor_total,
+            item_id=item_rq.item_id,
+            link_compra=item_rq.link_compra
+        )
+        novo_pedido.itens.append(item_pc)
+
+    db.session.add(novo_pedido)
+    db.session.flush()  # garante ID e itens antes de gerar cotação
+    return novo_pedido
+
+
+@compra_bp.route('/requisicoes/<int:id>/enviar-fornecedores', methods=['POST', 'OPTIONS'])
+def enviar_requisicao_fornecedores(id):
+    """
+    POST /api/compras/requisicoes/<id>/enviar-fornecedores
+
+    Fluxo B: materializa o Pedido de Compra a partir da requisição aprovada
+    e dispara a solicitação de cotação/proposta para os fornecedores selecionados.
+
+    Body JSON:
+      {
+        "fornecedores_ids": [1, 2, ...],   # obrigatório
+        "data_limite": "2026-07-20T18:00", # opcional (ISO)
+        "observacoes": "texto"             # opcional
+      }
+    """
+    if request.method == 'OPTIONS':
+        return _cors_options()
+
+    user = get_current_user_from_request(request)
+    requisicao = RequisicaoCompra.query.get_or_404(id)
+
+    if not _status_aprovada(requisicao.status):
+        return jsonify({"error": "Apenas requisições APROVADAS podem ser enviadas aos fornecedores"}), 400
+
+    data = request.get_json() or {}
+    fornecedores_ids = data.get('fornecedores_ids', [])
+    if not fornecedores_ids:
+        return jsonify({"error": "Selecione ao menos um fornecedor"}), 400
+
+    # Impede materializar duas vezes a mesma requisição
+    pedido_existente = PedidoCompra.query.filter(
+        PedidoCompra.requisicao_id == requisicao.id,
+        PedidoCompra.ativo == True
+    ).first()
+    if pedido_existente:
+        return jsonify({"error": f"Esta requisição já possui o pedido {pedido_existente.numero_pc}"}), 400
+
+    try:
+        # 1) Materializa o Pedido de Compra
+        novo_pedido = _materializar_pedido_de_requisicao(requisicao, user)
+
+        # 2) Cria a cotação + propostas + envia e-mails (reaproveita a lógica de cotacao_routes)
+        from ..models.cotacao import Cotacao, PropostaFornecedor, ItemProposta
+        from ..models.fornecedor_acesso import FornecedorAcesso
+
+        FRONTEND_URL = os.environ.get('FRONTEND_URL', 'http://vimax.ad.digimaxdiagnostico.com.br:5173')
+
+        def _gerar_numero_cotacao():
+            ano = datetime.now().year
+            ultimo = Cotacao.query.order_by(Cotacao.id.desc()).first()
+            numero = (ultimo.id + 1) if ultimo else 1
+            return f"COT-{ano}-{numero:04d}"
+
+        def _gerar_senha_temp():
+            return secrets.token_urlsafe(6).upper()
+
+        cotacao = Cotacao(
+            numero_cotacao=_gerar_numero_cotacao(),
+            pedido_id=novo_pedido.id,
+            empresa_id=novo_pedido.empresa_id,
+            data_limite=datetime.fromisoformat(data['data_limite']) if data.get('data_limite') else None,
+            observacoes=data.get('observacoes'),
+            status='ABERTA'
+        )
+        db.session.add(cotacao)
+        db.session.flush()
+
+        emails_enviados, erros_email = [], []
+
+        for forn_id in fornecedores_ids:
+            fornecedor = Fornecedor.query.get(forn_id)
+            if not fornecedor or not fornecedor.email:
+                erros_email.append(f"{fornecedor.nome if fornecedor else forn_id}: sem email")
+                continue
+
+            senha_temp = _gerar_senha_temp()
+            acesso = FornecedorAcesso.query.filter_by(fornecedor_id=fornecedor.id).first()
+            if acesso:
+                acesso.email = fornecedor.email
+                acesso.set_senha(senha_temp)
+            else:
+                acesso = FornecedorAcesso(fornecedor_id=fornecedor.id, email=fornecedor.email)
+                acesso.set_senha(senha_temp)
+                db.session.add(acesso)
+
+            proposta = PropostaFornecedor(
+                cotacao_id=cotacao.id,
+                fornecedor_id=fornecedor.id,
+                email_fornecedor=fornecedor.email,
+                token_acesso=secrets.token_urlsafe(32),
+                status='PENDENTE',
+                primeiro_acesso=True
+            )
+            proposta.set_senha(senha_temp)
+            for item_ped in novo_pedido.itens:
+                proposta.itens.append(ItemProposta(
+                    item_pedido_id=item_ped.id,
+                    codigo_item=item_ped.codigo_item,
+                    nome_item=item_ped.nome_item,
+                    quantidade=item_ped.quantidade,
+                    unidade_medida=item_ped.unidade_medida,
+                    valor_unitario=0,
+                    valor_total=0
+                ))
+            db.session.add(proposta)
+            db.session.flush()
+
+            try:
+                portal_url = os.environ.get('PORTAL_FORNECEDOR_URL', FRONTEND_URL + '/portal-fornecedor')
+                itens_html = ''.join(
+                    f"<tr><td style='padding:8px;border:1px solid #e5e7eb'>{i.nome_item}</td>"
+                    f"<td style='padding:8px;border:1px solid #e5e7eb;text-align:center'>{i.quantidade} {i.unidade_medida}</td></tr>"
+                    for i in novo_pedido.itens
+                )
+                corpo = f"""
+                <div style='font-family:Arial,sans-serif;max-width:620px;margin:0 auto'>
+                  <div style='background:#1a56db;padding:20px;border-radius:8px 8px 0 0'>
+                    <h2 style='color:white;margin:0'>📋 Solicitação de Cotação</h2>
+                    <p style='color:#bfdbfe;margin:4px 0 0'>{cotacao.numero_cotacao}</p>
+                  </div>
+                  <div style='padding:24px;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 8px 8px'>
+                    <p>Prezado(a) <strong>{fornecedor.nome}</strong>,</p>
+                    <p>Você recebeu uma solicitação de cotação de <strong>{novo_pedido.empresa.nome if novo_pedido.empresa else 'nossa empresa'}</strong>.</p>
+                    {'<p>⏰ <strong>Data limite:</strong> ' + cotacao.data_limite.strftime('%d/%m/%Y') + '</p>' if cotacao.data_limite else ''}
+                    <h3 style='margin-top:20px'>Itens para cotar:</h3>
+                    <table style='width:100%;border-collapse:collapse;margin-bottom:20px'>
+                      <tr style='background:#f3f4f6'>
+                        <th style='padding:8px;border:1px solid #e5e7eb;text-align:left'>Item</th>
+                        <th style='padding:8px;border:1px solid #e5e7eb;text-align:center'>Qtd / UN</th>
+                      </tr>
+                      {itens_html}
+                    </table>
+                    <div style='background:#eff6ff;border-left:4px solid #1a56db;padding:16px;border-radius:4px;margin-bottom:20px'>
+                      <p style='margin:0 0 8px'><strong>🔐 Seus dados de acesso ao portal:</strong></p>
+                      <p style='margin:2px 0'>🌐 Portal: <a href='{portal_url}'>{portal_url}</a></p>
+                      <p style='margin:2px 0'>📧 Email: <strong>{fornecedor.email}</strong></p>
+                      <p style='margin:2px 0'>🔑 Senha: <strong style='font-size:20px;letter-spacing:3px;color:#1a56db'>{senha_temp}</strong></p>
+                      <p style='margin:8px 0 0;font-size:12px;color:#ef4444'>⚠️ Esta senha expira em 72 horas.</p>
+                    </div>
+                    <a href='{portal_url}' style='display:inline-block;padding:14px 28px;background:#1a56db;color:white;text-decoration:none;border-radius:6px;font-weight:bold;font-size:16px'>
+                      Acessar Portal →
+                    </a>
+                    <p style='margin-top:20px;color:#9ca3af;font-size:12px'>Acesso exclusivo para {fornecedor.nome}. Não compartilhe.</p>
+                  </div>
+                </div>"""
+
+                EmailService.send_email(
+                    destinatarios=fornecedor.email,
+                    assunto=f'📋 Cotação {cotacao.numero_cotacao} — Solicitação de Proposta',
+                    corpo_html=corpo
+                )
+                emails_enviados.append(fornecedor.nome)
+            except Exception as email_err:
+                current_app.logger.warning(f"Erro email {fornecedor.nome}: {email_err}")
+                erros_email.append(f"{fornecedor.nome}: falha no envio")
+
+        db.session.commit()
+
+        try:
+            create_log(user=user, action='enviar_requisicao_fornecedores', entity='requisicao', entity_id=id,
+                       details={'numero_pc': novo_pedido.numero_pc, 'numero_cotacao': cotacao.numero_cotacao,
+                                'fornecedores_ids': fornecedores_ids}, req=request)
+        except:
+            pass
+
+        return jsonify({
+            "success": True,
+            "message": f"Pedido {novo_pedido.numero_pc} gerado e cotação {cotacao.numero_cotacao} enviada",
+            "pedido": novo_pedido.to_dict(),
+            "cotacao": cotacao.to_dict(),
+            "emails_enviados": emails_enviados,
+            "erros_email": erros_email
+        }), 201
+
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.exception("Erro ao enviar requisição para fornecedores")
+        return jsonify({"error": str(e)}), 500
+
+
+@compra_bp.route('/ordens/<int:id>/receber', methods=['POST', 'OPTIONS'])
+def receber_ordem(id):
+    if request.method == 'OPTIONS':
+        return _cors_options()
+
+    user = get_current_user_from_request(request)
+    ordem = OrdemCompra.query.get_or_404(id)
+    data = request.get_json() or {}
+
+    try:
+        itens_payload = data.get('itens', [])
+        total_itens = len(ordem.itens)
+        total_recebidos = 0
+
+        for item_data in itens_payload:
+            item = ItemOrdem.query.get(item_data.get('id'))
+            if not item or item.ordem_id != ordem.id:
+                continue
+            qtd_recebida = float(item_data.get('qtd_recebida', 0))
+            if qtd_recebida >= item.quantidade:
+                total_recebidos += 1
+
+        if total_recebidos == 0:
+            novo_status = 'PARCIAL'
+        elif total_recebidos == total_itens:
+            novo_status = 'RECEBIDA'
+        else:
+            novo_status = 'PARCIAL'
+
+        ordem.status = novo_status
+        ordem.observacoes = (ordem.observacoes or '') + (
+            f"\n[Recebimento {datetime.utcnow().strftime('%d/%m/%Y %H:%M')}] {data.get('observacoes', '')}"
+            if data.get('observacoes') else ''
+        )
+        db.session.commit()
+
+        try:
+            create_log(user=user, action='receber_ordem', entity='ordem', entity_id=id,
+                       details={'status': novo_status}, req=request)
+        except:
+            pass
+
+        return jsonify({'success': True, 'status': novo_status, 'ordem': ordem.to_dict()}), 200
+
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.exception("Erro ao registrar recebimento")
+        return jsonify({'error': str(e)}), 500
+
+
+@compra_bp.route(
+    '/requisicoes/<int:id>/comprar-site',
+    methods=['POST'],
+)
+def comprar_requisicao_por_site(id):
+    user = get_current_user_from_request(request)
+
+    if not user:
+        return jsonify({
+            'success': False,
+            'error': 'Não autenticado',
+        }), 401
+
+    query = RequisicaoCompra.query.filter(
+        RequisicaoCompra.id == id,
+        RequisicaoCompra.ativo.is_(True),
+    )
+
+    query = apply_entity_filter(
+        query,
+        RequisicaoCompra,
+        None,
+        user,
+    )
+
+    requisicao = query.first()
+
+    if not requisicao:
+        return jsonify({
+            'success': False,
+            'error': 'Requisição não encontrada',
+        }), 404
+
+    if not _status_aprovada(requisicao.status):
+        return jsonify({
+            'success': False,
+            'error': (
+                'Apenas requisições aprovadas '
+                'podem virar compra por site'
+            ),
+        }), 400
+
+    pedido_existente = PedidoCompra.query.filter(
+        PedidoCompra.requisicao_id == requisicao.id,
+        PedidoCompra.ativo.is_(True),
+    ).first()
+
+    if pedido_existente:
+        return jsonify({
+            'success': False,
+            'error': (
+                f'Esta requisição já possui o pedido '
+                f'{pedido_existente.numero_pc}'
+            ),
+        }), 409
+
+    itens_com_link = [
+        item
+        for item in requisicao.itens
+        if item.link_compra
+        and str(item.link_compra).lower().startswith(
+            ('http://', 'https://')
+        )
+    ]
+
+    if not itens_com_link:
+        return jsonify({
+            'success': False,
+            'error': (
+                'A requisição não possui nenhum '
+                'link de compra válido'
+            ),
+        }), 400
+
+    try:
+        novo_pedido = _materializar_pedido_de_requisicao(
+            requisicao,
+            user,
+            tipo_compra='site',
+        )
+
+        novo_pedido.fornecedor_id = None
+        novo_pedido.status = StatusPedido.EMITIDO.value
+
+        db.session.commit()
+
+        try:
+            create_log(
+                user=user,
+                action='create_pedido_site',
+                entity='pedido',
+                entity_id=novo_pedido.id,
+                details={
+                    'numero_pc': novo_pedido.numero_pc,
+                    'requisicao_id': requisicao.id,
+                    'links': [
+                        item.link_compra
+                        for item in itens_com_link
+                    ],
+                },
+                req=request,
+            )
+        except Exception:
+            pass
+
+        return jsonify({
+            'success': True,
+            'message': (
+                f'Pedido {novo_pedido.numero_pc} '
+                'criado como compra por site'
+            ),
+            'pedido': novo_pedido.to_dict(),
+        }), 201
+
+    except Exception as exc:
+        db.session.rollback()
+        current_app.logger.exception(
+            'Erro ao criar compra por site'
+        )
+
+        return jsonify({
+            'success': False,
+            'error': str(exc),
+        }), 500
+

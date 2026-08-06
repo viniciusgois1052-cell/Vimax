@@ -1,0 +1,123 @@
+from datetime import datetime
+from .. import db
+
+
+class FornecedorAvaliacao(db.Model):
+    __tablename__ = 'fornecedor_avaliacoes'
+    __table_args__ = (
+        db.UniqueConstraint(
+            'ordem_compra_id',
+            name='uq_fornecedor_avaliacao_ordem'
+        ),
+        db.Index(
+            'ix_fornecedor_avaliacoes_empresa_fornecedor',
+            'empresa_id',
+            'fornecedor_id'
+        ),
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    fornecedor_id = db.Column(
+        db.Integer,
+        db.ForeignKey('fornecedores.id', ondelete='RESTRICT'),
+        nullable=False
+    )
+    empresa_id = db.Column(
+        db.Integer,
+        db.ForeignKey('empresas.id', ondelete='RESTRICT'),
+        nullable=False
+    )
+    ordem_compra_id = db.Column(
+        db.Integer,
+        db.ForeignKey('ordens_compra.id', ondelete='RESTRICT'),
+        nullable=True
+    )
+    avaliador_id = db.Column(
+        db.Integer,
+        db.ForeignKey('usuarios.id', ondelete='RESTRICT'),
+        nullable=False
+    )
+
+    qualidade = db.Column(db.SmallInteger, nullable=False)
+    prazo = db.Column(db.SmallInteger, nullable=False)
+    preco = db.Column(db.SmallInteger, nullable=False)
+    atendimento = db.Column(db.SmallInteger, nullable=False)
+    conformidade = db.Column(db.SmallInteger, nullable=False)
+
+    comentario = db.Column(db.Text, nullable=True)
+    recomendaria = db.Column(db.Boolean, nullable=False, default=True)
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = db.Column(
+        db.DateTime,
+        nullable=False,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow
+    )
+
+    fornecedor = db.relationship(
+        'Fornecedor',
+        foreign_keys=[fornecedor_id],
+        lazy='joined'
+    )
+    empresa = db.relationship(
+        'Empresa',
+        foreign_keys=[empresa_id],
+        lazy='joined'
+    )
+    ordem_compra = db.relationship(
+        'OrdemCompra',
+        foreign_keys=[ordem_compra_id],
+        lazy='joined'
+    )
+    avaliador = db.relationship(
+        'Usuario',
+        foreign_keys=[avaliador_id],
+        lazy='joined'
+    )
+
+    @property
+    def nota_geral(self):
+        notas = (
+            self.qualidade,
+            self.prazo,
+            self.preco,
+            self.atendimento,
+            self.conformidade,
+        )
+        return round(sum(notas) / 5.0, 2)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'fornecedor_id': self.fornecedor_id,
+            'fornecedor_nome': (
+                self.fornecedor.nome if self.fornecedor else None
+            ),
+            'empresa_id': self.empresa_id,
+            'empresa_nome': self.empresa.nome if self.empresa else None,
+            'ordem_compra_id': self.ordem_compra_id,
+            'numero_oc': (
+                self.ordem_compra.numero_oc
+                if self.ordem_compra else None
+            ),
+            'avaliador_id': self.avaliador_id,
+            'avaliador_nome': (
+                self.avaliador.nome_completo
+                or self.avaliador.username
+                if self.avaliador else None
+            ),
+            'qualidade': self.qualidade,
+            'prazo': self.prazo,
+            'preco': self.preco,
+            'atendimento': self.atendimento,
+            'conformidade': self.conformidade,
+            'nota_geral': self.nota_geral,
+            'comentario': self.comentario,
+            'recomendaria': bool(self.recomendaria),
+            'created_at': (
+                self.created_at.isoformat() if self.created_at else None
+            ),
+            'updated_at': (
+                self.updated_at.isoformat() if self.updated_at else None
+            ),
+        }

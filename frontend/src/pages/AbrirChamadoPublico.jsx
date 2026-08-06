@@ -32,9 +32,7 @@ const AbrirChamadoPublico = () => {
     const [uploading, setUploading] = useState(false);
 
     // Definição da base da API e do Backend
-    const API_BASE = window.location.origin.includes('5173') 
-        ? `${window.location.protocol}//${window.location.hostname}:5002`
-        : window.location.origin;
+    const API_BASE = "";
 
     useEffect(() => {
         const fetchAtivo = async () => {

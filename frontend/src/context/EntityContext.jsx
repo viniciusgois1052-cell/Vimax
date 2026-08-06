@@ -17,13 +17,13 @@ export const EntityProvider = ({ children }) => {
       if (user?.api_token) {
         headers['X-API-Token'] = user.api_token;
       }
-      
+
       const response = await fetch('/api/empresas/', { headers });
       if (response.ok) {
         let data = await response.json();
-        
-        // Se o usuário for Admin ou Relatórios, ele só vê a empresa dele e sub-empresas
-        if (user && user.role !== 'super_admin' && user.empresa_id) {
+
+        // Se o usuário não for super_admin, filtra pelas empresas permitidas
+        if (user && user.role !== 'super_admin') {
           const getSubCompanyIds = (items, parentId) => {
             let ids = [parentId];
             items.filter(item => item.parent_id === parentId).forEach(sub => {
@@ -31,19 +31,25 @@ export const EntityProvider = ({ children }) => {
             });
             return ids;
           };
-          const allowedIds = getSubCompanyIds(data, user.empresa_id);
+          // Usa empresas_ids (lista completa) ou fallback para empresa_id principal
+          const baseIds = (user.empresas_ids && user.empresas_ids.length > 0)
+            ? user.empresas_ids
+            : (user.empresa_id ? [user.empresa_id] : []);
+          let allAllowed = [];
+          baseIds.forEach(id => { allAllowed = [...allAllowed, ...getSubCompanyIds(data, id)]; });
+          const allowedIds = [...new Set(allAllowed)];
           data = data.filter(item => allowedIds.includes(item.id));
         }
 
         // Ordenar alfabeticamente por nome
         const sortedData = data.sort((a, b) => a.nome.localeCompare(b.nome));
         setEntities(sortedData);
-        
+
         // Construir a árvore (lista linear com níveis para indentação)
         const buildTree = (items, parentId = null, level = 0) => {
           let result = [];
           const filtered = items.filter(item => item.parent_id === parentId);
-          
+
           for (const item of filtered) {
             result.push({ ...item, level });
             const children = buildTree(items, item.id, level + 1);
@@ -60,20 +66,22 @@ export const EntityProvider = ({ children }) => {
   }, [user]);
 
   useEffect(() => {
-    fetchEntities();
-  }, [fetchEntities]);
+    if (user?.api_token) {
+      fetchEntities();
+    }
+  }, [fetchEntities, user]);
 
   useEffect(() => {
     localStorage.setItem('selectedEntity', selectedEntity);
   }, [selectedEntity]);
 
   return (
-    <EntityContext.Provider value={{ 
-      selectedEntity, 
-      setSelectedEntity, 
-      entities, 
+    <EntityContext.Provider value={{
+      selectedEntity,
+      setSelectedEntity,
+      entities,
       treeEntities,
-      refreshEntities: fetchEntities 
+      refreshEntities: fetchEntities
     }}>
       {children}
     </EntityContext.Provider>
@@ -81,4 +89,3 @@ export const EntityProvider = ({ children }) => {
 };
 
 export const useEntity = () => useContext(EntityContext);
-

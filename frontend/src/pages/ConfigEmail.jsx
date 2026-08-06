@@ -1,3 +1,4 @@
+import { apiFetch } from '../apiFetch';
 import React, { useState, useEffect } from 'react';
 import { 
     FaEnvelope, FaServer, FaUser, FaLock, FaCalendarAlt, FaUsers, FaPaperPlane,
@@ -23,9 +24,7 @@ const ConfigEmail = () => {
     const [triggeringAlerts, setTriggeringAlerts] = useState(false);
     const [message, setMessage] = useState(null);
 
-    const API_BASE = window.location.origin.includes('5173') 
-        ? `${window.location.protocol}//${window.location.hostname}:5002`
-        : window.location.origin;
+    const API_BASE = "";
     const API_URL = `${API_BASE}/api/config/email`;
 
     useEffect(() => {
@@ -34,7 +33,7 @@ const ConfigEmail = () => {
 
     const fetchConfig = async () => {
         try {
-            const response = await fetch(API_URL);
+            const response = await apiFetch(API_URL);
             if (!response.ok) {
                 throw new Error('Erro ao buscar configurações');
             }
@@ -66,7 +65,7 @@ const ConfigEmail = () => {
         setMessage(null);
 
         try {
-            const response = await fetch(API_URL, {
+            const response = await apiFetch(API_URL, {
                 method: 'PUT',
                 headers: {
                     'Content-Type': 'application/json',
@@ -100,7 +99,7 @@ const ConfigEmail = () => {
         setMessage(null);
 
         try {
-            const response = await fetch(`${API_URL}/test-email`, {
+            const response = await apiFetch(`${API_URL}/test-email`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -130,7 +129,7 @@ const ConfigEmail = () => {
         setMessage(null);
 
         try {
-            const response = await fetch(`${API_URL}/trigger-contract-alerts`, {
+            const response = await apiFetch(`${API_URL}/trigger-contract-alerts`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',

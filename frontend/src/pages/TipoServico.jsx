@@ -1,8 +1,11 @@
+import { useAuth } from '../context/AuthContext';
 import React, { useState, useEffect } from 'react';
+import { apiFetch } from '../apiFetch';
 import { Trash2, Edit2, Plus, Check, X } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 
 export default function TiposServico() {
+  const { user, can } = useAuth();
     const [tipos, setTipos] = useState([]);
     const [loading, setLoading] = useState(false);
     const [editando, setEditando] = useState(null);
@@ -18,7 +21,7 @@ export default function TiposServico() {
     const fetchTipos = async () => {
         setLoading(true);
         try {
-            const response = await fetch('/api/tipos-servico');
+            const response = await apiFetch('/api/tipos-servico');
             if (response.ok) {
                 setTipos(await response.json());
             }
@@ -46,7 +49,7 @@ export default function TiposServico() {
 
             const response = await fetch(url, {
                 method,
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', ...(user?.api_token ? { 'X-API-Token': user.api_token } : {}) },
                 body: JSON.stringify(formData)
             });
 
@@ -74,7 +77,7 @@ export default function TiposServico() {
         if (!window.confirm('Tem certeza que deseja deletar este tipo de serviço?')) return;
 
         try {
-            const response = await fetch(`/api/tipos-servico/${id}`, { method: 'DELETE' });
+            const response = await apiFetch(`/api/tipos-servico/${id}`, { method: 'DELETE' });
             if (response.ok) {
                 setSucesso('Tipo de serviço deletado!');
                 fetchTipos();
@@ -212,18 +215,22 @@ export default function TiposServico() {
                                             </td>
                                             <td className="py-3 text-right">
                                                 <div className="flex gap-2 justify-end">
+                                                    {can('chamados','editar') && (
                                                     <button
                                                         onClick={() => handleEdit(tipo)}
                                                         className="p-2 hover:bg-blue-50 rounded-lg text-blue-600"
                                                     >
                                                         <Edit2 className="w-4 h-4" />
                                                     </button>
+                                                    )}
+                                                    {can('chamados','excluir') && (
                                                     <button
                                                         onClick={() => handleDelete(tipo.id)}
                                                         className="p-2 hover:bg-red-50 rounded-lg text-red-600"
                                                     >
                                                         <Trash2 className="w-4 h-4" />
                                                     </button>
+                                                    )}
                                                 </div>
                                             </td>
                                         </tr>

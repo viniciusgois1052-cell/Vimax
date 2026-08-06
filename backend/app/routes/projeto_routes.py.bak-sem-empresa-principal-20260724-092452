@@ -1,0 +1,3833 @@
+# -*- coding: utf-8 -*-
+
+from datetime import datetime
+from decimal import Decimal
+import json
+
+from flask import Blueprint, current_app, jsonify, request
+from sqlalchemy import or_
+
+from .. import db
+from ..models.empresa import Empresa
+from ..models.usuario import Usuario
+from ..models.projeto import (
+    Projeto,
+    ProjetoGrupo,
+    ProjetoTarefa,
+    ProjetoDependencia,
+    ProjetoRecurso,
+    ProjetoAlocacao,
+    ProjetoCalendario,
+    ProjetoLinhaBase,
+    ProjetoProjecaoCompra,
+)
+from ..models.compra import Item
+from ..utils.auth import get_current_user_from_request
+from ..utils.logging import create_log
+
+
+projeto_bp = Blueprint('projeto_bp', __name__)
+
+
+# ============================================================
+# CONSTANTES
+# ============================================================
+
+STATUS_PROJETO = {
+    'planejamento',
+    'ativo',
+    'pausado',
+    'concluido',
+    'cancelado',
+    'arquivado',
+}
+
+PRIORIDADES_PROJETO = {
+    'baixa',
+    'normal',
+    'alta',
+    'urgente',
+}
+
+MODOS_AGENDAMENTO = {
+    'automatico',
+    'manual',
+}
+
+TIPOS_DEPENDENCIA = {
+    'FS',
+    'SS',
+    'FF',
+    'SF',
+}
+
+TIPOS_RECURSO = {
+    'trabalho',
+    'material',
+    'custo',
+}
+
+RESTRICOES_TAREFA = {
+    'ASAP',
+    'ALAP',
+    'SNET',
+    'SNLT',
+    'FNET',
+    'FNLT',
+    'MSO',
+    'MFO',
+}
+
+
+# ============================================================
+# HELPERS
+# ============================================================
+
+def parse_datetime(valor):
+    if not valor:
+        return None
+
+    if isinstance(valor, datetime):
+        return valor
+
+    texto = str(valor).strip()
+
+    if texto.endswith('Z'):
+        texto = texto[:-1] + '+00:00'
+
+    try:
+        resultado = datetime.fromisoformat(texto)
+
+        # O banco atual trabalha com datetime sem timezone.
+        if resultado.tzinfo:
+            resultado = resultado.replace(tzinfo=None)
+
+        return resultado
+    except (TypeError, ValueError):
+        return None
+
+
+def to_int(valor, padrao=None):
+    if valor in (None, '', 'null', 'undefined'):
+        return padrao
+
+    try:
+        return int(valor)
+    except (TypeError, ValueError):
+        return padrao
+
+
+def to_float(valor, padrao=0):
+    if valor in (None, '', 'null', 'undefined'):
+        return padrao
+
+    try:
+        return float(valor)
+    except (TypeError, ValueError):
+        return padrao
+
+
+def to_decimal(valor, padrao=0):
+    if valor in (None, '', 'null', 'undefined'):
+        return Decimal(str(padrao))
+
+    try:
+        return Decimal(str(valor))
+    except Exception:
+        return Decimal(str(padrao))
+
+
+def to_bool(valor, padrao=False):
+    if valor is None:
+        return padrao
+
+    if isinstance(valor, bool):
+        return valor
+
+    if isinstance(valor, (int, float)):
+        return valor != 0
+
+    return str(valor).strip().lower() in {
+        '1',
+        'true',
+        'sim',
+        'yes',
+        'on',
+    }
+
+
+def limitar_percentual(valor):
+    return max(0, min(100, to_float(valor, 0)))
+
+
+def usuario_admin(usuario):
+    return usuario and usuario.role in {
+        'super_admin',
+        'admin',
+    }
+
+
+def verificar_permissao(usuario, acao):
+    """
+    Verifica permissões do módulo Projetos.
+
+    Regras:
+    - super_admin: acesso total;
+    - admin sem perfil: acesso total;
+    - usuário com perfil: projetos_ver, projetos_criar etc.;
+    - enquanto as colunas ainda não existirem, admin continua liberado.
+    """
+
+    if not usuario:
+        return False
+
+    if usuario.role == 'super_admin':
+        return True
+
+    perfil = getattr(usuario, 'perfil_acesso', None)
+
+    if usuario.role == 'admin' and not perfil:
+        return True
+
+    chave = 'projetos_{}'.format(acao)
+
+    if perfil and hasattr(perfil, chave):
+        return bool(getattr(perfil, chave))
+
+    # Compatibilidade enquanto as permissões de projetos
+    # ainda não foram adicionadas ao PerfilAcesso.
+    return usuario.role == 'admin'
+
+
+def exigir_permissao(acao):
+    usuario = get_current_user_from_request(request)
+
+    if not usuario:
+        return None, (
+            jsonify({
+                'success': False,
+                'error': 'Não autenticado',
+            }),
+            401,
+        )
+
+    if not verificar_permissao(usuario, acao):
+        return None, (
+            jsonify({
+                'success': False,
+                'error': 'Acesso negado',
+            }),
+            403,
+        )
+
+    return usuario, None
+
+
+def empresas_do_usuario(usuario):
+    if not usuario:
+        return []
+
+    try:
+        return usuario.get_empresa_ids()
+    except Exception:
+        ids = []
+
+        if getattr(usuario, 'empresa_id', None):
+            ids.append(usuario.empresa_id)
+
+        for empresa in getattr(usuario, 'empresas', []) or []:
+            if empresa.id not in ids:
+                ids.append(empresa.id)
+
+        return ids
+
+
+def usuario_acessa_projeto(usuario, projeto):
+    if not usuario or not projeto:
+        return False
+
+    if usuario_admin(usuario):
+        return True
+
+    if projeto.publico:
+        return True
+
+    if projeto.gerente_id == usuario.id:
+        return True
+
+    if projeto.criado_por_id == usuario.id:
+        return True
+
+    ids_permitidos = set(empresas_do_usuario(usuario))
+
+    if not ids_permitidos:
+        return False
+
+    if projeto.empresa_principal_id in ids_permitidos:
+        return True
+
+    return any(
+        empresa.id in ids_permitidos
+        for empresa in projeto.empresas
+    )
+
+
+def query_projetos_permitidos(usuario):
+    query = Projeto.query
+
+    if usuario_admin(usuario):
+        return query
+
+    ids_empresas = empresas_do_usuario(usuario)
+
+    filtros = [
+        Projeto.publico.is_(True),
+        Projeto.gerente_id == usuario.id,
+        Projeto.criado_por_id == usuario.id,
+    ]
+
+    if ids_empresas:
+        filtros.extend([
+            Projeto.empresa_principal_id.in_(ids_empresas),
+            Projeto.empresas.any(
+                Empresa.id.in_(ids_empresas)
+            ),
+        ])
+
+    return query.filter(or_(*filtros)).distinct()
+
+
+def obter_projeto(projeto_id, usuario):
+    projeto = Projeto.query.get(projeto_id)
+
+    if not projeto:
+        return None, (
+            jsonify({
+                'success': False,
+                'error': 'Projeto não encontrado',
+            }),
+            404,
+        )
+
+    if not usuario_acessa_projeto(usuario, projeto):
+        return None, (
+            jsonify({
+                'success': False,
+                'error': 'Acesso negado a este projeto',
+            }),
+            403,
+        )
+
+    return projeto, None
+
+
+def gerar_codigo_projeto():
+    ano = datetime.utcnow().year
+    prefixo = 'PRJ-{}-'.format(ano)
+
+    ultimo = (
+        Projeto.query
+        .filter(Projeto.codigo.like('{}%'.format(prefixo)))
+        .order_by(Projeto.id.desc())
+        .first()
+    )
+
+    sequencia = 1
+
+    if ultimo:
+        try:
+            sequencia = int(
+                ultimo.codigo.split('-')[-1]
+            ) + 1
+        except (TypeError, ValueError):
+            sequencia = ultimo.id + 1
+
+    codigo = '{}{:04d}'.format(
+        prefixo,
+        sequencia,
+    )
+
+    while Projeto.query.filter_by(codigo=codigo).first():
+        sequencia += 1
+        codigo = '{}{:04d}'.format(
+            prefixo,
+            sequencia,
+        )
+
+    return codigo
+
+
+def registrar_log(usuario, acao, entidade, entidade_id, detalhes=None):
+    try:
+        create_log(
+            user=usuario,
+            action=acao,
+            entity=entidade,
+            entity_id=entidade_id,
+            details=detalhes,
+            req=request,
+        )
+    except Exception:
+        current_app.logger.exception(
+            'Não foi possível registrar o log'
+        )
+
+
+def erro_banco(mensagem, erro):
+    db.session.rollback()
+
+    current_app.logger.exception(
+        '%s: %s',
+        mensagem,
+        erro,
+    )
+
+    return jsonify({
+        'success': False,
+        'error': mensagem,
+    }), 500
+
+
+def validar_empresa(empresa_id):
+    if not empresa_id:
+        return None
+
+    return Empresa.query.get(empresa_id)
+
+
+def validar_usuario(usuario_id):
+    if not usuario_id:
+        return None
+
+    return Usuario.query.get(usuario_id)
+
+
+# ============================================================
+# ORGANIZAÇÃO WBS E TAREFAS-RESUMO
+# ============================================================
+
+def tarefa_eh_descendente(tarefa, possivel_pai):
+    """
+    Impede ciclos na hierarquia.
+
+    Exemplo inválido:
+    Tarefa A é pai de B e B passa a ser pai de A.
+    """
+
+    atual = possivel_pai
+    visitados = set()
+
+    while atual:
+        if atual.id in visitados:
+            return True
+
+        visitados.add(atual.id)
+
+        if atual.id == tarefa.id:
+            return True
+
+        atual = atual.pai
+
+    return False
+
+
+def atualizar_wbs(projeto):
+    """
+    Reorganiza:
+    - ordem;
+    - nível;
+    - código WBS;
+    - tarefas-resumo;
+    - datas das tarefas-resumo;
+    - percentual das tarefas-resumo;
+    - percentual e datas do projeto.
+    """
+
+    tarefas = list(projeto.tarefas)
+
+    filhos_por_pai = {}
+
+    for tarefa in tarefas:
+        filhos_por_pai.setdefault(
+            tarefa.parent_id,
+            []
+        ).append(tarefa)
+
+    for lista in filhos_por_pai.values():
+        lista.sort(
+            key=lambda item: (
+                item.ordem if item.ordem is not None else 999999,
+                item.id or 0,
+            )
+        )
+
+    ordem_global = 0
+    visitados = set()
+
+    def processar(pai_id=None, prefixo='', nivel=0):
+        nonlocal ordem_global
+
+        filhos = filhos_por_pai.get(pai_id, [])
+
+        for indice, tarefa in enumerate(filhos, start=1):
+            if tarefa.id in visitados:
+                continue
+
+            visitados.add(tarefa.id)
+
+            ordem_global += 1
+            tarefa.ordem = ordem_global
+            tarefa.nivel = nivel
+            tarefa.wbs = (
+                '{}.{}'.format(prefixo, indice)
+                if prefixo else str(indice)
+            )
+
+            processar(
+                tarefa.id,
+                tarefa.wbs,
+                nivel + 1,
+            )
+
+            sub_tarefas = filhos_por_pai.get(
+                tarefa.id,
+                []
+            )
+
+            tarefa.e_resumo = bool(sub_tarefas)
+
+            if sub_tarefas:
+                inicios = [
+                    item.data_inicio
+                    for item in sub_tarefas
+                    if item.data_inicio
+                ]
+
+                finais = [
+                    item.data_fim
+                    for item in sub_tarefas
+                    if item.data_fim
+                ]
+
+                if inicios:
+                    tarefa.data_inicio = min(inicios)
+
+                if finais:
+                    tarefa.data_fim = max(finais)
+
+                peso_total = sum(
+                    max(item.duracao_minutos or 0, 1)
+                    for item in sub_tarefas
+                )
+
+                progresso_total = sum(
+                    max(item.duracao_minutos or 0, 1)
+                    * (item.percentual_concluido or 0)
+                    for item in sub_tarefas
+                )
+
+                if peso_total:
+                    tarefa.percentual_concluido = round(
+                        progresso_total / peso_total,
+                        2,
+                    )
+
+    processar()
+
+    # Caso exista uma tarefa com parent_id inválido,
+    # ela volta para a raiz.
+    tarefas_nao_visitadas = [
+        tarefa
+        for tarefa in tarefas
+        if tarefa.id not in visitados
+    ]
+
+    for tarefa in tarefas_nao_visitadas:
+        tarefa.parent_id = None
+
+    if tarefas_nao_visitadas:
+        atualizar_wbs(projeto)
+        return
+
+    tarefas_folha = [
+        tarefa
+        for tarefa in tarefas
+        if not tarefa.e_resumo and not tarefa.inativa
+    ]
+
+    inicios = [
+        tarefa.data_inicio
+        for tarefa in tarefas_folha
+        if tarefa.data_inicio
+    ]
+
+    finais = [
+        tarefa.data_fim
+        for tarefa in tarefas_folha
+        if tarefa.data_fim
+    ]
+
+    if inicios:
+        projeto.data_inicio = min(inicios)
+
+    if finais:
+        projeto.data_fim_prevista = max(finais)
+
+    projeto.calcular_percentual()
+
+    custo_planejado = Decimal('0')
+    custo_real = Decimal('0')
+
+    for tarefa in tarefas_folha:
+        custo_planejado += (
+            tarefa.custo_fixo or Decimal('0')
+        )
+
+        custo_real += (
+            tarefa.custo_real or Decimal('0')
+        )
+
+        for alocacao in tarefa.alocacoes:
+            custo_planejado += (
+                alocacao.custo_planejado
+                or Decimal('0')
+            )
+
+            custo_real += (
+                alocacao.custo_real
+                or Decimal('0')
+            )
+
+    projeto.custo_planejado = custo_planejado
+    projeto.custo_real = custo_real
+
+
+# ============================================================
+# APLICAÇÃO DE PAYLOADS
+# ============================================================
+
+def aplicar_dados_projeto(projeto, dados):
+    campos_texto = {
+        'nome',
+        'descricao',
+    }
+
+    for campo in campos_texto:
+        if campo in dados:
+            valor = dados.get(campo)
+            setattr(
+                projeto,
+                campo,
+                valor.strip() if isinstance(valor, str) else valor,
+            )
+
+    if 'codigo' in dados:
+        codigo = str(dados.get('codigo') or '').strip()
+
+        if codigo:
+            existente = Projeto.query.filter(
+                Projeto.codigo == codigo,
+                Projeto.id != projeto.id,
+            ).first()
+
+            if existente:
+                raise ValueError(
+                    'Já existe um projeto com este código'
+                )
+
+            projeto.codigo = codigo
+
+    if 'status' in dados:
+        status = str(dados.get('status') or '').lower()
+
+        if status not in STATUS_PROJETO:
+            raise ValueError('Status do projeto inválido')
+
+        projeto.status = status
+
+    if 'prioridade' in dados:
+        prioridade = str(
+            dados.get('prioridade') or ''
+        ).lower()
+
+        if prioridade not in PRIORIDADES_PROJETO:
+            raise ValueError('Prioridade inválida')
+
+        projeto.prioridade = prioridade
+
+    if 'modo_agendamento' in dados:
+        modo = str(
+            dados.get('modo_agendamento') or ''
+        ).lower()
+
+        if modo not in MODOS_AGENDAMENTO:
+            raise ValueError(
+                'Modo de agendamento inválido'
+            )
+
+        projeto.modo_agendamento = modo
+
+    campos_data = {
+        'data_inicio',
+        'data_fim_prevista',
+        'data_fim_real',
+        'data_limite',
+    }
+
+    for campo in campos_data:
+        if campo in dados:
+            setattr(
+                projeto,
+                campo,
+                parse_datetime(dados.get(campo)),
+            )
+
+    if 'percentual_concluido' in dados:
+        projeto.percentual_concluido = limitar_percentual(
+            dados.get('percentual_concluido')
+        )
+
+    for campo in {
+        'orcamento',
+        'custo_planejado',
+        'custo_real',
+    }:
+        if campo in dados:
+            setattr(
+                projeto,
+                campo,
+                to_decimal(dados.get(campo)),
+            )
+
+    for campo in {
+        'publico',
+        'ativo',
+    }:
+        if campo in dados:
+            setattr(
+                projeto,
+                campo,
+                to_bool(dados.get(campo)),
+            )
+
+    if 'grupo_id' in dados:
+        grupo_id = to_int(dados.get('grupo_id'))
+
+        if grupo_id and not ProjetoGrupo.query.get(grupo_id):
+            raise ValueError('Grupo não encontrado')
+
+        projeto.grupo_id = grupo_id
+
+    if 'empresa_principal_id' in dados:
+        empresa_id = to_int(
+            dados.get('empresa_principal_id')
+        )
+
+        if empresa_id and not validar_empresa(empresa_id):
+            raise ValueError('Empresa principal não encontrada')
+
+        projeto.empresa_principal_id = empresa_id
+
+    if 'gerente_id' in dados:
+        gerente_id = to_int(dados.get('gerente_id'))
+
+        if gerente_id and not validar_usuario(gerente_id):
+            raise ValueError('Gerente não encontrado')
+
+        projeto.gerente_id = gerente_id
+
+    if 'empresas_ids' in dados:
+        ids = {
+            to_int(item)
+            for item in dados.get('empresas_ids', [])
+            if to_int(item)
+        }
+
+        empresas = (
+            Empresa.query
+            .filter(Empresa.id.in_(ids))
+            .all()
+            if ids else []
+        )
+
+        encontrados = {
+            empresa.id
+            for empresa in empresas
+        }
+
+        faltantes = ids - encontrados
+
+        if faltantes:
+            raise ValueError(
+                'Uma ou mais empresas não foram encontradas'
+            )
+
+        projeto.empresas = empresas
+
+    if (
+        projeto.data_inicio
+        and projeto.data_fim_prevista
+        and projeto.data_fim_prevista < projeto.data_inicio
+    ):
+        raise ValueError(
+            'A data final não pode ser anterior à inicial'
+        )
+
+
+def aplicar_dados_tarefa(tarefa, dados):
+    if 'nome' in dados:
+        nome = str(dados.get('nome') or '').strip()
+
+        if not nome:
+            raise ValueError(
+                'O nome da tarefa é obrigatório'
+            )
+
+        tarefa.nome = nome
+
+    if 'descricao' in dados:
+        tarefa.descricao = dados.get('descricao') or None
+
+    if 'anotacoes' in dados:
+        tarefa.anotacoes = dados.get('anotacoes') or None
+
+    if 'ordem' in dados:
+        tarefa.ordem = max(
+            0,
+            to_int(dados.get('ordem'), 0),
+        )
+
+    if 'modo_agendamento' in dados:
+        modo = str(
+            dados.get('modo_agendamento') or ''
+        ).lower()
+
+        if modo not in MODOS_AGENDAMENTO:
+            raise ValueError(
+                'Modo de agendamento inválido'
+            )
+
+        tarefa.modo_agendamento = modo
+
+    for campo in {
+        'data_inicio',
+        'data_fim',
+        'inicio_real',
+        'fim_real',
+        'prazo_final',
+        'restricao_data',
+    }:
+        if campo in dados:
+            setattr(
+                tarefa,
+                campo,
+                parse_datetime(dados.get(campo)),
+            )
+
+    if 'duracao_minutos' in dados:
+        tarefa.duracao_minutos = max(
+            0,
+            to_int(dados.get('duracao_minutos'), 0),
+        )
+
+    if 'duracao_dias' in dados:
+        tarefa.duracao_minutos = max(
+            0,
+            int(
+                to_float(
+                    dados.get('duracao_dias'),
+                    0,
+                ) * 480
+            ),
+        )
+
+    if 'trabalho_minutos' in dados:
+        tarefa.trabalho_minutos = max(
+            0,
+            to_int(dados.get('trabalho_minutos'), 0),
+        )
+
+    if 'trabalho_real_minutos' in dados:
+        tarefa.trabalho_real_minutos = max(
+            0,
+            to_int(
+                dados.get('trabalho_real_minutos'),
+                0,
+            ),
+        )
+
+    if 'percentual_concluido' in dados:
+        tarefa.percentual_concluido = limitar_percentual(
+            dados.get('percentual_concluido')
+        )
+
+    if 'prioridade' in dados:
+        tarefa.prioridade = max(
+            0,
+            min(
+                1000,
+                to_int(dados.get('prioridade'), 500),
+            ),
+        )
+
+    if 'restricao_tipo' in dados:
+        restricao = str(
+            dados.get('restricao_tipo') or 'ASAP'
+        ).upper()
+
+        if restricao not in RESTRICOES_TAREFA:
+            raise ValueError(
+                'Restrição da tarefa inválida'
+            )
+
+        tarefa.restricao_tipo = restricao
+
+    for campo in {
+        'e_marco',
+        'e_resumo',
+        'caminho_critico',
+        'inativa',
+    }:
+        if campo in dados:
+            setattr(
+                tarefa,
+                campo,
+                to_bool(dados.get(campo)),
+            )
+
+    if 'custo_fixo' in dados:
+        tarefa.custo_fixo = to_decimal(
+            dados.get('custo_fixo')
+        )
+
+    if 'custo_real' in dados:
+        tarefa.custo_real = to_decimal(
+            dados.get('custo_real')
+        )
+
+    if 'calendario_id' in dados:
+        calendario_id = to_int(
+            dados.get('calendario_id')
+        )
+
+        if calendario_id:
+            calendario = ProjetoCalendario.query.get(
+                calendario_id
+            )
+
+            if (
+                not calendario
+                or calendario.projeto_id != tarefa.projeto_id
+            ):
+                raise ValueError(
+                    'Calendário inválido'
+                )
+
+        tarefa.calendario_id = calendario_id
+
+    if tarefa.e_marco:
+        tarefa.duracao_minutos = 0
+
+        if tarefa.data_inicio:
+            tarefa.data_fim = tarefa.data_inicio
+
+    if (
+        tarefa.data_inicio
+        and tarefa.data_fim
+        and tarefa.data_fim < tarefa.data_inicio
+    ):
+        raise ValueError(
+            'O fim da tarefa não pode ser anterior ao início'
+        )
+
+
+# ============================================================
+# DASHBOARD
+# ============================================================
+
+@projeto_bp.route('/dashboard', methods=['GET'])
+def dashboard():
+    usuario, erro = exigir_permissao('ver')
+
+    if erro:
+        return erro
+
+    try:
+        projetos = (
+            query_projetos_permitidos(usuario)
+            .filter(Projeto.ativo.is_(True))
+            .all()
+        )
+
+        agora = datetime.utcnow()
+
+        por_status = {
+            status: 0
+            for status in STATUS_PROJETO
+        }
+
+        por_prioridade = {
+            prioridade: 0
+            for prioridade in PRIORIDADES_PROJETO
+        }
+
+        atrasados = 0
+        vencendo = 0
+        concluidos = 0
+
+        orcamento_total = Decimal('0')
+        custo_planejado = Decimal('0')
+        custo_real = Decimal('0')
+
+        for projeto in projetos:
+            por_status[projeto.status] = (
+                por_status.get(projeto.status, 0) + 1
+            )
+
+            por_prioridade[projeto.prioridade] = (
+                por_prioridade.get(
+                    projeto.prioridade,
+                    0,
+                ) + 1
+            )
+
+            if projeto.status == 'concluido':
+                concluidos += 1
+
+            if (
+                projeto.data_fim_prevista
+                and projeto.data_fim_prevista < agora
+                and projeto.status not in {
+                    'concluido',
+                    'cancelado',
+                    'arquivado',
+                }
+            ):
+                atrasados += 1
+
+            if projeto.data_fim_prevista:
+                dias = (
+                    projeto.data_fim_prevista - agora
+                ).days
+
+                if (
+                    0 <= dias <= 7
+                    and projeto.status not in {
+                        'concluido',
+                        'cancelado',
+                        'arquivado',
+                    }
+                ):
+                    vencendo += 1
+
+            orcamento_total += projeto.orcamento or 0
+            custo_planejado += projeto.custo_planejado or 0
+            custo_real += projeto.custo_real or 0
+
+        progresso_medio = 0
+
+        if projetos:
+            progresso_medio = round(
+                sum(
+                    projeto.percentual_concluido or 0
+                    for projeto in projetos
+                ) / len(projetos),
+                2,
+            )
+
+        return jsonify({
+            'success': True,
+            'total': len(projetos),
+            'atrasados': atrasados,
+            'vencendo_7_dias': vencendo,
+            'concluidos': concluidos,
+            'progresso_medio': progresso_medio,
+            'orcamento_total': float(orcamento_total),
+            'custo_planejado': float(custo_planejado),
+            'custo_real': float(custo_real),
+            'variacao_custo': float(
+                custo_real - custo_planejado
+            ),
+            'por_status': por_status,
+            'por_prioridade': por_prioridade,
+        }), 200
+
+    except Exception as exc:
+        return erro_banco(
+            'Erro ao carregar o dashboard',
+            exc,
+        )
+
+
+# ============================================================
+# GRUPOS E PORTFÓLIOS
+# ============================================================
+
+@projeto_bp.route('/grupos', methods=['GET'])
+def listar_grupos():
+    usuario, erro = exigir_permissao('ver')
+
+    if erro:
+        return erro
+
+    try:
+        query = ProjetoGrupo.query
+
+        if not usuario_admin(usuario):
+            ids = empresas_do_usuario(usuario)
+
+            if ids:
+                query = query.filter(
+                    or_(
+                        ProjetoGrupo.empresa_id.is_(None),
+                        ProjetoGrupo.empresa_id.in_(ids),
+                    )
+                )
+            else:
+                query = query.filter(
+                    ProjetoGrupo.empresa_id.is_(None)
+                )
+
+        if not to_bool(
+            request.args.get('incluir_inativos'),
+            False,
+        ):
+            query = query.filter(
+                ProjetoGrupo.ativo.is_(True)
+            )
+
+        grupos = query.order_by(
+            ProjetoGrupo.nome
+        ).all()
+
+        return jsonify([
+            grupo.to_dict()
+            for grupo in grupos
+        ]), 200
+
+    except Exception as exc:
+        return erro_banco(
+            'Erro ao listar grupos',
+            exc,
+        )
+
+
+@projeto_bp.route('/grupos', methods=['POST'])
+def criar_grupo():
+    usuario, erro = exigir_permissao('criar')
+
+    if erro:
+        return erro
+
+    dados = request.get_json() or {}
+    nome = str(dados.get('nome') or '').strip()
+
+    if not nome:
+        return jsonify({
+            'success': False,
+            'error': 'Nome do grupo é obrigatório',
+        }), 400
+
+    try:
+        empresa_id = to_int(dados.get('empresa_id'))
+        parent_id = to_int(dados.get('parent_id'))
+
+        if empresa_id and not Empresa.query.get(empresa_id):
+            return jsonify({
+                'success': False,
+                'error': 'Empresa não encontrada',
+            }), 400
+
+        if parent_id and not ProjetoGrupo.query.get(parent_id):
+            return jsonify({
+                'success': False,
+                'error': 'Grupo pai não encontrado',
+            }), 400
+
+        grupo = ProjetoGrupo(
+            nome=nome,
+            descricao=dados.get('descricao') or None,
+            cor=dados.get('cor') or '#2563eb',
+            ativo=to_bool(dados.get('ativo'), True),
+            empresa_id=empresa_id,
+            parent_id=parent_id,
+        )
+
+        db.session.add(grupo)
+        db.session.commit()
+
+        registrar_log(
+            usuario,
+            'create_projeto_grupo',
+            'projeto_grupo',
+            grupo.id,
+            grupo.to_dict(),
+        )
+
+        return jsonify(grupo.to_dict()), 201
+
+    except Exception as exc:
+        return erro_banco(
+            'Erro ao criar grupo',
+            exc,
+        )
+
+
+@projeto_bp.route('/grupos/<int:grupo_id>', methods=['PUT', 'PATCH'])
+def atualizar_grupo(grupo_id):
+    usuario, erro = exigir_permissao('editar')
+
+    if erro:
+        return erro
+
+    grupo = ProjetoGrupo.query.get(grupo_id)
+
+    if not grupo:
+        return jsonify({
+            'success': False,
+            'error': 'Grupo não encontrado',
+        }), 404
+
+    dados = request.get_json() or {}
+
+    try:
+        if 'nome' in dados:
+            nome = str(dados.get('nome') or '').strip()
+
+            if not nome:
+                raise ValueError(
+                    'Nome do grupo é obrigatório'
+                )
+
+            grupo.nome = nome
+
+        if 'descricao' in dados:
+            grupo.descricao = (
+                dados.get('descricao') or None
+            )
+
+        if 'cor' in dados:
+            grupo.cor = dados.get('cor') or '#2563eb'
+
+        if 'ativo' in dados:
+            grupo.ativo = to_bool(dados.get('ativo'))
+
+        if 'empresa_id' in dados:
+            empresa_id = to_int(
+                dados.get('empresa_id')
+            )
+
+            if empresa_id and not Empresa.query.get(empresa_id):
+                raise ValueError(
+                    'Empresa não encontrada'
+                )
+
+            grupo.empresa_id = empresa_id
+
+        if 'parent_id' in dados:
+            parent_id = to_int(dados.get('parent_id'))
+
+            if parent_id == grupo.id:
+                raise ValueError(
+                    'O grupo não pode ser pai dele mesmo'
+                )
+
+            if parent_id and not ProjetoGrupo.query.get(parent_id):
+                raise ValueError(
+                    'Grupo pai não encontrado'
+                )
+
+            grupo.parent_id = parent_id
+
+        db.session.commit()
+
+        registrar_log(
+            usuario,
+            'update_projeto_grupo',
+            'projeto_grupo',
+            grupo.id,
+            dados,
+        )
+
+        return jsonify(grupo.to_dict()), 200
+
+    except ValueError as exc:
+        db.session.rollback()
+
+        return jsonify({
+            'success': False,
+            'error': str(exc),
+        }), 400
+
+    except Exception as exc:
+        return erro_banco(
+            'Erro ao atualizar grupo',
+            exc,
+        )
+
+
+@projeto_bp.route('/grupos/<int:grupo_id>', methods=['DELETE'])
+def excluir_grupo(grupo_id):
+    usuario, erro = exigir_permissao('excluir')
+
+    if erro:
+        return erro
+
+    grupo = ProjetoGrupo.query.get(grupo_id)
+
+    if not grupo:
+        return jsonify({
+            'success': False,
+            'error': 'Grupo não encontrado',
+        }), 404
+
+    try:
+        grupo.ativo = False
+        db.session.commit()
+
+        registrar_log(
+            usuario,
+            'delete_projeto_grupo',
+            'projeto_grupo',
+            grupo.id,
+        )
+
+        return jsonify({
+            'success': True,
+        }), 200
+
+    except Exception as exc:
+        return erro_banco(
+            'Erro ao excluir grupo',
+            exc,
+        )
+
+
+# ============================================================
+# PROJETOS
+# ============================================================
+
+@projeto_bp.route('', methods=['GET'])
+def listar_projetos():
+    usuario, erro = exigir_permissao('ver')
+
+    if erro:
+        return erro
+
+    try:
+        query = query_projetos_permitidos(usuario)
+
+        incluir_inativos = to_bool(
+            request.args.get('incluir_inativos'),
+            False,
+        )
+
+        if not incluir_inativos:
+            query = query.filter(
+                Projeto.ativo.is_(True)
+            )
+
+        status = request.args.get('status')
+        prioridade = request.args.get('prioridade')
+        grupo_id = to_int(request.args.get('grupo_id'))
+        empresa_id = to_int(request.args.get('empresa_id'))
+        gerente_id = to_int(request.args.get('gerente_id'))
+        busca = str(request.args.get('busca') or '').strip()
+
+        if status:
+            query = query.filter(
+                Projeto.status == status
+            )
+
+        if prioridade:
+            query = query.filter(
+                Projeto.prioridade == prioridade
+            )
+
+        if grupo_id:
+            query = query.filter(
+                Projeto.grupo_id == grupo_id
+            )
+
+        if gerente_id:
+            query = query.filter(
+                Projeto.gerente_id == gerente_id
+            )
+
+        if empresa_id:
+            query = query.filter(
+                or_(
+                    Projeto.empresa_principal_id == empresa_id,
+                    Projeto.empresas.any(
+                        Empresa.id == empresa_id
+                    ),
+                )
+            )
+
+        if busca:
+            like = '%{}%'.format(busca)
+
+            query = query.filter(
+                or_(
+                    Projeto.nome.ilike(like),
+                    Projeto.codigo.ilike(like),
+                    Projeto.descricao.ilike(like),
+                )
+            )
+
+        projetos = query.order_by(
+            Projeto.atualizado_em.desc(),
+            Projeto.id.desc(),
+        ).all()
+
+        return jsonify([
+            projeto.to_dict()
+            for projeto in projetos
+        ]), 200
+
+    except Exception as exc:
+        return erro_banco(
+            'Erro ao listar projetos',
+            exc,
+        )
+
+
+@projeto_bp.route('', methods=['POST'])
+def criar_projeto():
+    usuario, erro = exigir_permissao('criar')
+
+    if erro:
+        return erro
+
+    dados = request.get_json() or {}
+    nome = str(dados.get('nome') or '').strip()
+
+    if not nome:
+        return jsonify({
+            'success': False,
+            'error': 'Nome do projeto é obrigatório',
+        }), 400
+
+    try:
+        projeto = Projeto(
+            codigo=(
+                str(dados.get('codigo')).strip()
+                if dados.get('codigo')
+                else gerar_codigo_projeto()
+            ),
+            nome=nome,
+            criado_por_id=usuario.id,
+        )
+
+        aplicar_dados_projeto(projeto, dados)
+
+        db.session.add(projeto)
+        db.session.flush()
+
+        calendario = ProjetoCalendario(
+            projeto_id=projeto.id,
+            nome='Calendário padrão',
+            padrao=True,
+            minutos_por_dia=480,
+            minutos_por_semana=2400,
+        )
+
+        db.session.add(calendario)
+        db.session.commit()
+
+        registrar_log(
+            usuario,
+            'create_projeto',
+            'projeto',
+            projeto.id,
+            {
+                'codigo': projeto.codigo,
+                'nome': projeto.nome,
+            },
+        )
+
+        return jsonify(
+            projeto.to_dict(incluir_detalhes=True)
+        ), 201
+
+    except ValueError as exc:
+        db.session.rollback()
+
+        return jsonify({
+            'success': False,
+            'error': str(exc),
+        }), 400
+
+    except Exception as exc:
+        return erro_banco(
+            'Erro ao criar projeto',
+            exc,
+        )
+
+
+@projeto_bp.route('/<int:projeto_id>', methods=['GET'])
+def obter_projeto_endpoint(projeto_id):
+    usuario, erro = exigir_permissao('ver')
+
+    if erro:
+        return erro
+
+    projeto, erro = obter_projeto(
+        projeto_id,
+        usuario,
+    )
+
+    if erro:
+        return erro
+
+    return jsonify(
+        projeto.to_dict(incluir_detalhes=True)
+    ), 200
+
+
+@projeto_bp.route('/<int:projeto_id>', methods=['PUT', 'PATCH'])
+def atualizar_projeto(projeto_id):
+    usuario, erro = exigir_permissao('editar')
+
+    if erro:
+        return erro
+
+    projeto, erro = obter_projeto(
+        projeto_id,
+        usuario,
+    )
+
+    if erro:
+        return erro
+
+    dados = request.get_json() or {}
+
+    try:
+        aplicar_dados_projeto(projeto, dados)
+        atualizar_wbs(projeto)
+
+        db.session.commit()
+
+        registrar_log(
+            usuario,
+            'update_projeto',
+            'projeto',
+            projeto.id,
+            dados,
+        )
+
+        return jsonify(
+            projeto.to_dict(incluir_detalhes=True)
+        ), 200
+
+    except ValueError as exc:
+        db.session.rollback()
+
+        return jsonify({
+            'success': False,
+            'error': str(exc),
+        }), 400
+
+    except Exception as exc:
+        return erro_banco(
+            'Erro ao atualizar projeto',
+            exc,
+        )
+
+
+@projeto_bp.route('/<int:projeto_id>', methods=['DELETE'])
+def excluir_projeto(projeto_id):
+    usuario, erro = exigir_permissao('excluir')
+
+    if erro:
+        return erro
+
+    projeto, erro = obter_projeto(
+        projeto_id,
+        usuario,
+    )
+
+    if erro:
+        return erro
+
+    try:
+        projeto.ativo = False
+        projeto.status = 'arquivado'
+
+        db.session.commit()
+
+        registrar_log(
+            usuario,
+            'delete_projeto',
+            'projeto',
+            projeto.id,
+        )
+
+        return jsonify({
+            'success': True,
+        }), 200
+
+    except Exception as exc:
+        return erro_banco(
+            'Erro ao excluir projeto',
+            exc,
+        )
+
+
+@projeto_bp.route('/<int:projeto_id>/recalcular', methods=['POST'])
+def recalcular_projeto(projeto_id):
+    usuario, erro = exigir_permissao('editar')
+
+    if erro:
+        return erro
+
+    projeto, erro = obter_projeto(
+        projeto_id,
+        usuario,
+    )
+
+    if erro:
+        return erro
+
+    try:
+        atualizar_wbs(projeto)
+        db.session.commit()
+
+        return jsonify(
+            projeto.to_dict(incluir_detalhes=True)
+        ), 200
+
+    except Exception as exc:
+        return erro_banco(
+            'Erro ao recalcular projeto',
+            exc,
+        )
+
+
+# ============================================================
+# TAREFAS
+# ============================================================
+
+@projeto_bp.route('/<int:projeto_id>/tarefas', methods=['GET'])
+def listar_tarefas(projeto_id):
+    usuario, erro = exigir_permissao('ver')
+
+    if erro:
+        return erro
+
+    projeto, erro = obter_projeto(
+        projeto_id,
+        usuario,
+    )
+
+    if erro:
+        return erro
+
+    tarefas = (
+        ProjetoTarefa.query
+        .filter_by(projeto_id=projeto.id)
+        .order_by(
+            ProjetoTarefa.ordem,
+            ProjetoTarefa.id,
+        )
+        .all()
+    )
+
+    return jsonify([
+        tarefa.to_dict()
+        for tarefa in tarefas
+    ]), 200
+
+
+@projeto_bp.route('/<int:projeto_id>/tarefas', methods=['POST'])
+def criar_tarefa(projeto_id):
+    usuario, erro = exigir_permissao('editar')
+
+    if erro:
+        return erro
+
+    projeto, erro = obter_projeto(
+        projeto_id,
+        usuario,
+    )
+
+    if erro:
+        return erro
+
+    dados = request.get_json() or {}
+    nome = str(dados.get('nome') or '').strip()
+
+    if not nome:
+        return jsonify({
+            'success': False,
+            'error': 'Nome da tarefa é obrigatório',
+        }), 400
+
+    try:
+        parent_id = to_int(dados.get('parent_id'))
+
+        if parent_id:
+            pai = ProjetoTarefa.query.get(parent_id)
+
+            if not pai or pai.projeto_id != projeto.id:
+                raise ValueError(
+                    'Tarefa pai inválida'
+                )
+
+        maior_ordem = (
+            db.session.query(
+                db.func.max(ProjetoTarefa.ordem)
+            )
+            .filter(
+                ProjetoTarefa.projeto_id == projeto.id
+            )
+            .scalar()
+            or 0
+        )
+
+        tarefa = ProjetoTarefa(
+            projeto_id=projeto.id,
+            parent_id=parent_id,
+            nome=nome,
+            ordem=maior_ordem + 1,
+            data_inicio=(
+                parse_datetime(dados.get('data_inicio'))
+                or projeto.data_inicio
+                or datetime.utcnow()
+            ),
+        )
+
+        aplicar_dados_tarefa(tarefa, dados)
+
+        if tarefa.e_marco:
+            tarefa.data_fim = tarefa.data_inicio
+
+        db.session.add(tarefa)
+        db.session.flush()
+
+        atualizar_wbs(projeto)
+        db.session.commit()
+
+        registrar_log(
+            usuario,
+            'create_projeto_tarefa',
+            'projeto_tarefa',
+            tarefa.id,
+            {
+                'projeto_id': projeto.id,
+                'nome': tarefa.nome,
+            },
+        )
+
+        return jsonify(tarefa.to_dict()), 201
+
+    except ValueError as exc:
+        db.session.rollback()
+
+        return jsonify({
+            'success': False,
+            'error': str(exc),
+        }), 400
+
+    except Exception as exc:
+        return erro_banco(
+            'Erro ao criar tarefa',
+            exc,
+        )
+
+
+@projeto_bp.route(
+    '/<int:projeto_id>/tarefas/<int:tarefa_id>',
+    methods=['PUT', 'PATCH'],
+)
+def atualizar_tarefa(projeto_id, tarefa_id):
+    usuario, erro = exigir_permissao('editar')
+
+    if erro:
+        return erro
+
+    projeto, erro = obter_projeto(
+        projeto_id,
+        usuario,
+    )
+
+    if erro:
+        return erro
+
+    tarefa = ProjetoTarefa.query.filter_by(
+        id=tarefa_id,
+        projeto_id=projeto.id,
+    ).first()
+
+    if not tarefa:
+        return jsonify({
+            'success': False,
+            'error': 'Tarefa não encontrada',
+        }), 404
+
+    dados = request.get_json() or {}
+
+    try:
+        if 'parent_id' in dados:
+            parent_id = to_int(dados.get('parent_id'))
+
+            if parent_id:
+                pai = ProjetoTarefa.query.filter_by(
+                    id=parent_id,
+                    projeto_id=projeto.id,
+                ).first()
+
+                if not pai:
+                    raise ValueError(
+                        'Tarefa pai inválida'
+                    )
+
+                if tarefa_eh_descendente(tarefa, pai):
+                    raise ValueError(
+                        'Essa alteração criaria um ciclo'
+                    )
+
+            tarefa.parent_id = parent_id
+
+        aplicar_dados_tarefa(tarefa, dados)
+        atualizar_wbs(projeto)
+
+        db.session.commit()
+
+        registrar_log(
+            usuario,
+            'update_projeto_tarefa',
+            'projeto_tarefa',
+            tarefa.id,
+            dados,
+        )
+
+        return jsonify(tarefa.to_dict()), 200
+
+    except ValueError as exc:
+        db.session.rollback()
+
+        return jsonify({
+            'success': False,
+            'error': str(exc),
+        }), 400
+
+    except Exception as exc:
+        return erro_banco(
+            'Erro ao atualizar tarefa',
+            exc,
+        )
+
+
+@projeto_bp.route(
+    '/<int:projeto_id>/tarefas/<int:tarefa_id>',
+    methods=['DELETE'],
+)
+def excluir_tarefa(projeto_id, tarefa_id):
+    usuario, erro = exigir_permissao('editar')
+
+    if erro:
+        return erro
+
+    projeto, erro = obter_projeto(
+        projeto_id,
+        usuario,
+    )
+
+    if erro:
+        return erro
+
+    tarefa = ProjetoTarefa.query.filter_by(
+        id=tarefa_id,
+        projeto_id=projeto.id,
+    ).first()
+
+    if not tarefa:
+        return jsonify({
+            'success': False,
+            'error': 'Tarefa não encontrada',
+        }), 404
+
+    try:
+        # Subtarefas voltam para o mesmo nível da tarefa removida.
+        for filho in tarefa.filhos:
+            filho.parent_id = tarefa.parent_id
+
+        db.session.delete(tarefa)
+        db.session.flush()
+
+        atualizar_wbs(projeto)
+        db.session.commit()
+
+        registrar_log(
+            usuario,
+            'delete_projeto_tarefa',
+            'projeto_tarefa',
+            tarefa_id,
+            {
+                'projeto_id': projeto.id,
+            },
+        )
+
+        return jsonify({
+            'success': True,
+        }), 200
+
+    except Exception as exc:
+        return erro_banco(
+            'Erro ao excluir tarefa',
+            exc,
+        )
+
+
+@projeto_bp.route(
+    '/<int:projeto_id>/tarefas/reordenar',
+    methods=['POST'],
+)
+def reordenar_tarefas(projeto_id):
+    usuario, erro = exigir_permissao('editar')
+
+    if erro:
+        return erro
+
+    projeto, erro = obter_projeto(
+        projeto_id,
+        usuario,
+    )
+
+    if erro:
+        return erro
+
+    dados = request.get_json() or {}
+    itens = dados.get('tarefas', [])
+
+    if not isinstance(itens, list):
+        return jsonify({
+            'success': False,
+            'error': 'Lista de tarefas inválida',
+        }), 400
+
+    try:
+        tarefas = {
+            tarefa.id: tarefa
+            for tarefa in projeto.tarefas
+        }
+
+        for indice, item in enumerate(itens):
+            tarefa_id = to_int(item.get('id'))
+            tarefa = tarefas.get(tarefa_id)
+
+            if not tarefa:
+                continue
+
+            parent_id = to_int(item.get('parent_id'))
+
+            if parent_id:
+                pai = tarefas.get(parent_id)
+
+                if not pai:
+                    raise ValueError(
+                        'Tarefa pai inválida'
+                    )
+
+                if tarefa_eh_descendente(tarefa, pai):
+                    raise ValueError(
+                        'A hierarquia criaria um ciclo'
+                    )
+
+            tarefa.parent_id = parent_id
+            tarefa.ordem = to_int(
+                item.get('ordem'),
+                indice + 1,
+            )
+
+        atualizar_wbs(projeto)
+        db.session.commit()
+
+        return jsonify([
+            tarefa.to_dict()
+            for tarefa in sorted(
+                projeto.tarefas,
+                key=lambda item: item.ordem,
+            )
+        ]), 200
+
+    except ValueError as exc:
+        db.session.rollback()
+
+        return jsonify({
+            'success': False,
+            'error': str(exc),
+        }), 400
+
+    except Exception as exc:
+        return erro_banco(
+            'Erro ao reordenar tarefas',
+            exc,
+        )
+
+
+@projeto_bp.route(
+    '/<int:projeto_id>/tarefas/lote',
+    methods=['PUT', 'PATCH'],
+)
+def atualizar_tarefas_lote(projeto_id):
+    """
+    Usado pelo Gantt para salvar várias alterações de uma vez.
+
+    Payload:
+    {
+        "tarefas": [
+            {
+                "id": 1,
+                "data_inicio": "2026-07-20T08:00:00",
+                "data_fim": "2026-07-22T17:00:00",
+                "percentual_concluido": 50
+            }
+        ]
+    }
+    """
+
+    usuario, erro = exigir_permissao('editar')
+
+    if erro:
+        return erro
+
+    projeto, erro = obter_projeto(
+        projeto_id,
+        usuario,
+    )
+
+    if erro:
+        return erro
+
+    dados = request.get_json() or {}
+    itens = dados.get('tarefas', [])
+
+    if not isinstance(itens, list):
+        return jsonify({
+            'success': False,
+            'error': 'Lista de tarefas inválida',
+        }), 400
+
+    try:
+        tarefas = {
+            tarefa.id: tarefa
+            for tarefa in projeto.tarefas
+        }
+
+        for item in itens:
+            tarefa = tarefas.get(
+                to_int(item.get('id'))
+            )
+
+            if not tarefa:
+                continue
+
+            aplicar_dados_tarefa(tarefa, item)
+
+            if 'parent_id' in item:
+                parent_id = to_int(
+                    item.get('parent_id')
+                )
+
+                if parent_id:
+                    pai = tarefas.get(parent_id)
+
+                    if not pai:
+                        raise ValueError(
+                            'Tarefa pai inválida'
+                        )
+
+                    if tarefa_eh_descendente(tarefa, pai):
+                        raise ValueError(
+                            'A hierarquia criaria um ciclo'
+                        )
+
+                tarefa.parent_id = parent_id
+
+        atualizar_wbs(projeto)
+        db.session.commit()
+
+        return jsonify({
+            'success': True,
+            'projeto': projeto.to_dict(
+                incluir_detalhes=True
+            ),
+        }), 200
+
+    except ValueError as exc:
+        db.session.rollback()
+
+        return jsonify({
+            'success': False,
+            'error': str(exc),
+        }), 400
+
+    except Exception as exc:
+        return erro_banco(
+            'Erro ao salvar tarefas',
+            exc,
+        )
+
+
+# ============================================================
+# DEPENDÊNCIAS
+# ============================================================
+
+def dependencia_cria_ciclo(projeto_id, predecessora_id, sucessora_id):
+    dependencias = (
+        ProjetoDependencia.query
+        .join(
+            ProjetoTarefa,
+            ProjetoDependencia.predecessora_id
+            == ProjetoTarefa.id,
+        )
+        .filter(
+            ProjetoTarefa.projeto_id == projeto_id
+        )
+        .all()
+    )
+
+    grafo = {}
+
+    for dependencia in dependencias:
+        grafo.setdefault(
+            dependencia.predecessora_id,
+            set(),
+        ).add(dependencia.sucessora_id)
+
+    grafo.setdefault(
+        predecessora_id,
+        set(),
+    ).add(sucessora_id)
+
+    pilha = [sucessora_id]
+    visitados = set()
+
+    while pilha:
+        atual = pilha.pop()
+
+        if atual == predecessora_id:
+            return True
+
+        if atual in visitados:
+            continue
+
+        visitados.add(atual)
+        pilha.extend(grafo.get(atual, []))
+
+    return False
+
+
+@projeto_bp.route(
+    '/<int:projeto_id>/dependencias',
+    methods=['POST'],
+)
+def criar_dependencia(projeto_id):
+    usuario, erro = exigir_permissao('editar')
+
+    if erro:
+        return erro
+
+    projeto, erro = obter_projeto(
+        projeto_id,
+        usuario,
+    )
+
+    if erro:
+        return erro
+
+    dados = request.get_json() or {}
+
+    predecessora_id = to_int(
+        dados.get('predecessora_id')
+    )
+
+    sucessora_id = to_int(
+        dados.get('sucessora_id')
+    )
+
+    tipo = str(
+        dados.get('tipo') or 'FS'
+    ).upper()
+
+    if not predecessora_id or not sucessora_id:
+        return jsonify({
+            'success': False,
+            'error': (
+                'Predecessora e sucessora são obrigatórias'
+            ),
+        }), 400
+
+    if predecessora_id == sucessora_id:
+        return jsonify({
+            'success': False,
+            'error': (
+                'Uma tarefa não pode depender dela mesma'
+            ),
+        }), 400
+
+    if tipo not in TIPOS_DEPENDENCIA:
+        return jsonify({
+            'success': False,
+            'error': 'Tipo de dependência inválido',
+        }), 400
+
+    predecessora = ProjetoTarefa.query.filter_by(
+        id=predecessora_id,
+        projeto_id=projeto.id,
+    ).first()
+
+    sucessora = ProjetoTarefa.query.filter_by(
+        id=sucessora_id,
+        projeto_id=projeto.id,
+    ).first()
+
+    if not predecessora or not sucessora:
+        return jsonify({
+            'success': False,
+            'error': 'Tarefa inválida',
+        }), 400
+
+    if dependencia_cria_ciclo(
+        projeto.id,
+        predecessora_id,
+        sucessora_id,
+    ):
+        return jsonify({
+            'success': False,
+            'error': (
+                'A dependência criaria um ciclo'
+            ),
+        }), 400
+
+    try:
+        existente = ProjetoDependencia.query.filter_by(
+            predecessora_id=predecessora_id,
+            sucessora_id=sucessora_id,
+        ).first()
+
+        if existente:
+            existente.tipo = tipo
+            existente.atraso_minutos = to_int(
+                dados.get('atraso_minutos'),
+                0,
+            )
+
+            dependencia = existente
+        else:
+            dependencia = ProjetoDependencia(
+                predecessora_id=predecessora_id,
+                sucessora_id=sucessora_id,
+                tipo=tipo,
+                atraso_minutos=to_int(
+                    dados.get('atraso_minutos'),
+                    0,
+                ),
+            )
+
+            db.session.add(dependencia)
+
+        db.session.commit()
+
+        return jsonify(
+            dependencia.to_dict()
+        ), 201
+
+    except Exception as exc:
+        return erro_banco(
+            'Erro ao criar dependência',
+            exc,
+        )
+
+
+@projeto_bp.route(
+    '/<int:projeto_id>/dependencias/<int:dependencia_id>',
+    methods=['PUT', 'PATCH'],
+)
+def atualizar_dependencia(projeto_id, dependencia_id):
+    usuario, erro = exigir_permissao('editar')
+
+    if erro:
+        return erro
+
+    projeto, erro = obter_projeto(
+        projeto_id,
+        usuario,
+    )
+
+    if erro:
+        return erro
+
+    dependencia = ProjetoDependencia.query.get(
+        dependencia_id
+    )
+
+    if (
+        not dependencia
+        or dependencia.predecessora.projeto_id != projeto.id
+    ):
+        return jsonify({
+            'success': False,
+            'error': 'Dependência não encontrada',
+        }), 404
+
+    dados = request.get_json() or {}
+
+    try:
+        if 'tipo' in dados:
+            tipo = str(dados.get('tipo')).upper()
+
+            if tipo not in TIPOS_DEPENDENCIA:
+                raise ValueError(
+                    'Tipo de dependência inválido'
+                )
+
+            dependencia.tipo = tipo
+
+        if 'atraso_minutos' in dados:
+            dependencia.atraso_minutos = to_int(
+                dados.get('atraso_minutos'),
+                0,
+            )
+
+        db.session.commit()
+
+        return jsonify(
+            dependencia.to_dict()
+        ), 200
+
+    except ValueError as exc:
+        db.session.rollback()
+
+        return jsonify({
+            'success': False,
+            'error': str(exc),
+        }), 400
+
+    except Exception as exc:
+        return erro_banco(
+            'Erro ao atualizar dependência',
+            exc,
+        )
+
+
+@projeto_bp.route(
+    '/<int:projeto_id>/dependencias/<int:dependencia_id>',
+    methods=['DELETE'],
+)
+def excluir_dependencia(projeto_id, dependencia_id):
+    usuario, erro = exigir_permissao('editar')
+
+    if erro:
+        return erro
+
+    projeto, erro = obter_projeto(
+        projeto_id,
+        usuario,
+    )
+
+    if erro:
+        return erro
+
+    dependencia = ProjetoDependencia.query.get(
+        dependencia_id
+    )
+
+    if (
+        not dependencia
+        or dependencia.predecessora.projeto_id != projeto.id
+    ):
+        return jsonify({
+            'success': False,
+            'error': 'Dependência não encontrada',
+        }), 404
+
+    try:
+        db.session.delete(dependencia)
+        db.session.commit()
+
+        return jsonify({
+            'success': True,
+        }), 200
+
+    except Exception as exc:
+        return erro_banco(
+            'Erro ao excluir dependência',
+            exc,
+        )
+
+
+# ============================================================
+# RECURSOS
+# ============================================================
+
+@projeto_bp.route(
+    '/<int:projeto_id>/recursos',
+    methods=['GET'],
+)
+def listar_recursos(projeto_id):
+    usuario, erro = exigir_permissao('ver')
+
+    if erro:
+        return erro
+
+    projeto, erro = obter_projeto(
+        projeto_id,
+        usuario,
+    )
+
+    if erro:
+        return erro
+
+    return jsonify([
+        recurso.to_dict()
+        for recurso in projeto.recursos
+    ]), 200
+
+
+
+class ErroRecursoProjeto(ValueError):
+    def __init__(self, mensagem, status_code=400):
+        super().__init__(mensagem)
+        self.status_code = status_code
+
+
+def _empresa_ids_usuario_projeto(usuario):
+    ids = set()
+
+    if not usuario:
+        return ids
+
+    getter = getattr(usuario, 'get_empresa_ids', None)
+
+    if callable(getter):
+        try:
+            for empresa_id in getter() or []:
+                if empresa_id is not None:
+                    ids.add(int(empresa_id))
+        except Exception:
+            pass
+
+    empresa_id = getattr(usuario, 'empresa_id', None)
+
+    if empresa_id is not None:
+        try:
+            ids.add(int(empresa_id))
+        except (TypeError, ValueError):
+            pass
+
+    empresas = getattr(usuario, 'empresas', None)
+
+    if empresas:
+        try:
+            for empresa in empresas:
+                valor = getattr(empresa, 'id', empresa)
+
+                if valor is not None:
+                    ids.add(int(valor))
+        except Exception:
+            pass
+
+    return ids
+
+
+def validar_usuario_recurso_projeto(
+    projeto,
+    usuario_id,
+    recurso_id=None,
+):
+    if not usuario_id:
+        return None
+
+    usuario_recurso = Usuario.query.get(usuario_id)
+
+    if not usuario_recurso:
+        raise ErroRecursoProjeto(
+            'Usuário não encontrado',
+            404,
+        )
+
+    if (
+        hasattr(usuario_recurso, 'ativo')
+        and usuario_recurso.ativo is False
+    ):
+        raise ErroRecursoProjeto(
+            'Este usuário está inativo',
+            400,
+        )
+
+    empresa_projeto_id = getattr(
+        projeto,
+        'empresa_principal_id',
+        None,
+    )
+
+    if empresa_projeto_id:
+        empresas_usuario = _empresa_ids_usuario_projeto(
+            usuario_recurso
+        )
+
+        if int(empresa_projeto_id) not in empresas_usuario:
+            raise ErroRecursoProjeto(
+                'O usuário não possui acesso à empresa deste projeto',
+                403,
+            )
+
+    duplicado = ProjetoRecurso.query.filter_by(
+        projeto_id=projeto.id,
+        usuario_id=usuario_id,
+    )
+
+    if recurso_id:
+        duplicado = duplicado.filter(
+            ProjetoRecurso.id != recurso_id
+        )
+
+    if duplicado.first():
+        raise ErroRecursoProjeto(
+            'Este usuário já foi adicionado ao projeto',
+            409,
+        )
+
+    return usuario_recurso
+
+
+@projeto_bp.route(
+    '/<int:projeto_id>/recursos',
+    methods=['POST'],
+)
+def criar_recurso(projeto_id):
+    usuario, erro = exigir_permissao('editar')
+
+    if erro:
+        return erro
+
+    projeto, erro = obter_projeto(
+        projeto_id,
+        usuario,
+    )
+
+    if erro:
+        return erro
+
+    dados = request.get_json() or {}
+    usuario_id = to_int(dados.get('usuario_id'))
+
+    try:
+        usuario_recurso = validar_usuario_recurso_projeto(
+            projeto,
+            usuario_id,
+        )
+    except ErroRecursoProjeto as exc:
+        return jsonify({
+            'success': False,
+            'error': str(exc),
+        }), exc.status_code
+
+    nome = str(
+        dados.get('nome')
+        or (
+            usuario_recurso.nome_completo
+            if usuario_recurso else ''
+        )
+        or (
+            usuario_recurso.username
+            if usuario_recurso else ''
+        )
+    ).strip()
+
+    if not nome:
+        return jsonify({
+            'success': False,
+            'error': 'Nome do recurso é obrigatório',
+        }), 400
+
+    tipo = str(
+        dados.get('tipo') or 'trabalho'
+    ).lower()
+
+    if tipo not in TIPOS_RECURSO:
+        return jsonify({
+            'success': False,
+            'error': 'Tipo de recurso inválido',
+        }), 400
+
+    if usuario_id and tipo != 'trabalho':
+        return jsonify({
+            'success': False,
+            'error': (
+                'Usuários somente podem ser vinculados '
+                'a recursos do tipo trabalho'
+            ),
+        }), 400
+
+    try:
+        recurso = ProjetoRecurso(
+            projeto_id=projeto.id,
+            usuario_id=usuario_id,
+            nome=nome,
+            email=(
+                dados.get('email')
+                or (
+                    usuario_recurso.email
+                    if usuario_recurso else None
+                )
+            ),
+            tipo=tipo,
+            unidade_material=(
+                dados.get('unidade_material') or None
+            ),
+            capacidade_percentual=to_float(
+                dados.get('capacidade_percentual'),
+                100,
+            ),
+            custo_hora=to_decimal(
+                dados.get('custo_hora')
+            ),
+            custo_hora_extra=to_decimal(
+                dados.get('custo_hora_extra')
+            ),
+            custo_por_uso=to_decimal(
+                dados.get('custo_por_uso')
+            ),
+            ativo=to_bool(
+                dados.get('ativo'),
+                True,
+            ),
+        )
+
+        db.session.add(recurso)
+        db.session.commit()
+
+        return jsonify(recurso.to_dict()), 201
+
+    except Exception as exc:
+        return erro_banco(
+            'Erro ao criar recurso',
+            exc,
+        )
+
+
+@projeto_bp.route(
+    '/<int:projeto_id>/recursos/<int:recurso_id>',
+    methods=['PUT', 'PATCH'],
+)
+def atualizar_recurso(projeto_id, recurso_id):
+    usuario, erro = exigir_permissao('editar')
+
+    if erro:
+        return erro
+
+    projeto, erro = obter_projeto(
+        projeto_id,
+        usuario,
+    )
+
+    if erro:
+        return erro
+
+    recurso = ProjetoRecurso.query.filter_by(
+        id=recurso_id,
+        projeto_id=projeto.id,
+    ).first()
+
+    if not recurso:
+        return jsonify({
+            'success': False,
+            'error': 'Recurso não encontrado',
+        }), 404
+
+    dados = request.get_json() or {}
+
+    try:
+        for campo in {
+            'nome',
+            'email',
+            'unidade_material',
+        }:
+            if campo in dados:
+                setattr(
+                    recurso,
+                    campo,
+                    dados.get(campo) or None,
+                )
+
+        if 'tipo' in dados:
+            tipo = str(dados.get('tipo')).lower()
+
+            if tipo not in TIPOS_RECURSO:
+                raise ValueError(
+                    'Tipo de recurso inválido'
+                )
+
+            recurso.tipo = tipo
+
+        if 'usuario_id' in dados:
+            usuario_id = to_int(
+                dados.get('usuario_id')
+            )
+
+            usuario_recurso = validar_usuario_recurso_projeto(
+                projeto,
+                usuario_id,
+                recurso.id,
+            )
+
+            recurso.usuario_id = usuario_id
+
+            if usuario_recurso:
+                if 'nome' not in dados:
+                    recurso.nome = str(
+                        getattr(
+                            usuario_recurso,
+                            'nome_completo',
+                            None,
+                        )
+                        or getattr(
+                            usuario_recurso,
+                            'username',
+                            None,
+                        )
+                        or recurso.nome
+                    ).strip()
+
+                if 'email' not in dados:
+                    recurso.email = getattr(
+                        usuario_recurso,
+                        'email',
+                        None,
+                    )
+
+        if 'capacidade_percentual' in dados:
+            recurso.capacidade_percentual = to_float(
+                dados.get('capacidade_percentual'),
+                100,
+            )
+
+        for campo in {
+            'custo_hora',
+            'custo_hora_extra',
+            'custo_por_uso',
+        }:
+            if campo in dados:
+                setattr(
+                    recurso,
+                    campo,
+                    to_decimal(dados.get(campo)),
+                )
+
+        if 'ativo' in dados:
+            recurso.ativo = to_bool(
+                dados.get('ativo')
+            )
+
+        db.session.commit()
+
+        return jsonify(recurso.to_dict()), 200
+
+    except ErroRecursoProjeto as exc:
+        db.session.rollback()
+
+        return jsonify({
+            'success': False,
+            'error': str(exc),
+        }), exc.status_code
+
+    except ValueError as exc:
+        db.session.rollback()
+
+        return jsonify({
+            'success': False,
+            'error': str(exc),
+        }), 400
+
+    except Exception as exc:
+        return erro_banco(
+            'Erro ao atualizar recurso',
+            exc,
+        )
+
+
+@projeto_bp.route(
+    '/<int:projeto_id>/recursos/<int:recurso_id>',
+    methods=['DELETE'],
+)
+def excluir_recurso(projeto_id, recurso_id):
+    usuario, erro = exigir_permissao('editar')
+
+    if erro:
+        return erro
+
+    projeto, erro = obter_projeto(
+        projeto_id,
+        usuario,
+    )
+
+    if erro:
+        return erro
+
+    recurso = ProjetoRecurso.query.filter_by(
+        id=recurso_id,
+        projeto_id=projeto.id,
+    ).first()
+
+    if not recurso:
+        return jsonify({
+            'success': False,
+            'error': 'Recurso não encontrado',
+        }), 404
+
+    try:
+        db.session.delete(recurso)
+        db.session.commit()
+
+        return jsonify({
+            'success': True,
+        }), 200
+
+    except Exception as exc:
+        return erro_banco(
+            'Erro ao excluir recurso',
+            exc,
+        )
+
+
+# ============================================================
+# ALOCAÇÕES
+# ============================================================
+
+@projeto_bp.route(
+    '/<int:projeto_id>/alocacoes',
+    methods=['POST'],
+)
+def criar_alocacao(projeto_id):
+    usuario, erro = exigir_permissao('editar')
+
+    if erro:
+        return erro
+
+    projeto, erro = obter_projeto(
+        projeto_id,
+        usuario,
+    )
+
+    if erro:
+        return erro
+
+    dados = request.get_json() or {}
+
+    tarefa = ProjetoTarefa.query.filter_by(
+        id=to_int(dados.get('tarefa_id')),
+        projeto_id=projeto.id,
+    ).first()
+
+    recurso = ProjetoRecurso.query.filter_by(
+        id=to_int(dados.get('recurso_id')),
+        projeto_id=projeto.id,
+    ).first()
+
+    if not tarefa or not recurso:
+        return jsonify({
+            'success': False,
+            'error': 'Tarefa ou recurso inválido',
+        }), 400
+
+    try:
+        alocacao = ProjetoAlocacao.query.filter_by(
+            tarefa_id=tarefa.id,
+            recurso_id=recurso.id,
+        ).first()
+
+        if not alocacao:
+            alocacao = ProjetoAlocacao(
+                tarefa_id=tarefa.id,
+                recurso_id=recurso.id,
+            )
+
+            db.session.add(alocacao)
+
+        alocacao.unidades_percentual = to_float(
+            dados.get('unidades_percentual'),
+            100,
+        )
+
+        alocacao.trabalho_minutos = to_int(
+            dados.get('trabalho_minutos'),
+            tarefa.trabalho_minutos,
+        )
+
+        alocacao.trabalho_real_minutos = to_int(
+            dados.get('trabalho_real_minutos'),
+            0,
+        )
+
+        horas = Decimal(
+            str(alocacao.trabalho_minutos or 0)
+        ) / Decimal('60')
+
+        alocacao.custo_planejado = (
+            horas * (recurso.custo_hora or 0)
+            + (recurso.custo_por_uso or 0)
+        )
+
+        alocacao.custo_real = to_decimal(
+            dados.get('custo_real')
+        )
+
+        atualizar_wbs(projeto)
+        db.session.commit()
+
+        return jsonify(alocacao.to_dict()), 201
+
+    except Exception as exc:
+        return erro_banco(
+            'Erro ao criar alocação',
+            exc,
+        )
+
+
+@projeto_bp.route(
+    '/<int:projeto_id>/alocacoes/<int:alocacao_id>',
+    methods=['DELETE'],
+)
+def excluir_alocacao(projeto_id, alocacao_id):
+    usuario, erro = exigir_permissao('editar')
+
+    if erro:
+        return erro
+
+    projeto, erro = obter_projeto(
+        projeto_id,
+        usuario,
+    )
+
+    if erro:
+        return erro
+
+    alocacao = ProjetoAlocacao.query.get(
+        alocacao_id
+    )
+
+    if (
+        not alocacao
+        or alocacao.tarefa.projeto_id != projeto.id
+    ):
+        return jsonify({
+            'success': False,
+            'error': 'Alocação não encontrada',
+        }), 404
+
+    try:
+        db.session.delete(alocacao)
+        db.session.flush()
+
+        atualizar_wbs(projeto)
+        db.session.commit()
+
+        return jsonify({
+            'success': True,
+        }), 200
+
+    except Exception as exc:
+        return erro_banco(
+            'Erro ao excluir alocação',
+            exc,
+        )
+
+
+# ============================================================
+# CALENDÁRIOS
+# ============================================================
+
+@projeto_bp.route(
+    '/<int:projeto_id>/calendarios',
+    methods=['GET'],
+)
+def listar_calendarios(projeto_id):
+    usuario, erro = exigir_permissao('ver')
+
+    if erro:
+        return erro
+
+    projeto, erro = obter_projeto(
+        projeto_id,
+        usuario,
+    )
+
+    if erro:
+        return erro
+
+    return jsonify([
+        calendario.to_dict()
+        for calendario in projeto.calendarios
+    ]), 200
+
+
+@projeto_bp.route(
+    '/<int:projeto_id>/calendarios',
+    methods=['POST'],
+)
+def criar_calendario(projeto_id):
+    usuario, erro = exigir_permissao('editar')
+
+    if erro:
+        return erro
+
+    projeto, erro = obter_projeto(
+        projeto_id,
+        usuario,
+    )
+
+    if erro:
+        return erro
+
+    dados = request.get_json() or {}
+    nome = str(dados.get('nome') or '').strip()
+
+    if not nome:
+        return jsonify({
+            'success': False,
+            'error': 'Nome do calendário é obrigatório',
+        }), 400
+
+    try:
+        calendario = ProjetoCalendario(
+            projeto_id=projeto.id,
+            nome=nome,
+            padrao=to_bool(dados.get('padrao')),
+            minutos_por_dia=to_int(
+                dados.get('minutos_por_dia'),
+                480,
+            ),
+            minutos_por_semana=to_int(
+                dados.get('minutos_por_semana'),
+                2400,
+            ),
+        )
+
+        calendario.set_dias_uteis(
+            dados.get(
+                'dias_uteis',
+                [0, 1, 2, 3, 4],
+            )
+        )
+
+        calendario.set_horarios(
+            dados.get('horarios', {})
+        )
+
+        calendario.set_excecoes(
+            dados.get('excecoes', [])
+        )
+
+        if calendario.padrao:
+            ProjetoCalendario.query.filter_by(
+                projeto_id=projeto.id,
+                padrao=True,
+            ).update({
+                'padrao': False
+            })
+
+        db.session.add(calendario)
+        db.session.commit()
+
+        return jsonify(calendario.to_dict()), 201
+
+    except Exception as exc:
+        return erro_banco(
+            'Erro ao criar calendário',
+            exc,
+        )
+
+
+@projeto_bp.route(
+    '/<int:projeto_id>/calendarios/<int:calendario_id>',
+    methods=['PUT', 'PATCH'],
+)
+def atualizar_calendario(projeto_id, calendario_id):
+    usuario, erro = exigir_permissao('editar')
+
+    if erro:
+        return erro
+
+    projeto, erro = obter_projeto(
+        projeto_id,
+        usuario,
+    )
+
+    if erro:
+        return erro
+
+    calendario = ProjetoCalendario.query.filter_by(
+        id=calendario_id,
+        projeto_id=projeto.id,
+    ).first()
+
+    if not calendario:
+        return jsonify({
+            'success': False,
+            'error': 'Calendário não encontrado',
+        }), 404
+
+    dados = request.get_json() or {}
+
+    try:
+        if 'nome' in dados:
+            calendario.nome = str(
+                dados.get('nome') or ''
+            ).strip()
+
+        if 'minutos_por_dia' in dados:
+            calendario.minutos_por_dia = to_int(
+                dados.get('minutos_por_dia'),
+                480,
+            )
+
+        if 'minutos_por_semana' in dados:
+            calendario.minutos_por_semana = to_int(
+                dados.get('minutos_por_semana'),
+                2400,
+            )
+
+        if 'dias_uteis' in dados:
+            calendario.set_dias_uteis(
+                dados.get('dias_uteis')
+            )
+
+        if 'horarios' in dados:
+            calendario.set_horarios(
+                dados.get('horarios')
+            )
+
+        if 'excecoes' in dados:
+            calendario.set_excecoes(
+                dados.get('excecoes')
+            )
+
+        if 'padrao' in dados:
+            calendario.padrao = to_bool(
+                dados.get('padrao')
+            )
+
+            if calendario.padrao:
+                (
+                    ProjetoCalendario.query
+                    .filter(
+                        ProjetoCalendario.projeto_id
+                        == projeto.id,
+                        ProjetoCalendario.id
+                        != calendario.id,
+                    )
+                    .update(
+                        {'padrao': False},
+                        synchronize_session=False,
+                    )
+                )
+
+        db.session.commit()
+
+        return jsonify(calendario.to_dict()), 200
+
+    except Exception as exc:
+        return erro_banco(
+            'Erro ao atualizar calendário',
+            exc,
+        )
+
+
+# ============================================================
+# LINHAS DE BASE
+# ============================================================
+
+@projeto_bp.route(
+    '/<int:projeto_id>/linhas-base',
+    methods=['GET'],
+)
+def listar_linhas_base(projeto_id):
+    usuario, erro = exigir_permissao('ver')
+
+    if erro:
+        return erro
+
+    projeto, erro = obter_projeto(
+        projeto_id,
+        usuario,
+    )
+
+    if erro:
+        return erro
+
+    linhas = (
+        ProjetoLinhaBase.query
+        .filter_by(projeto_id=projeto.id)
+        .order_by(
+            ProjetoLinhaBase.criado_em.desc()
+        )
+        .all()
+    )
+
+    return jsonify([
+        linha.to_dict(incluir_dados=False)
+        for linha in linhas
+    ]), 200
+
+
+@projeto_bp.route(
+    '/<int:projeto_id>/linhas-base',
+    methods=['POST'],
+)
+def criar_linha_base(projeto_id):
+    usuario, erro = exigir_permissao('editar')
+
+    if erro:
+        return erro
+
+    projeto, erro = obter_projeto(
+        projeto_id,
+        usuario,
+    )
+
+    if erro:
+        return erro
+
+    dados = request.get_json() or {}
+
+    nome = str(
+        dados.get('nome')
+        or 'Linha de base {}'.format(
+            datetime.utcnow().strftime(
+                '%d/%m/%Y %H:%M'
+            )
+        )
+    ).strip()
+
+    try:
+        snapshot = projeto.to_dict(
+            incluir_detalhes=True
+        )
+
+        linha = ProjetoLinhaBase(
+            projeto_id=projeto.id,
+            nome=nome,
+            criado_por_id=usuario.id,
+            dados_json=json.dumps(
+                snapshot,
+                ensure_ascii=False,
+                default=str,
+            ),
+        )
+
+        db.session.add(linha)
+        db.session.commit()
+
+        registrar_log(
+            usuario,
+            'create_projeto_linha_base',
+            'projeto_linha_base',
+            linha.id,
+            {
+                'projeto_id': projeto.id,
+                'nome': linha.nome,
+            },
+        )
+
+        return jsonify(
+            linha.to_dict(incluir_dados=True)
+        ), 201
+
+    except Exception as exc:
+        return erro_banco(
+            'Erro ao criar linha de base',
+            exc,
+        )
+
+
+@projeto_bp.route(
+    '/<int:projeto_id>/linhas-base/<int:linha_id>',
+    methods=['GET'],
+)
+def obter_linha_base(projeto_id, linha_id):
+    usuario, erro = exigir_permissao('ver')
+
+    if erro:
+        return erro
+
+    projeto, erro = obter_projeto(
+        projeto_id,
+        usuario,
+    )
+
+    if erro:
+        return erro
+
+    linha = ProjetoLinhaBase.query.filter_by(
+        id=linha_id,
+        projeto_id=projeto.id,
+    ).first()
+
+    if not linha:
+        return jsonify({
+            'success': False,
+            'error': 'Linha de base não encontrada',
+        }), 404
+
+    return jsonify(
+        linha.to_dict(incluir_dados=True)
+    ), 200
+
+
+@projeto_bp.route(
+    '/<int:projeto_id>/linhas-base/<int:linha_id>',
+    methods=['DELETE'],
+)
+def excluir_linha_base(projeto_id, linha_id):
+    usuario, erro = exigir_permissao('editar')
+
+    if erro:
+        return erro
+
+    projeto, erro = obter_projeto(
+        projeto_id,
+        usuario,
+    )
+
+    if erro:
+        return erro
+
+    linha = ProjetoLinhaBase.query.filter_by(
+        id=linha_id,
+        projeto_id=projeto.id,
+    ).first()
+
+    if not linha:
+        return jsonify({
+            'success': False,
+            'error': 'Linha de base não encontrada',
+        }), 404
+
+    try:
+        db.session.delete(linha)
+        db.session.commit()
+
+        return jsonify({
+            'success': True,
+        }), 200
+
+    except Exception as exc:
+        return erro_banco(
+            'Erro ao excluir linha de base',
+            exc,
+        )
+
+
+# ============================================================
+# PROJEÇÃO DE COMPRAS
+# ============================================================
+
+STATUS_PROJECAO_COMPRA = {
+    'Em levantamento',
+    'Pronto para cotar',
+    'Enviado para Compras',
+    'Em cotação',
+    'Comprado',
+    'Recebido',
+    'Cancelado',
+}
+
+
+def _normalizar_setor_projecao(valor):
+    texto = str(valor or '').strip().lower()
+
+    if texto in {'ti', 't.i', 't.i.', 'tecnologia', 'tecnologia da informação'}:
+        return 'T.I.'
+
+    if texto in {'manutencao', 'manutenção'}:
+        return 'Manutenção'
+
+    if not texto:
+        raise ValueError('Setor é obrigatório')
+
+    return str(valor).strip()[:50]
+
+
+def _validar_responsavel_projecao(projeto, responsavel_id):
+    if not responsavel_id:
+        return None
+
+    responsavel = Usuario.query.get(responsavel_id)
+
+    if not responsavel:
+        raise ValueError('Responsável não encontrado')
+
+    if (
+        hasattr(responsavel, 'ativo')
+        and responsavel.ativo is False
+    ):
+        raise ValueError('O responsável está inativo')
+
+    empresa_projeto_id = projeto.empresa_principal_id
+
+    if empresa_projeto_id:
+        empresas = set()
+
+        getter = getattr(responsavel, 'get_empresa_ids', None)
+
+        if callable(getter):
+            try:
+                empresas.update(
+                    int(valor)
+                    for valor in (getter() or [])
+                    if valor is not None
+                )
+            except Exception:
+                pass
+
+        empresa_id = getattr(responsavel, 'empresa_id', None)
+
+        if empresa_id:
+            empresas.add(int(empresa_id))
+
+        if int(empresa_projeto_id) not in empresas:
+            raise ValueError(
+                'O responsável não possui acesso à empresa do projeto'
+            )
+
+    return responsavel
+
+
+def _preencher_projecao_compra(
+    registro,
+    dados,
+    projeto,
+    usuario,
+    novo=False,
+):
+    if not projeto.empresa_principal_id:
+        raise ValueError(
+            'O projeto precisa possuir uma empresa principal'
+        )
+
+    registro.projeto_id = projeto.id
+    registro.empresa_id = projeto.empresa_principal_id
+
+    if novo or 'setor' in dados:
+        registro.setor = _normalizar_setor_projecao(
+            dados.get('setor')
+        )
+
+    if novo or 'item_id' in dados:
+        item_id = to_int(dados.get('item_id'))
+        item_catalogo = Item.query.get(item_id) if item_id else None
+
+        if item_id and not item_catalogo:
+            raise ValueError('Item do catálogo não encontrado')
+
+        if (
+            item_catalogo
+            and hasattr(item_catalogo, 'ativo')
+            and item_catalogo.ativo is False
+        ):
+            raise ValueError('O item do catálogo está inativo')
+
+        registro.item_id = item_id
+
+        if item_catalogo:
+            if not dados.get('nome_item'):
+                registro.nome_item = item_catalogo.nome
+
+            if not dados.get('descricao'):
+                registro.descricao = item_catalogo.descricao
+
+            if not dados.get('unidade_medida'):
+                registro.unidade_medida = (
+                    item_catalogo.unidade_medida or 'UN'
+                )
+
+            if dados.get('valor_unitario_estimado') in (None, ''):
+                registro.valor_unitario_estimado = to_decimal(
+                    item_catalogo.preco_unitario,
+                    0,
+                )
+
+    if novo or 'nome_item' in dados:
+        nome_item = str(
+            dados.get('nome_item')
+            or registro.nome_item
+            or ''
+        ).strip()
+
+        if not nome_item:
+            raise ValueError('Nome do item é obrigatório')
+
+        registro.nome_item = nome_item[:255]
+
+    if 'descricao' in dados:
+        registro.descricao = (
+            str(dados.get('descricao')).strip()
+            if dados.get('descricao') else None
+        )
+
+    if novo or 'quantidade' in dados:
+        quantidade = to_decimal(
+            dados.get('quantidade'),
+            1,
+        )
+
+        if quantidade <= 0:
+            raise ValueError(
+                'A quantidade precisa ser maior que zero'
+            )
+
+        registro.quantidade = quantidade
+
+    if novo or 'unidade_medida' in dados:
+        registro.unidade_medida = str(
+            dados.get('unidade_medida')
+            or registro.unidade_medida
+            or 'UN'
+        ).strip()[:20]
+
+    if 'data_necessaria' in dados or novo:
+        valor_data = dados.get('data_necessaria')
+
+        if valor_data:
+            data_necessaria = parse_datetime(valor_data)
+
+            if not data_necessaria:
+                raise ValueError('Data necessária inválida')
+
+            registro.data_necessaria = data_necessaria
+        else:
+            registro.data_necessaria = None
+
+    if novo or 'valor_unitario_estimado' in dados:
+        valor = to_decimal(
+            dados.get('valor_unitario_estimado'),
+            registro.valor_unitario_estimado or 0,
+        )
+
+        if valor < 0:
+            raise ValueError(
+                'O valor estimado não pode ser negativo'
+            )
+
+        registro.valor_unitario_estimado = valor
+
+    if novo or 'responsavel_id' in dados:
+        responsavel_id = to_int(
+            dados.get('responsavel_id')
+        )
+
+        _validar_responsavel_projecao(
+            projeto,
+            responsavel_id,
+        )
+
+        registro.responsavel_id = responsavel_id
+
+    if novo or 'status' in dados:
+        status = str(
+            dados.get('status')
+            or 'Em levantamento'
+        ).strip()
+
+        if status not in STATUS_PROJECAO_COMPRA:
+            raise ValueError(
+                'Status da projeção inválido'
+            )
+
+        registro.status = status
+
+    if novo:
+        registro.criado_por_id = (
+            usuario.id if usuario else None
+        )
+
+    registro.atualizado_por_id = (
+        usuario.id if usuario else None
+    )
+
+
+@projeto_bp.route(
+    '/<int:projeto_id>/projecoes-compras',
+    methods=['GET'],
+)
+def listar_projecoes_compra(projeto_id):
+    usuario, erro = exigir_permissao('ver')
+
+    if erro:
+        return erro
+
+    projeto, erro = obter_projeto(
+        projeto_id,
+        usuario,
+    )
+
+    if erro:
+        return erro
+
+    query = ProjetoProjecaoCompra.query.filter_by(
+        projeto_id=projeto.id,
+        ativo=True,
+    )
+
+    setor = (request.args.get('setor') or '').strip()
+    status = (request.args.get('status') or '').strip()
+
+    if setor:
+        query = query.filter(
+            ProjetoProjecaoCompra.setor
+            == _normalizar_setor_projecao(setor)
+        )
+
+    if status:
+        query = query.filter(
+            ProjetoProjecaoCompra.status == status
+        )
+
+    itens = query.order_by(
+        ProjetoProjecaoCompra.setor,
+        ProjetoProjecaoCompra.data_necessaria,
+        ProjetoProjecaoCompra.id,
+    ).all()
+
+    total_estimado = Decimal('0')
+    total_enviado = Decimal('0')
+    por_setor = {}
+
+    for item in itens:
+        total = (
+            (item.quantidade or Decimal('0'))
+            * (
+                item.valor_unitario_estimado
+                or Decimal('0')
+            )
+        )
+
+        total_estimado += total
+
+        if item.requisicao_id:
+            total_enviado += total
+
+        por_setor.setdefault(item.setor, Decimal('0'))
+        por_setor[item.setor] += total
+
+    return jsonify({
+        'itens': [
+            item.to_dict()
+            for item in itens
+        ],
+        'resumo': {
+            'quantidade_itens': len(itens),
+            'total_estimado': float(total_estimado),
+            'total_enviado_compras': float(total_enviado),
+            'total_pendente': float(
+                total_estimado - total_enviado
+            ),
+            'por_setor': {
+                setor_nome: float(valor)
+                for setor_nome, valor in por_setor.items()
+            },
+        },
+    }), 200
+
+
+@projeto_bp.route(
+    '/<int:projeto_id>/projecoes-compras',
+    methods=['POST'],
+)
+def criar_projecao_compra(projeto_id):
+    usuario, erro = exigir_permissao('editar')
+
+    if erro:
+        return erro
+
+    projeto, erro = obter_projeto(
+        projeto_id,
+        usuario,
+    )
+
+    if erro:
+        return erro
+
+    dados = request.get_json() or {}
+    registro = ProjetoProjecaoCompra()
+
+    try:
+        _preencher_projecao_compra(
+            registro,
+            dados,
+            projeto,
+            usuario,
+            novo=True,
+        )
+
+        db.session.add(registro)
+        db.session.commit()
+
+        try:
+            create_log(
+                user=usuario,
+                action='create_projecao_compra',
+                entity='projeto_projecao_compra',
+                entity_id=registro.id,
+                details={
+                    'projeto_id': projeto.id,
+                    'setor': registro.setor,
+                    'item': registro.nome_item,
+                },
+                req=request,
+            )
+        except Exception:
+            pass
+
+        return jsonify(registro.to_dict()), 201
+
+    except ValueError as exc:
+        db.session.rollback()
+
+        return jsonify({
+            'success': False,
+            'error': str(exc),
+        }), 400
+
+    except Exception as exc:
+        return erro_banco(
+            'Erro ao criar item da projeção',
+            exc,
+        )
+
+
+@projeto_bp.route(
+    '/<int:projeto_id>/projecoes-compras/<int:item_id>',
+    methods=['PUT', 'PATCH'],
+)
+def atualizar_projecao_compra(
+    projeto_id,
+    item_id,
+):
+    usuario, erro = exigir_permissao('editar')
+
+    if erro:
+        return erro
+
+    projeto, erro = obter_projeto(
+        projeto_id,
+        usuario,
+    )
+
+    if erro:
+        return erro
+
+    registro = ProjetoProjecaoCompra.query.filter_by(
+        id=item_id,
+        projeto_id=projeto.id,
+        ativo=True,
+    ).first()
+
+    if not registro:
+        return jsonify({
+            'success': False,
+            'error': 'Item da projeção não encontrado',
+        }), 404
+
+    if registro.requisicao_id:
+        return jsonify({
+            'success': False,
+            'error': (
+                'Este item já foi enviado para Compras '
+                'e não pode mais ser alterado'
+            ),
+        }), 409
+
+    try:
+        _preencher_projecao_compra(
+            registro,
+            request.get_json() or {},
+            projeto,
+            usuario,
+            novo=False,
+        )
+
+        db.session.commit()
+
+        return jsonify(registro.to_dict()), 200
+
+    except ValueError as exc:
+        db.session.rollback()
+
+        return jsonify({
+            'success': False,
+            'error': str(exc),
+        }), 400
+
+    except Exception as exc:
+        return erro_banco(
+            'Erro ao atualizar item da projeção',
+            exc,
+        )
+
+
+@projeto_bp.route(
+    '/<int:projeto_id>/projecoes-compras/<int:item_id>',
+    methods=['DELETE'],
+)
+def excluir_projecao_compra(
+    projeto_id,
+    item_id,
+):
+    usuario, erro = exigir_permissao('excluir')
+
+    if erro:
+        return erro
+
+    projeto, erro = obter_projeto(
+        projeto_id,
+        usuario,
+    )
+
+    if erro:
+        return erro
+
+    registro = ProjetoProjecaoCompra.query.filter_by(
+        id=item_id,
+        projeto_id=projeto.id,
+        ativo=True,
+    ).first()
+
+    if not registro:
+        return jsonify({
+            'success': False,
+            'error': 'Item da projeção não encontrado',
+        }), 404
+
+    if registro.requisicao_id:
+        return jsonify({
+            'success': False,
+            'error': (
+                'Não é possível excluir um item '
+                'que já foi enviado para Compras'
+            ),
+        }), 409
+
+    try:
+        registro.ativo = False
+        registro.atualizado_por_id = (
+            usuario.id if usuario else None
+        )
+
+        db.session.commit()
+
+        return jsonify({
+            'success': True,
+            'ok': True,
+        }), 200
+
+    except Exception as exc:
+        return erro_banco(
+            'Erro ao excluir item da projeção',
+            exc,
+        )
+

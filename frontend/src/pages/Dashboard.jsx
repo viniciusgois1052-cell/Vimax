@@ -14,9 +14,7 @@ const Dashboard = () => {
   const { selectedEntity } = useEntity();
   const { user } = useAuth();
 
-  const API_URL = import.meta.env.DEV
-    ? "http://192.168.2.70:5002/api"
-    : "/api";
+  const API_URL = "/api";
 
   const [stats, setStats] = useState({
     chamados: 0,

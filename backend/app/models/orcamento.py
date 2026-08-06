@@ -9,6 +9,8 @@ class Orcamento(db.Model):
     numero = db.Column(db.String(100))
     descricao = db.Column(db.Text)
     valor = db.Column(db.Float)
+    valor_material = db.Column(db.Float, default=0)
+    valor_mao_de_obra = db.Column(db.Float, default=0)
     status = db.Column(db.String(50), default='Pendente')
     data_inicial = db.Column(db.DateTime)
     data_final = db.Column(db.DateTime)
@@ -43,6 +45,8 @@ class Orcamento(db.Model):
             'fornecedor_nome': self.fornecedor.nome if self.fornecedor else None,
             'localizacao_id': self.localizacao_id,
             'localizacao_nome': self.localizacao.nome if self.localizacao else None,
+            'valor_material': self.valor_material or 0,
+            'valor_mao_de_obra': self.valor_mao_de_obra or 0,
             'anexos': [anexo.to_dict() for anexo in self.anexos]
         }
 

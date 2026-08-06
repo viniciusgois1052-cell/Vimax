@@ -116,5 +116,31 @@
   }
   body {
     @apply bg-background text-foreground;
+    direction: ltr;
   }
+  html {
+    direction: ltr;
+  }
+}
+
+/* ============================================
+   Fix editor de texto - direção LTR forçada
+   ============================================ */
+[contenteditable],
+[contenteditable="true"] {
+  direction: ltr !important;
+  text-align: left !important;
+  unicode-bidi: plaintext !important;
+  writing-mode: horizontal-tb !important;
+}
+
+.custom-scrollbar::-webkit-scrollbar {
+  width: 6px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background-color: oklch(0.708 0 0);
+  border-radius: 10px;
 }

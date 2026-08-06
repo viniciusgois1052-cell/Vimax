@@ -1,5 +1,6 @@
 from datetime import datetime
 from .. import db
+import json
 
 class Chamado(db.Model):
     __tablename__ = 'chamados'
@@ -10,23 +11,36 @@ class Chamado(db.Model):
     status = db.Column(db.String(64), nullable=True, default='aberto')
     prioridade = db.Column(db.String(32), nullable=True)
     
+    # Tipo de chamado: 'maquinario' ou 'infraestrutura'
+    tipo = db.Column(db.String(50), nullable=True, default='maquinario')
+    
+    # Opções selecionadas no formulário externo (JSON array)
+    opcoes_selecionadas = db.Column(db.Text, nullable=True)
+    
     # IDs de vínculos
     empresa_id = db.Column(db.Integer, db.ForeignKey('empresas.id'), nullable=True)
     localizacao_id = db.Column(db.Integer, db.ForeignKey('localizacoes.id'), nullable=True)
     usuario_responsavel_id = db.Column(db.Integer, db.ForeignKey('usuarios.id'), nullable=True)
+    usuario_solicitante_id = db.Column(db.Integer, db.ForeignKey('usuarios.id'), nullable=True)
     categoria_id = db.Column(db.Integer, db.ForeignKey('categorias_chamado.id'), nullable=True)
     ativo_id = db.Column(db.Integer, db.ForeignKey('ativos.id'), nullable=True)
+    infraestrutura_id = db.Column(db.Integer, db.ForeignKey('infraestrutura.id'), nullable=True)
     fornecedor_id = db.Column(db.Integer, db.ForeignKey('fornecedores.id'), nullable=True)
     contrato_id = db.Column(db.Integer, db.ForeignKey('contratos.id'), nullable=True)
     orcamento_id = db.Column(db.Integer, db.ForeignKey('orcamentos.id'), nullable=True)
+    orcamentos_ids = db.Column(db.Text, nullable=True)  # JSON: [1, 2, 3]
+    fornecedores_ids = db.Column(db.Text, nullable=True)  # JSON: [1, 2, 3]
     
     # Relacionamentos para facilitar o acesso aos nomes
     empresa_rel = db.relationship('Empresa', foreign_keys=[empresa_id], backref='chamados', lazy=True)
     localizacao_rel = db.relationship('Localizacao', foreign_keys=[localizacao_id], backref='chamados', lazy=True)
     ativo_rel = db.relationship('Ativo', foreign_keys=[ativo_id], backref='chamados', lazy=True)
+    infraestrutura_rel = db.relationship('Infraestrutura', foreign_keys=[infraestrutura_id], backref='chamados', lazy=True)
     fornecedor_rel = db.relationship('Fornecedor', foreign_keys=[fornecedor_id], backref='chamados', lazy=True)
     contrato_rel = db.relationship('Contrato', foreign_keys=[contrato_id], backref='chamados', lazy=True)
     categoria_rel = db.relationship('CategoriaChamado', foreign_keys=[categoria_id], backref='chamados', lazy=True)
+    usuario_responsavel_rel = db.relationship('Usuario', foreign_keys=[usuario_responsavel_id], lazy=True)
+    usuario_solicitante_rel = db.relationship('Usuario', foreign_keys=[usuario_solicitante_id], lazy=True)
     
     # Campo para valor total do serviço
     valor_total = db.Column(db.Float, nullable=True, default=0.0)
@@ -48,6 +62,12 @@ class Chamado(db.Model):
     # campos extras que seu app possa usar (ex.: anexos JSON)
     anexos = db.Column(db.Text, nullable=True)
 
+    # Dados financeiros persistidos
+    fin_fornecedor      = db.Column(db.String(255), nullable=True)
+    fin_forma_pagamento = db.Column(db.String(64),  nullable=True)
+    fin_observacao      = db.Column(db.Text,        nullable=True)
+    fin_anexos          = db.Column(db.Text,        nullable=True)  # JSON: [{tipo, path, nome}]
+
     def to_dict(self):
         def format_utc(dt):
             if not dt: return None
@@ -59,6 +79,7 @@ class Chamado(db.Model):
             'descricao': self.descricao,
             'status': self.status,
             'prioridade': self.prioridade,
+            'tipo': self.tipo or 'maquinario',
             'valor_total': float(self.valor_total or 0),
             'criticidade_informada': self.criticidade_informada,
             'criticidade_real': self.criticidade_real,
@@ -67,23 +88,43 @@ class Chamado(db.Model):
             'localizacao_id': self.localizacao_id,
             'localizacao_nome': self.localizacao_rel.nome if self.localizacao_rel else None,
             'usuario_responsavel_id': self.usuario_responsavel_id,
+            'usuario_responsavel_nome': self.usuario_responsavel_rel.username if self.usuario_responsavel_rel else None,
+            'usuario_solicitante_id': self.usuario_solicitante_id,
+            'usuario_solicitante_nome': self.usuario_solicitante_rel.username if self.usuario_solicitante_rel else None,
             'categoria_id': self.categoria_id,
             'categoria_nome': self.categoria_rel.nome if self.categoria_rel else None,
             'ativo_id': self.ativo_id,
             'ativo_nome': self.ativo_rel.nome if self.ativo_rel else None,
+            'infraestrutura_id': self.infraestrutura_id,
+            'infraestrutura_nome': self.infraestrutura_rel.nome if self.infraestrutura_rel else None,
             'fornecedor_id': self.fornecedor_id,
             'fornecedor_nome': self.fornecedor_rel.nome if self.fornecedor_rel else None,
+            'fornecedores_ids': self._safe_parse_json(self.fornecedores_ids),
             'contrato_id': self.contrato_id,
             'contrato_nome': self.contrato_rel.numero if hasattr(self, 'contrato_rel') and self.contrato_rel else None,
             'orcamento_id': self.orcamento_id,
+            'orcamentos_ids': self._safe_parse_json(self.orcamentos_ids),
+            'opcoes_selecionadas': self._safe_parse_json(self.opcoes_selecionadas),
             'created_at': format_utc(self.created_at),
             'updated_at': format_utc(self.updated_at),
             'data_abertura': format_utc(self.data_abertura),
             'data_solucao': format_utc(self.data_solucao),
             'ativo': self.ativo,
             'deleted_at': format_utc(self.deleted_at),
-            'anexos': None if not self.anexos else self._safe_parse_anexos()
+            'anexos': None if not self.anexos else self._safe_parse_anexos(),
+            'fin_fornecedor':      self.fin_fornecedor,
+            'fin_forma_pagamento': self.fin_forma_pagamento,
+            'fin_observacao':      self.fin_observacao,
+            'fin_anexos':          self._safe_parse_json(self.fin_anexos)
         }
+
+    def _safe_parse_json(self, value):
+        if not value:
+            return []
+        try:
+            return json.loads(value) if isinstance(value, str) else value
+        except Exception:
+            return []
 
     def _safe_parse_anexos(self):
         try:
@@ -93,4 +134,4 @@ class Chamado(db.Model):
             return self.anexos
 
     def __repr__(self):
-        return f"<Chamado {self.id} {self.titulo} ativo={self.ativo}>"
+        return f"<Chamado {self.id} {self.titulo} tipo={self.tipo} ativo={self.ativo}>"

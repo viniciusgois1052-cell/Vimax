@@ -1,0 +1,295 @@
+from flask import Blueprint, request, jsonify
+from datetime import datetime
+import json
+from .. import db
+from ..utils.logging import create_log
+from ..models.contrato import Contrato
+from ..models.usuario import Usuario
+from ..utils.filters import apply_entity_filter
+from ..utils.auth import get_current_user_from_request
+
+contrato_bp = Blueprint('contratos', __name__)
+
+def safe_int(val):
+    if val in [None, '', 'none', 'undefined']:
+        return None
+    try:
+        return int(val)
+    except (ValueError, TypeError):
+        return None
+
+
+@contrato_bp.route('', methods=['GET'])
+def get_contratos():
+    empresa_id = request.args.get('empresa_id')
+    api_token  = request.headers.get('X-API-Token')
+    user = None
+    if api_token:
+        user = Usuario.query.filter_by(api_token=api_token).first()
+    query = Contrato.query
+    query = apply_entity_filter(query, Contrato, empresa_id, user)
+    return jsonify([c.to_dict() for c in query.all()]), 200
+
+
+@contrato_bp.route('', methods=['POST'])
+def create_contrato():
+    data = request.get_json() or {}
+    novo = Contrato(
+        numero        = data.get('numero'),
+        fornecedor_id = safe_int(data.get('fornecedor_id')),
+        localizacao_id= safe_int(data.get('localizacao_id')),
+        empresa_id    = safe_int(data.get('empresa_id')),
+        data_inicio   = datetime.strptime(data['data_inicio'], '%Y-%m-%d').date() if data.get('data_inicio') else None,
+        data_fim      = datetime.strptime(data['data_fim'],    '%Y-%m-%d').date() if data.get('data_fim')    else None,
+        valor         = float(data.get('valor', 0)),
+        is_mensal     = bool(data.get('is_mensal', False)),
+        observacao    = data.get('observacao'),
+        anexos        = json.dumps(data.get('anexos', [])),
+        dias_aviso_vencimento = safe_int(data.get('dias_aviso_vencimento')) or 30,
+        # Modo Vendedor
+        is_prestacao_servico = bool(data.get('is_prestacao_servico', False)),
+        cliente_id    = safe_int(data.get('cliente_id')),
+        itens         = json.dumps(data.get('itens', [])),
+    )
+    db.session.add(novo)
+    db.session.commit()
+    return jsonify(novo.to_dict()), 201
+
+
+# ── ALERTAS — deve vir ANTES de /<int:contrato_id> ──────────────────────────
+@contrato_bp.route('/alertas', methods=['GET'])
+def get_alertas_vencimento():
+    empresa_id = request.args.get('empresa_id')
+    api_token  = request.headers.get('X-API-Token')
+    user = None
+    if api_token:
+        user = Usuario.query.filter_by(api_token=api_token).first()
+    query = Contrato.query
+    query = apply_entity_filter(query, Contrato, empresa_id, user)
+    contratos = query.all()
+    hoje   = datetime.now().date()
+    alertas = []
+    for c in contratos:
+        if not c.data_fim:
+            continue
+        dias_para_vencer = (c.data_fim - hoje).days
+        dias_aviso = c.dias_aviso_vencimento or 30
+        if dias_para_vencer < 0:
+            alertas.append({'id': c.id, 'numero': c.numero,
+                'empresa_nome': c.empresa.nome if c.empresa else 'N/A',
+                'fornecedor_nome': c.fornecedor.nome if c.fornecedor else 'N/A',
+                'data_fim': c.data_fim.isoformat(), 'dias_restantes': dias_para_vencer,
+                'observacao': c.observacao, 'status': 'VENCIDO'})
+        elif dias_para_vencer <= dias_aviso:
+            alertas.append({'id': c.id, 'numero': c.numero,
+                'empresa_nome': c.empresa.nome if c.empresa else 'N/A',
+                'fornecedor_nome': c.fornecedor.nome if c.fornecedor else 'N/A',
+                'data_fim': c.data_fim.isoformat(), 'dias_restantes': dias_para_vencer,
+                'observacao': c.observacao, 'status': 'AVISO'})
+    alertas.sort(key=lambda x: x['dias_restantes'])
+    return jsonify(alertas), 200
+
+
+# ── CRUD por ID ──────────────────────────────────────────────────────────────
+@contrato_bp.route('/<int:contrato_id>', methods=['PUT'])
+def update_contrato(contrato_id):
+    user     = get_current_user_from_request(request)
+    contrato = Contrato.query.get_or_404(contrato_id)
+    before   = None
+    try:
+        before = contrato.to_dict()
+    except Exception:
+        pass
+    data = request.get_json() or {}
+
+    contrato.numero         = data.get('numero', contrato.numero)
+    contrato.fornecedor_id  = safe_int(data.get('fornecedor_id')) or contrato.fornecedor_id
+    contrato.localizacao_id = safe_int(data.get('localizacao_id'))
+    contrato.empresa_id     = safe_int(data.get('empresa_id'))
+    if data.get('data_inicio'):
+        contrato.data_inicio = datetime.strptime(data['data_inicio'], '%Y-%m-%d').date()
+    if data.get('data_fim'):
+        contrato.data_fim    = datetime.strptime(data['data_fim'],    '%Y-%m-%d').date()
+    contrato.valor          = float(data.get('valor', contrato.valor))
+    contrato.is_mensal      = bool(data.get('is_mensal', False))
+    contrato.observacao     = data.get('observacao', contrato.observacao)
+    contrato.anexos         = json.dumps(data.get('anexos', []))
+    contrato.dias_aviso_vencimento = safe_int(data.get('dias_aviso_vencimento')) or contrato.dias_aviso_vencimento
+    # Modo Vendedor
+    contrato.is_prestacao_servico = bool(data.get('is_prestacao_servico', False))
+    contrato.cliente_id     = safe_int(data.get('cliente_id'))
+    contrato.itens          = json.dumps(data.get('itens', []))
+
+    db.session.commit()
+    try:
+        create_log(user=user, action='update_contrato', entity='contrato', entity_id=contrato_id,
+                   details={'before': before, 'after_payload': data}, req=request)
+    except Exception:
+        pass
+    return jsonify(contrato.to_dict()), 200
+
+
+@contrato_bp.route('/<int:contrato_id>', methods=['DELETE'])
+def delete_contrato(contrato_id):
+    user     = get_current_user_from_request(request)
+    contrato = Contrato.query.get_or_404(contrato_id)
+    snapshot = None
+    try:
+        snapshot = contrato.to_dict()
+    except Exception:
+        pass
+    db.session.delete(contrato)
+    db.session.commit()
+    try:
+        create_log(user=user, action='delete_contrato', entity='contrato', entity_id=contrato_id,
+                   details={'deleted': snapshot}, req=request)
+    except Exception:
+        pass
+    return jsonify({'message': 'Contrato excluído com sucesso'}), 200
+
+
+# ── CUSTOS POR CONTRATO ──────────────────────────────────────────────────────
+@contrato_bp.route('/custos', methods=['GET'])
+def get_custos_contratos():
+    import urllib.request, json as _json
+    from datetime import date
+
+    empresa_id = request.args.get('empresa_id')
+    api_token  = request.headers.get('X-API-Token')
+    user = None
+    if api_token:
+        user = Usuario.query.filter_by(api_token=api_token).first()
+
+    # Cotação dólar (USD -> BRL) via AwesomeAPI
+    cotacao_usd = None
+    try:
+        with urllib.request.urlopen('https://economia.awesomeapi.com.br/json/last/USD-BRL', timeout=5) as r:
+            cotacao_usd = float(_json.loads(r.read())['USDBRL']['bid'])
+    except Exception:
+        cotacao_usd = 5.0  # fallback
+
+    hoje = date.today()
+    mes_atual = hoje.month
+    ano_atual = hoje.year
+
+    query = Contrato.query
+    query = apply_entity_filter(query, Contrato, empresa_id, user)
+    contratos = query.all()
+
+    # Agrupar: tipo_ativo -> empresa -> ativos
+    resultado = {}
+
+    for c in contratos:
+        valor_mensal_brl = 0.0
+        moeda = (c.moeda or 'BRL').upper()
+
+        if c.is_mensal:
+            valor_mensal_brl = c.valor
+        else:
+            # Rateio: divide pelo número de meses do contrato
+            if c.data_inicio and c.data_fim:
+                meses = max(1, (c.data_fim.year - c.data_inicio.year) * 12 +
+                               (c.data_fim.month - c.data_inicio.month))
+                valor_mensal_brl = c.valor / meses
+            else:
+                valor_mensal_brl = c.valor
+
+        if moeda == 'USD':
+            valor_mensal_brl = valor_mensal_brl * cotacao_usd
+
+        # Acumulado anual: soma meses já passados no ano atual
+        meses_passados = mes_atual  # jan=1 ... mês atual
+        valor_anual_acumulado = valor_mensal_brl * meses_passados
+
+        # Ativos vinculados
+        ativos = c.ativos_vinculados if c.ativos_vinculados else []
+
+        empresa_nome = c.empresa.nome if c.empresa else 'Sem Empresa'
+        empresa_id_c = c.empresa_id or 0
+
+        for ativo in ativos:
+            tipo = ativo.nome or 'Sem Tipo'
+            key_tipo = tipo
+
+            if key_tipo not in resultado:
+                resultado[key_tipo] = {'tipo': tipo, 'empresas': {}, 'total_mensal': 0.0, 'total_anual': 0.0}
+
+            key_emp = str(empresa_id_c)
+            if key_emp not in resultado[key_tipo]['empresas']:
+                resultado[key_tipo]['empresas'][key_emp] = {
+                    'empresa_id': empresa_id_c,
+                    'empresa_nome': empresa_nome,
+                    'ativos': [],
+                    'total_mensal': 0.0,
+                    'total_anual': 0.0
+                }
+
+            resultado[key_tipo]['empresas'][key_emp]['ativos'].append({
+                'ativo_id': ativo.id,
+                'ativo_nome': ativo.nome,
+                'numero_serie': ativo.numero_serie or '',
+                'contrato_id': c.id,
+                'contrato_numero': c.numero,
+                'moeda_original': moeda,
+                'valor_original': c.valor,
+                'valor_mensal_brl': round(valor_mensal_brl, 2),
+                'valor_anual_acumulado': round(valor_anual_acumulado, 2),
+                'is_mensal': c.is_mensal,
+            })
+
+            resultado[key_tipo]['empresas'][key_emp]['total_mensal'] += valor_mensal_brl
+            resultado[key_tipo]['empresas'][key_emp]['total_anual']  += valor_anual_acumulado
+            resultado[key_tipo]['total_mensal'] += valor_mensal_brl
+            resultado[key_tipo]['total_anual']  += valor_anual_acumulado
+
+        # Contratos sem ativos vinculados
+        if not ativos:
+            tipo = 'Sem Ativo Vinculado'
+            if tipo not in resultado:
+                resultado[tipo] = {'tipo': tipo, 'empresas': {}, 'total_mensal': 0.0, 'total_anual': 0.0}
+            key_emp = str(empresa_id_c)
+            if key_emp not in resultado[tipo]['empresas']:
+                resultado[tipo]['empresas'][key_emp] = {
+                    'empresa_id': empresa_id_c,
+                    'empresa_nome': empresa_nome,
+                    'ativos': [],
+                    'total_mensal': 0.0,
+                    'total_anual': 0.0
+                }
+            resultado[tipo]['empresas'][key_emp]['ativos'].append({
+                'ativo_id': None,
+                'ativo_nome': '—',
+                'numero_serie': '',
+                'contrato_id': c.id,
+                'contrato_numero': c.numero,
+                'moeda_original': moeda,
+                'valor_original': c.valor,
+                'valor_mensal_brl': round(valor_mensal_brl, 2),
+                'valor_anual_acumulado': round(valor_anual_acumulado, 2),
+                'is_mensal': c.is_mensal,
+            })
+            resultado[tipo]['empresas'][key_emp]['total_mensal'] += valor_mensal_brl
+            resultado[tipo]['empresas'][key_emp]['total_anual']  += valor_anual_acumulado
+            resultado[tipo]['total_mensal'] += valor_mensal_brl
+            resultado[tipo]['total_anual']  += valor_anual_acumulado
+
+    # Converter dicts de empresas para listas
+    grupos = []
+    total_geral_mensal = 0.0
+    total_geral_anual  = 0.0
+    for g in resultado.values():
+        g['empresas'] = list(g['empresas'].values())
+        g['total_mensal'] = round(g['total_mensal'], 2)
+        g['total_anual']  = round(g['total_anual'], 2)
+        total_geral_mensal += g['total_mensal']
+        total_geral_anual  += g['total_anual']
+        grupos.append(g)
+
+    return jsonify({
+        'cotacao_usd': cotacao_usd,
+        'mes_referencia': f"{mes_atual:02d}/{ano_atual}",
+        'meses_acumulados': mes_atual,
+        'grupos': grupos,
+        'total_geral_mensal': round(total_geral_mensal, 2),
+        'total_geral_anual':  round(total_geral_anual, 2),
+    }), 200
